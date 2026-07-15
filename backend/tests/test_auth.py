@@ -48,6 +48,15 @@ def test_login_github_redirects_to_github(monkeypatch):
     assert "github.com/login/oauth/authorize" in response.headers["location"]
 
 
+def test_denied_consent_falls_back_to_landing(monkeypatch):
+    monkeypatch.setenv("GITHUB_CLIENT_ID", "test-id")
+    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "test-secret")
+    auth._registered.discard("github")
+    response = client.get("/auth/callback/github?error=access_denied", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"].endswith("/")
+
+
 def test_cloud_scan_relaxes_gate_without_codex(monkeypatch):
     monkeypatch.setenv("UMBRA_DEMO_MODE", "false")
     monkeypatch.setenv("UMBRA_ENABLE_LIVE_REPOS", "true")

@@ -73,10 +73,14 @@ async def callback(provider: str, request: Request):
     client = _client(provider)
     if client is None:
         raise HTTPException(status_code=404, detail=f"Sign-in with '{provider}' is not configured.")
+    # The user declined consent (or the provider returned an OAuth error): send
+    # them back to the landing page rather than showing an error.
+    if request.query_params.get("error"):
+        return RedirectResponse(url=f"{frontend_origin()}/", status_code=303)
     try:
         token = await client.authorize_access_token(request)
-    except Exception as exc:  # noqa: BLE001 - surface a clean error, don't 500
-        raise HTTPException(status_code=400, detail=f"OAuth exchange failed: {exc}") from exc
+    except Exception:  # noqa: BLE001 - abandoned/failed exchange falls back to the landing page
+        return RedirectResponse(url=f"{frontend_origin()}/", status_code=303)
 
     store = get_store()
     if provider == "github":

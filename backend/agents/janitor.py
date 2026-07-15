@@ -1,9 +1,15 @@
-"""Janitor: conservative dead-code cleanup recommendations."""
+"""Janitor: a conservative, live cleanup sweep in a disposable checkout."""
 from __future__ import annotations
 
+import asyncio
+import os
+from time import perf_counter
+
 from backend.agents.base import AgentResult, Replay
-from backend.codex_client import CodexClient
 from backend.cache import load_demo_cache
+from backend.codex_client import CodexClient, CodexOperation
+from backend.integrations.repository import checkout_public_repo, live_repositories_enabled
+from backend.reasoning import reason
 
 
 class Janitor:
@@ -11,14 +17,49 @@ class Janitor:
         self.codex = codex or CodexClient()
 
     async def run(self, repo_url: str) -> AgentResult:
+        if self._live_enabled():
+            try:
+                return await self._run_live(repo_url)
+            except Exception as exc:
+                return self._cached_result(f"Live Janitor unavailable: {exc}")
+        return self._cached_result()
+
+    @staticmethod
+    def _live_enabled() -> bool:
+        return os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true" and live_repositories_enabled() and CodexClient.enabled() and bool(os.getenv("OPENAI_API_KEY"))
+
+    async def _run_live(self, repo_url: str) -> AgentResult:
+        with checkout_public_repo(repo_url) as repo_path:
+            codex_started = perf_counter()
+            try:
+                operation = self.codex.propose("Find behavior-preserving dead code, unused imports, and orphaned environment variables. Make one smallest focused cleanup change, run relevant tests, and do not push, commit, or merge.", repo_path=repo_path)
+            except RuntimeError as exc:
+                operation = self._unavailable_operation(str(exc))
+            codex_ms = int((perf_counter() - codex_started) * 1000)
+        findings = [{"file": path, "symbol": None, "kind": self._kind(operation.diff)} for path in operation.files]
+        reasoning_started = perf_counter()
+        try:
+            analysis = await asyncio.to_thread(reason, "work", "You are Umbra Janitor. Explain only the concrete cleanup diff and its expected behavior-preserving risk. Do not invent files or symbols.", f"Codex summary:\n{operation.summary}\nChanged files: {operation.files}\nDiff:\n{operation.diff}")
+            reasoning, reasoning_provider = analysis.text, analysis.provider
+        except RuntimeError as exc:
+            reasoning, reasoning_provider = f"GPT-5.6 reasoning unavailable: {exc}", "unavailable"
+        return AgentResult("janitor", f"Live Janitor produced {len(operation.files)} changed files.", findings, Replay("janitor", operation.prompt, operation.diff, operation.summary, reasoning, {"codex_ms": codex_ms, "reasoning_ms": int((perf_counter() - reasoning_started) * 1000)}, {"engineering": operation.provider, "reasoning": reasoning_provider}))
+
+    @staticmethod
+    def _kind(diff: str) -> str:
+        lowered = diff.lower()
+        if "import " in lowered:
+            return "unused_import"
+        if "function" in lowered or "def " in lowered:
+            return "unused_function"
+        return "cleanup"
+
+    def _cached_result(self, note: str | None = None) -> AgentResult:
         findings = load_demo_cache()["dead_code"]
-        op = self.codex.propose(
-            f"Find behavior-preserving dead code in {repo_url}. Keep the change focused and do not merge or push.",
-            [item["file"] for item in findings],
-        )
-        return AgentResult(
-            agent="janitor",
-            summary=f"Found {len(findings)} conservative cleanup candidates; each needs human review before a PR is opened.",
-            findings=findings,
-            replay=Replay("janitor", op.prompt, op.diff, "Targeted test suite passed in cached replay.", "Only symbols with no discovered references and no public export contract are proposed for removal.", {"codex_ms": 1600, "reasoning_ms": 640, "tests_ms": 3320}),
-        )
+        operation = self.codex.cached_fallback("Sweep for behavior-preserving cleanup.", note=note or "Cached Janitor replay; no live model or CLI call was made.") if note else self.codex.propose("Sweep for behavior-preserving cleanup.")
+        return AgentResult("janitor", "Cached Janitor replay.", findings, Replay("janitor", operation.prompt, operation.diff, operation.summary, note or "Demo reasoning replayed from cache; no model or Codex request was made.", {"codex_ms": 0, "reasoning_ms": 0}, {"engineering": "cache-fallback" if note else operation.provider, "reasoning": "demo-cache"}))
+
+    @staticmethod
+    def _unavailable_operation(error: str) -> CodexOperation:
+        from datetime import UTC, datetime
+        return CodexOperation("Cleanup sweep", f"Codex CLI unavailable: {error}", "", None, [], "unavailable", datetime.now(UTC).isoformat(), error=error)

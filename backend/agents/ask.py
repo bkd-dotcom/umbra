@@ -88,28 +88,58 @@ class AskUmbra:
             operation = self._unavailable_operation(str(exc))
         return context, references, operation, retrieval_ms, int((perf_counter() - codex_started) * 1000)
 
+    # Common English/question words never make good code-search terms; they flood
+    # the results with docs before the meaningful identifiers are ever grepped.
+    _STOPWORDS = {"what", "when", "where", "which", "whether", "who", "whom", "why", "how", "the", "and", "for", "are", "was", "were", "this", "that", "these", "those", "with", "from", "does", "did", "doing", "work", "works", "change", "break", "has", "have", "had", "can", "could", "would", "should", "will", "into", "over", "about", "its", "their", "there", "here", "you", "your"}
+
+    _CODE_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb", ".c", ".h", ".hpp", ".cpp", ".cc", ".cs", ".php", ".swift", ".kt", ".scala", ".sql", ".sh"}
+
+    @staticmethod
+    def _path_rank(path: str) -> int:
+        """Prefer source code (0) over other files (1) over docs/changelogs (2).
+
+        ``git grep`` returns matches in alphabetical path order, so docs and
+        CHANGES files precede ``src/`` — without this a question about code gets
+        answered from the changelog. A question about the code wants the code.
+        """
+        lowered = path.lower()
+        if os.path.splitext(lowered)[1] in AskUmbra._CODE_EXTENSIONS:
+            return 0
+        if lowered.endswith((".md", ".rst", ".txt")) or "changelog" in lowered or "changes" in lowered or lowered.startswith("docs/"):
+            return 2
+        return 1
+
     @staticmethod
     def _retrieve(repo_path, question: str) -> tuple[list[dict[str, object]], str]:
-        keywords = [word for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", question.lower()) if word not in {"what", "would", "where", "this", "that", "with", "from", "does", "work", "change", "break"}][:5]
-        references: list[dict[str, object]] = []
-        snippets: list[str] = []
-        for keyword in keywords or ["TODO"]:
+        words = [word for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", question) if word.lower() not in AskUmbra._STOPWORDS]
+        # Search the most specific terms first (identifiers/longer tokens); a broad
+        # word can never crowd out the real answer.
+        keywords = sorted(dict.fromkeys(words), key=lambda word: (-len(word), word.lower()))[:5]
+        matches: list[tuple[int, int, str, int, str, str]] = []
+        for order, keyword in enumerate(keywords or ["TODO"]):
             result = subprocess.run(["git", "grep", "-n", "-i", "-e", keyword], cwd=repo_path, text=True, capture_output=True, check=False)
-            for raw in result.stdout.splitlines()[:12]:
+            for raw in result.stdout.splitlines():
                 try:
                     path, line, text = raw.split(":", 2)
                     number = int(line)
                 except ValueError:
                     continue
-                candidate = repo_path / path
-                if not candidate.is_file():
+                if not (repo_path / path).is_file():
                     continue
-                reference = {"file": path, "lines": str(number), "note": f"Matched query term '{keyword}'."}
-                if reference not in references:
-                    references.append(reference)
-                    snippets.append(f"{path}:{number}: {text[:300]}")
-                if len(references) >= 8:
-                    return references, "\n".join(snippets)
+                matches.append((AskUmbra._path_rank(path), order, path, number, text, keyword))
+        # Rank code files ahead of docs, and more specific terms ahead of broad ones.
+        matches.sort(key=lambda match: (match[0], match[1]))
+        references: list[dict[str, object]] = []
+        snippets: list[str] = []
+        seen: set[tuple[str, int]] = set()
+        for _, _, path, number, text, keyword in matches:
+            if (path, number) in seen:
+                continue
+            seen.add((path, number))
+            references.append({"file": path, "lines": str(number), "note": f"Matched query term '{keyword}'."})
+            snippets.append(f"{path}:{number}: {text[:300]}")
+            if len(references) >= 8:
+                break
         return references, "\n".join(snippets)
 
     @staticmethod

@@ -26,7 +26,7 @@ def checkout_public_repo(repo_url: str) -> Iterator[Path]:
     checkout = temp_dir / "repo"
     try:
         result = subprocess.run(
-            ["git", "clone", "--depth", "1", f"https://github.com/{owner_repo}.git", str(checkout)],
+            ["git", "clone", "--depth", "50", f"https://github.com/{owner_repo}.git", str(checkout)],
             text=True, capture_output=True, timeout=120, check=False,
         )
         if result.returncode:

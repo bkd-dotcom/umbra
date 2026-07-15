@@ -41,7 +41,7 @@ class Orchestrator:
         for event in load_demo_cache()["events"]:
             await self.bus.emit(event)
 
-    async def scan(self, repo_url: str, agents: list[str] | None = None) -> dict[str, Any]:
+    async def scan(self, repo_url: str, agents: list[str] | None = None, pr_number: int | None = None) -> dict[str, Any]:
         # Cache is intentionally the availability boundary: a demo never depends on third parties.
         from backend.agents import Janitor, Reviewer, Watchman
 
@@ -52,7 +52,7 @@ class Orchestrator:
         if "watchman" in requested:
             agent_runs.append(await Watchman().run(repo_url))
         if "reviewer" in requested:
-            agent_runs.append(await Reviewer().run(repo_url))
+            agent_runs.append(await Reviewer().run(repo_url, pr_number=pr_number))
         if "janitor" in requested:
             agent_runs.append(await Janitor().run(repo_url))
         self.replays = [result.replay.__dict__ for result in agent_runs] or self.replays
@@ -75,6 +75,16 @@ class Orchestrator:
             })
         else:
             response["source"] = "demo-cache"
+        reviewer = next((result for result in agent_runs if result.agent == "reviewer"), None)
+        janitor = next((result for result in agent_runs if result.agent == "janitor"), None)
+        if reviewer and reviewer.replay.providers.get("review") == "codex-cli":
+            response["review"] = reviewer.findings[0] if reviewer.findings else {}
+        if janitor and janitor.replay.providers.get("engineering") == "codex-cli":
+            response["cleanup"] = janitor.findings
+        live_agents = [result.agent for result in agent_runs if "codex-cli" in result.replay.providers.values()]
+        if live_agents:
+            response["source"] = f"live-{live_agents[0]}" if len(live_agents) == 1 else "live"
+            response["live_agents"] = live_agents
         response["agent_results"] = [result.as_dict() for result in agent_runs]
         response["kill_chain"] = kill_chain()
         response["dependency_galaxy"] = dependency_galaxy()
@@ -88,18 +98,24 @@ class Orchestrator:
         result = await Detective().run(repo_url, error_log)
         payload = result.findings[0]
         self.replays = [result.replay.__dict__]
-        await self.bus.emit({"agent": "DETECTIVE", "message": "Incident replay assembled from verified cache", "level": "analysis"})
+        payload["source"] = "live-detective" if result.replay.providers.get("history") == "local-git" else "demo-cache"
+        await self.bus.emit({"agent": "DETECTIVE", "message": "Live incident analysis complete" if payload["source"] == "live-detective" else "Incident replay assembled from verified cache", "level": "analysis"})
         return payload
 
     async def ask(self, repo_url: str, question: str) -> dict[str, Any]:
         from backend.agents import AskUmbra
 
         result = await AskUmbra().run(repo_url, question)
-        cached = load_demo_cache()["answer"].copy()
         self.replays = [result.replay.__dict__]
-        payload = cached
+        payload = {"answer": result.summary, "references": result.findings, "blast_radius": "Grounded only in the listed retrieved references.", "source": "live-ask" if result.replay.providers.get("retrieval") == "local-git-grep" else "demo-cache"}
         await self.bus.emit({"agent": "ASK UMBRA", "message": f"Grounding answer for: {question[:80]}", "level": "info"})
         return payload
+
+    async def ask_stream(self, repo_url: str, question: str) -> AsyncIterator[str]:
+        from backend.agents import AskUmbra
+
+        async for chunk in AskUmbra().stream(repo_url, question):
+            yield chunk
 
 
 orchestrator = Orchestrator()

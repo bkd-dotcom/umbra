@@ -56,6 +56,7 @@ async def health() -> dict[str, object]:
 class ScanRequest(BaseModel):
     repo_url: str = Field(description="Full URL of a public GitHub repository")
     agents: list[str] | None = Field(default=None, description="Optional agent subset")
+    pr_number: int | None = Field(default=None, ge=1, description="Optional pull request number for Reviewer")
 
 
 class InvestigateRequest(BaseModel):
@@ -78,7 +79,7 @@ def _validate_repo(repo_url: str) -> str:
 @app.post("/api/scan", tags=["agents"])
 async def scan_repo(request: ScanRequest) -> dict[str, object]:
     _validate_repo(request.repo_url)
-    return await orchestrator.scan(request.repo_url, request.agents)
+    return await orchestrator.scan(request.repo_url, request.agents, request.pr_number)
 
 
 @app.post("/api/investigate", tags=["agents"])
@@ -91,6 +92,18 @@ async def investigate_incident(request: InvestigateRequest) -> dict[str, object]
 async def ask_umbra(request: AskRequest) -> dict[str, object]:
     _validate_repo(request.repo_url)
     return await orchestrator.ask(request.repo_url, request.question)
+
+
+@app.get("/api/ask/stream", tags=["streaming"])
+async def ask_umbra_stream(repo_url: str, question: str) -> StreamingResponse:
+    _validate_repo(repo_url)
+
+    async def generate():
+        async for chunk in orchestrator.ask_stream(repo_url, question):
+            yield f"event: umbra\ndata: {json.dumps({'chunk': chunk})}\n\n"
+        yield "event: done\ndata: {}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/replays", tags=["agents"])

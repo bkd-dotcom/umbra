@@ -1,0 +1,25 @@
+name: Umbra Night Shift
+on:
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"   # 03:17 nightly — the night shift
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+jobs:
+  umbra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run Umbra (Codex)
+        uses: openai/codex-action@v1        # TODO(verify) exact action name/version in Codex docs
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          model: gpt-5.6-sol
+          prompt-file: .umbra/nightshift.md
+

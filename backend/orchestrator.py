@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator
 
 from backend.cache import load_demo_cache
 from backend.features import dependency_galaxy, kill_chain, roi_estimate
+from backend.scoring import umbra_score
 
 
 class EventBus:
@@ -57,6 +58,23 @@ class Orchestrator:
         self.replays = [result.replay.__dict__ for result in agent_runs] or self.replays
         await self.replay_demo_events()
         response = {key: value for key, value in payload.items() if key not in {"events", "postmortem", "answer", "replays"}}
+        watchman = next((result for result in agent_runs if result.agent == "watchman"), None)
+        if watchman and watchman.replay.providers.get("vulnerabilities") == "osv.dev":
+            # This is the one live, end-to-end source of truth. Do not blend it
+            # with seeded categories and accidentally present a cache as a scan.
+            response.update({
+                "vulnerabilities": watchman.findings,
+                "dead_code": [],
+                "secrets": [],
+                "missing_docs_count": 0,
+                "umbra_score": umbra_score(watchman.findings),
+                "risk_forecast": "Live Watchman scope: dependency advisories only.",
+                "reasoning_summary": watchman.summary,
+                "source": "live-watchman",
+                "live_scope": ["OSV dependency scan", "GPT-5.6 threat analysis", "Codex disposable-checkout task"],
+            })
+        else:
+            response["source"] = "demo-cache"
         response["agent_results"] = [result.as_dict() for result in agent_runs]
         response["kill_chain"] = kill_chain()
         response["dependency_galaxy"] = dependency_galaxy()

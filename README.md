@@ -7,7 +7,7 @@ engineering; GPT-5.6 does the reasoning; you approve the merge.
 
 ## 🧑‍⚖️ Test it
 
-**Live dashboard (0 setup):** _deploying — public URL added here once live (see [docs/deploy.md](docs/deploy.md))._
+**Live dashboard (0 setup):** [umbra-712918182816.us-central1.run.app](https://umbra-712918182816.us-central1.run.app) — hosted on Google Cloud Run, demo mode.
 **Local, real agents (the money shot):** clone and run live mode on your own Codex login — real CVEs, real diffs, real reasoning. See [Run from source](#-run-from-source).
 **Custom GPT (in ChatGPT):** open **Umbra Engineer** (instructions in [`custom_gpt/`](custom_gpt/instructions.md)) → `Scan https://github.com/expressjs/express`
 

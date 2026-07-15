@@ -3,7 +3,8 @@
 Umbra deploys as a **single service**: the Docker image builds the Next.js
 dashboard into a static bundle and the FastAPI backend serves it, so the whole
 product lives on **one URL** — no separate frontend host, no CORS to wire up.
-[`render.yaml`](../render.yaml) drives this on **Render**.
+
+**Live demo:** [umbra-712918182816.us-central1.run.app](https://umbra-712918182816.us-central1.run.app) (Google Cloud Run, demo mode).
 
 > **A public deploy runs in demo mode.** The live agents need the Codex CLI's
 > ChatGPT login, which only exists on your local machine — a cloud host cannot
@@ -13,41 +14,51 @@ product lives on **one URL** — no separate frontend host, no CORS to wire up.
 
 ---
 
-## Deploy to Render (≈5 clicks)
+## Google Cloud Run (the deployed path)
 
-1. In the [Render dashboard](https://dashboard.render.com): **New + → Blueprint**.
-2. Connect the `bkd-dotcom/umbra` repo and pick `main`. Render detects
-   [`render.yaml`](../render.yaml) and proposes the `umbra` service — **Apply**.
-3. Leave the env var as-is (`UMBRA_DEMO_MODE=true`). Render builds the Docker
-   image (Node build stage → Python serve stage); the first build takes a few
-   minutes.
-4. When it's live, note the URL, e.g. `https://umbra.onrender.com`. **That single
-   URL is your public dashboard *and* API.**
+Cloud Run runs the Docker container directly, injects `$PORT` (the Dockerfile
+already honors it), supports SSE streaming, and scales to zero. One command
+builds remotely with Cloud Build and deploys:
+
+```bash
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
+gcloud run deploy umbra \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars UMBRA_DEMO_MODE=true
+```
+
+`gcloud` prints the service URL when it finishes (a few minutes for the first
+build). Redeploy after any change by re-running the same command.
 
 **Verify:**
 
-- `https://umbra.onrender.com/` → the Umbra dashboard.
-- `https://umbra.onrender.com/api/health` → `{"status":"ok","mode":"demo","ready":true}`.
-- Click **Launch scan** / **View night shift** — the Reasoning Replay modal opens
-  with the provider ledger (`demo-cache` chips on a public deploy). The live
-  terminal streams from `/api/events` on the same origin.
-
-> Render's free tier spins the service down after inactivity, so the first
-> request after idle can take ~30–60s (cold start). Normal for a demo.
+- `<URL>/` → the Umbra dashboard.
+- `<URL>/api/health` → `{"status":"ok","mode":"demo","ready":true}`.
+- `<URL>/api/events` → `text/event-stream` (the live terminal feed).
+- Click **Launch scan** — the Reasoning Replay modal opens with the provider
+  ledger (`demo-cache` chips on a public deploy).
 
 ---
+
+## Alternative: Render
+
+[`render.yaml`](../render.yaml) defines the same single service for Render:
+**New + → Blueprint** in the [Render dashboard](https://dashboard.render.com),
+connect `bkd-dotcom/umbra` on `main`, **Apply**. Render builds the same Docker
+image and gives a `*.onrender.com` URL. (Free tier cold-starts after idle.)
 
 ## Run it locally (identical single-service image)
 
 ```bash
-# Build the same static dashboard the deploy uses, then serve everything on :8000
 cd frontend && NEXT_PUBLIC_API_URL="" npm run build && cd ..
 UMBRA_DEMO_MODE=true UMBRA_STATIC_DIR="$PWD/frontend/out" \
   uvicorn backend.main:app --port 8000
 # open http://localhost:8000
 ```
 
-Or with Docker (mirrors Render exactly):
+Or with Docker (mirrors the cloud build exactly):
 
 ```bash
 docker build -t umbra . && docker run -p 8000:8000 umbra
@@ -58,12 +69,5 @@ docker build -t umbra . && docker run -p 8000:8000 umbra
 
 ## Optional: custom domain
 
-Point a domain at the Render service under **Settings → Custom Domains**. Nothing
-else changes — the app is single-origin, so there's no frontend config to update.
-
-## Alternative: split hosting (Render + Vercel)
-
-If you'd rather host the dashboard separately on Vercel, set the frontend's
-`NEXT_PUBLIC_API_URL` to the backend URL and set `UMBRA_FRONTEND_ORIGIN` on the
-backend so CORS allows it. The single-service image above is simpler and is the
-recommended path.
+Cloud Run: **Manage Custom Domains** (or a load balancer) → map your domain.
+The app is single-origin, so there's nothing else to reconfigure.

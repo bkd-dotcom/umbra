@@ -121,18 +121,6 @@ async def list_replays() -> list[dict[str, object]]:
     return orchestrator.replays
 
 
-# --- Static dashboard (single-service deploy) -------------------------------
-# When the Next.js dashboard is built as a static export (frontend/out), serve
-# it from this same app so the whole product is one URL with no CORS. Mounted
-# LAST so every /api/* route above still matches first. Absent in dev (the
-# dashboard runs on :3000 via `npm run dev`), so this mount is simply skipped.
-_STATIC_DIR = Path(
-    os.getenv("UMBRA_STATIC_DIR", str(Path(__file__).resolve().parent.parent / "frontend" / "out"))
-)
-if _STATIC_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")
-
-
 @app.get("/api/events", tags=["streaming"])
 async def event_stream() -> StreamingResponse:
     async def generate():
@@ -143,3 +131,16 @@ async def event_stream() -> StreamingResponse:
             await asyncio.sleep(0)
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# --- Static dashboard (single-service deploy) -------------------------------
+# When the Next.js dashboard is built as a static export (frontend/out), serve
+# it from this same app so the whole product is one URL with no CORS. Mounted
+# DEAD LAST (after every /api/* route) so the greedy "/" mount never shadows an
+# API route. Absent in dev (dashboard runs on :3000 via `npm run dev`), so this
+# mount is simply skipped there.
+_STATIC_DIR = Path(
+    os.getenv("UMBRA_STATIC_DIR", str(Path(__file__).resolve().parent.parent / "frontend" / "out"))
+)
+if _STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")

@@ -11,7 +11,7 @@ function Radar() { const canvas = useRef<HTMLCanvasElement>(null); useEffect(() 
 export default function Home() {
   const [activeReplay, setActiveReplay] = useState<Replay | null>(null);
   const [events, setEvents] = useState<string[][]>(seedEvents.map(event => [...event]));
-  useEffect(() => { const source = new EventSource("http://localhost:8000/api/events"); source.addEventListener("umbra", event => { try { const incoming = JSON.parse(event.data); setEvents(current => [[String(incoming.time ?? "NOW"), String(incoming.agent ?? "UMBRA"), String(incoming.message ?? "Event received"), incoming.level === "critical" ? "critical" : "cyan"], ...current].slice(0, 5)); } catch { /* seeded demo remains visible */ } }); return () => source.close(); }, []);
+  useEffect(() => { const source = new EventSource(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/api/events`); source.addEventListener("umbra", event => { try { const incoming = JSON.parse(event.data); setEvents(current => [[String(incoming.time ?? "NOW"), String(incoming.agent ?? "UMBRA"), String(incoming.message ?? "Event received"), incoming.level === "critical" ? "critical" : "cyan"], ...current].slice(0, 5)); } catch { /* seeded demo remains visible */ } }); return () => source.close(); }, []);
   return <main>
     <div className="aurora one" /><div className="aurora two" />
     <nav><div className="brand"><span>◐</span> UMBRA</div><div className="nav-state"><em /> NIGHT SHIFT ACTIVE</div><button>Launch scan <span>↗</span></button></nav>

@@ -1,18 +1,15 @@
+# Single service: the Docker image builds the Next.js dashboard into a static
+# bundle and serves it from the FastAPI app, so the whole product is one URL
+# (no separate frontend host, no CORS wiring). Render reads this blueprint.
 services:
   - type: web
-    name: umbra-api
+    name: umbra
     runtime: docker
     plan: starter
     healthCheckPath: /api/health
     envVars:
+      # Public deploys run in demo mode: zero external calls, no keys, no cost.
+      # (The live Codex agents need a local ChatGPT login and only run on your
+      # machine — see docs/deploy.md.)
       - key: UMBRA_DEMO_MODE
         value: "true"
-      # Set this to your deployed frontend origin (e.g. https://umbra-xxx.vercel.app)
-      # after Vercel gives you the URL, then redeploy — otherwise CORS blocks the UI.
-      - key: UMBRA_FRONTEND_ORIGIN
-        sync: false
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: GITHUB_TOKEN
-        sync: false
-

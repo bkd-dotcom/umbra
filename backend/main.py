@@ -5,11 +5,13 @@ import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend.codex_client import CodexClient
@@ -117,6 +119,18 @@ async def ask_umbra_stream(repo_url: str, question: str) -> StreamingResponse:
 @app.get("/api/replays", tags=["agents"])
 async def list_replays() -> list[dict[str, object]]:
     return orchestrator.replays
+
+
+# --- Static dashboard (single-service deploy) -------------------------------
+# When the Next.js dashboard is built as a static export (frontend/out), serve
+# it from this same app so the whole product is one URL with no CORS. Mounted
+# LAST so every /api/* route above still matches first. Absent in dev (the
+# dashboard runs on :3000 via `npm run dev`), so this mount is simply skipped.
+_STATIC_DIR = Path(
+    os.getenv("UMBRA_STATIC_DIR", str(Path(__file__).resolve().parent.parent / "frontend" / "out"))
+)
+if _STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")
 
 
 @app.get("/api/events", tags=["streaming"])

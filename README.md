@@ -5,11 +5,11 @@ without prompting — hunting CVEs, reviewing PRs, tracing incidents, and killin
 tech debt — then draft pull requests you review in the morning. Codex does the
 engineering; GPT-5.6 does the reasoning; you approve the merge.
 
-## 🧑‍⚖️ Test it 3 ways (no rebuild required)
+## 🧑‍⚖️ Test it
 
-**1 — Custom GPT (in ChatGPT):** open **Umbra Engineer** → `Scan https://github.com/expressjs/express`
-**2 — Live dashboard (0 setup):** https://umbra.engineer
-**3 — Demo repo (real PRs):** https://github.com/<YOUR_GITHUB_USERNAME>/umbra-demo-target/pulls
+**Live dashboard (0 setup):** _deploying — public URL added here once live (see [docs/deploy.md](docs/deploy.md))._
+**Local, real agents (the money shot):** clone and run live mode on your own Codex login — real CVEs, real diffs, real reasoning. See [Run from source](#-run-from-source).
+**Custom GPT (in ChatGPT):** open **Umbra Engineer** (instructions in [`custom_gpt/`](custom_gpt/instructions.md)) → `Scan https://github.com/expressjs/express`
 
 ## 🤖 How Codex + GPT-5.6 are used
 - **Codex** (`codex exec`, ChatGPT login) explores a disposable checkout, edits
@@ -20,14 +20,14 @@ engineering; GPT-5.6 does the reasoning; you approve the merge.
 - **Honesty ledger:** every run labels each half with what actually served it
   (`codex-cli` / `osv.dev` / `local-git` / `responses-api` / `demo-cache` /
   `unavailable`). Reasoning is never fabricated. See [docs/live-mode.md](docs/live-mode.md).
-- Built with Codex. Codex `/feedback` session ID: `<SESSION_ID>`
+- Built with Codex. _(Add your Codex `/feedback` session ID here before submitting.)_
 
 ## 💻 Supported platforms
 macOS · Linux · Windows (Python 3.11+). Any public GitHub repository.
 
 ## 🔧 Run from source
 ```bash
-git clone https://github.com/<YOUR_GITHUB_USERNAME>/umbra
+git clone https://github.com/bkd-dotcom/umbra
 cd umbra
 pip install -e .
 uvicorn backend.main:app --reload          # API at http://localhost:8000

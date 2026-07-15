@@ -19,3 +19,22 @@ All providers, output, diff, test status, and failures are retained in the
 Reasoning Replay record. A denied model entitlement is reported as
 `reasoning: unavailable`; Umbra does not substitute a different model or fabricate
 reasoning.
+
+| Agent | Codex sandbox | Live operation |
+| --- | --- | --- |
+| Watchman | `workspace-write` | OSV advisory remediation |
+| Reviewer | `read-only` | PR-diff inspection |
+| Detective | `workspace-write` | incident fix proposal |
+| Janitor | `workspace-write` | behavior-preserving cleanup |
+| Ask Umbra | `read-only` | grounded code retrieval |
+
+Run the non-blocking entitlement and tool diagnostic before a live demo:
+
+```bash
+UMBRA_DEMO_MODE=false UMBRA_ENABLE_LIVE_REPOS=true UMBRA_ENABLE_CODEX_CLI=true \
+uv run python -m backend.preflight
+```
+
+It verifies the CLI sandbox modes, Git, all three configured GPT-5.6 tiers, and
+a disposable public clone. A model entitlement failure is reported as
+`unavailable`; it never swaps in another model.

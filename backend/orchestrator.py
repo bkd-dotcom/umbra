@@ -6,6 +6,7 @@ from collections import deque
 from typing import Any, AsyncIterator
 
 from backend.cache import load_demo_cache
+from backend.features import dependency_galaxy, kill_chain, roi_estimate
 
 
 class EventBus:
@@ -57,6 +58,10 @@ class Orchestrator:
         await self.replay_demo_events()
         response = {key: value for key, value in payload.items() if key not in {"events", "postmortem", "answer", "replays"}}
         response["agent_results"] = [result.as_dict() for result in agent_runs]
+        response["kill_chain"] = kill_chain()
+        response["dependency_galaxy"] = dependency_galaxy()
+        response["roi"] = roi_estimate(len(payload["vulnerabilities"]) + len(payload["dead_code"]))
+        response["benchmark"] = {"mode": "precomputed", "baseline_minutes": 96, "umbra_minutes": 18, "coverage": "seeded express-style repository"}
         return response
 
     async def investigate(self, repo_url: str, error_log: str) -> dict[str, Any]:

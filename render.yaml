@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: umbra-api
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    envVars:
+      - key: UMBRA_DEMO_MODE
+        value: "true"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+

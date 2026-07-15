@@ -1,0 +1,13 @@
+services:
+  api:
+    build: .
+    environment:
+      UMBRA_DEMO_MODE: "true"
+    ports:
+      - "8000:8000"
+  web:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api

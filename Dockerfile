@@ -13,6 +13,9 @@ RUN npm run build   # `output: export` writes the static site to /fe/out
 # --- Stage 2: serve the API + the built dashboard from one process ----------
 FROM python:3.11-slim
 WORKDIR /app
+# git is required for the disposable public-repo clones (cloud-scan mode).
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md ./
 COPY backend ./backend
 # [cloud] adds google-cloud-firestore for durable per-user storage.

@@ -18,7 +18,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from backend import auth
 from backend.codex_client import CodexClient
 from backend.integrations.github import parse_public_repo
-from backend.integrations.repository import live_repositories_enabled
+from backend.integrations.repository import cloud_scan_enabled, live_repositories_enabled
 from backend.orchestrator import orchestrator
 from backend.settings import cookie_secure, session_secret
 
@@ -63,16 +63,19 @@ async def health() -> dict[str, object]:
     demo_mode = os.getenv("UMBRA_DEMO_MODE", "false").lower() == "true"
     openai_configured = bool(os.getenv("OPENAI_API_KEY"))
     codex_cli_enabled = CodexClient.enabled()
-    # The Codex CLI (ChatGPT login) is a full live provider for both the
-    # engineering and reasoning halves, so readiness no longer requires an
-    # OpenAI API key. Demo mode is always ready (zero external dependencies).
-    live_ready = live_repositories_enabled() and codex_cli_enabled
+    cloud_scan = cloud_scan_enabled()
+    # The Codex CLI (ChatGPT login) is a full live provider for both halves, so
+    # readiness never requires an OpenAI key. Cloud-scan mode also counts as live:
+    # real findings (OSV / git history / git-grep) run without Codex. Demo mode is
+    # always ready (zero external dependencies).
+    live_ready = live_repositories_enabled() and (codex_cli_enabled or cloud_scan)
     return {
         "status": "ok",
         "service": "umbra",
         "mode": "demo" if demo_mode else "live",
         "openai_configured": openai_configured,
         "codex_cli_enabled": codex_cli_enabled,
+        "cloud_scan_enabled": cloud_scan,
         "ready": demo_mode or openai_configured or live_ready,
     }
 

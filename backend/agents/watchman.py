@@ -1,32 +1,134 @@
-"""Watchman: dependency exposure → threat model → reviewable patch."""
+"""Watchman: OSV scan → GPT threat analysis → Codex patch in a disposable clone."""
 from __future__ import annotations
 
+import asyncio
+import json
+import os
+from time import perf_counter
+from typing import Any
+
 from backend.agents.base import AgentResult, Replay
-from backend.codex_client import CodexClient
 from backend.cache import load_demo_cache
+from backend.codex_client import CodexClient, CodexOperation
+from backend.integrations.dependencies import discover_dependencies
+from backend.integrations.osv import OSVClient
+from backend.integrations.repository import checkout_public_repo, live_repositories_enabled
+from backend.reasoning import reason
 
 
 class Watchman:
-    def __init__(self, codex: CodexClient | None = None) -> None:
+    def __init__(self, codex: CodexClient | None = None, osv: OSVClient | None = None) -> None:
         self.codex = codex or CodexClient()
+        self.osv = osv or OSVClient()
 
     async def run(self, repo_url: str) -> AgentResult:
-        cached = load_demo_cache()
-        findings = cached["vulnerabilities"]
-        op = self.codex.propose(
-            f"Inspect {repo_url} for confirmed vulnerable dependencies. Draft the smallest version bump. Do not merge or push.",
-            ["package-lock.json"],
+        if self._live_enabled():
+            try:
+                return await self._run_live(repo_url)
+            except Exception as exc:
+                # Availability must not masquerade as a successful live scan.
+                return self._cached_result(f"Live Watchman unavailable: {exc}")
+        return self._cached_result()
+
+    @staticmethod
+    def _live_enabled() -> bool:
+        return (
+            os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true"
+            and live_repositories_enabled()
+            and CodexClient.enabled()
+            and bool(os.getenv("OPENAI_API_KEY"))
         )
+
+    async def _run_live(self, repo_url: str) -> AgentResult:
+        started = perf_counter()
+        with checkout_public_repo(repo_url) as repo_path:
+            dependencies = discover_dependencies(repo_path)
+            advisory_lists = await asyncio.gather(
+                *(self.osv.query(item["name"], item["version"], item["ecosystem"]) for item in dependencies),
+                return_exceptions=True,
+            )
+            findings = self._normalize_advisories(dependencies, advisory_lists)
+            scan_ms = int((perf_counter() - started) * 1000)
+            reasoning_started = perf_counter()
+            try:
+                analysis = await asyncio.to_thread(
+                    reason,
+                    "deep",
+                    "You are Umbra Watchman. Assess concrete OSV advisories. Explain severity, likely blast radius, attack path, OWASP mapping, and the smallest safe remediation. Do not invent facts.",
+                    json.dumps({"repository": repo_url, "dependencies_checked": dependencies, "advisories": findings}, indent=2),
+                )
+                reasoning_text, reasoning_provider = analysis.text, analysis.provider
+            except RuntimeError as exc:
+                reasoning_text, reasoning_provider = f"GPT-5.6 reasoning unavailable: {exc}", "unavailable"
+            reasoning_ms = int((perf_counter() - reasoning_started) * 1000)
+            codex_started = perf_counter()
+            try:
+                operation = self.codex.propose(
+                    "Inspect confirmed OSV advisories. If a compatible patched version exists, make the smallest dependency-only fix, run focused tests, and leave the working tree reviewable.",
+                    repo_path=repo_path,
+                )
+            except RuntimeError as exc:
+                operation = self._unavailable_codex_operation(str(exc))
+            codex_ms = int((perf_counter() - codex_started) * 1000)
+        summary = f"Live Watchman checked {len(dependencies)} manifest dependencies and found {len(findings)} OSV advisories. {reasoning_text}"
         return AgentResult(
             agent="watchman",
-            summary="Confirmed one high-severity dependency advisory and prepared a narrow, human-reviewable patch.",
+            summary=summary,
             findings=findings,
             replay=Replay(
-                agent="watchman",
-                prompt=op.prompt,
-                codex_diff=op.diff,
-                tests="Targeted dependency regression replay passed.",
-                reasoning="The dependency is exposed through a transitive parser path; the compatible patch removes the known affected range and confines blast radius to dependency resolution.",
-                timings={"codex_ms": 1840, "reasoning_ms": 926, "tests_ms": 4810},
+                agent="watchman", prompt=operation.prompt, codex_diff=operation.diff,
+                tests=operation.summary, reasoning=reasoning_text,
+                timings={"osv_ms": scan_ms, "codex_ms": codex_ms, "reasoning_ms": reasoning_ms},
+                providers={"vulnerabilities": "osv.dev", "reasoning": reasoning_provider, "engineering": operation.provider},
+            ),
+        )
+
+    @staticmethod
+    def _unavailable_codex_operation(error: str) -> CodexOperation:
+        from datetime import UTC, datetime
+
+        return CodexOperation(
+            prompt="Inspect confirmed OSV advisories.", summary=f"Codex CLI unavailable: {error}",
+            diff="", tests_passed=None, files=[], provider="unavailable",
+            created_at=datetime.now(UTC).isoformat(), error=error,
+        )
+
+    @staticmethod
+    def _normalize_advisories(dependencies: list[dict[str, str]], responses: list[Any]) -> list[dict[str, str]]:
+        findings: list[dict[str, str]] = []
+        for dependency, response in zip(dependencies, responses, strict=True):
+            if isinstance(response, Exception):
+                continue
+            for advisory in response:
+                database_specific = advisory.get("database_specific") or {}
+                severity = str(database_specific.get("severity", "unknown")).lower()
+                findings.append({
+                    "package": dependency["name"], "version": dependency["version"],
+                    "cve": advisory.get("id", "OSV-UNKNOWN"), "severity": severity,
+                    "owasp": "A06: Vulnerable and Outdated Components",
+                    "summary": advisory.get("summary") or advisory.get("details", "No OSV summary supplied.")[:500],
+                })
+        return findings
+
+    def _cached_result(self, fallback_note: str | None = None) -> AgentResult:
+        cached = load_demo_cache()
+        findings = cached["vulnerabilities"]
+        operation = (
+            self.codex.cached_fallback("Inspect dependency advisories and draft the smallest safe version bump.", ["package-lock.json"], fallback_note or "Demo mode")
+            if fallback_note
+            else self.codex.propose("Inspect dependency advisories and draft the smallest safe version bump.", ["package-lock.json"])
+        )
+        reason_note = "Demo reasoning is replayed from verified cache; no model or Codex request was made."
+        if fallback_note:
+            reason_note = f"{fallback_note}. Returning clearly labelled cached demo findings."
+        return AgentResult(
+            agent="watchman",
+            summary="Cached Watchman replay: one seeded high-severity dependency advisory.",
+            findings=findings,
+            replay=Replay(
+                agent="watchman", prompt=operation.prompt, codex_diff=operation.diff,
+                tests="Cached test replay; no live test command was run.", reasoning=reason_note,
+                timings={"codex_ms": 0, "reasoning_ms": 0, "tests_ms": 0},
+                providers={"vulnerabilities": "demo-cache", "reasoning": "demo-cache", "engineering": operation.provider},
             ),
         )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -12,6 +12,7 @@ class Replay:
     tests: str
     reasoning: str
     timings: dict[str, int]
+    providers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -23,4 +24,3 @@ class AgentResult:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
-

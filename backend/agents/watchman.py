@@ -11,7 +11,7 @@ from backend.agents.base import AgentResult, Replay
 from backend.cache import load_demo_cache
 from backend.codex_client import CodexClient, CodexOperation
 from backend.integrations.dependencies import discover_dependencies
-from backend.integrations.osv import OSVClient
+from backend.integrations.osv import OSVClient, severity_from_osv
 from backend.integrations.repository import checkout_public_repo, live_repositories_enabled
 from backend.reasoning import reason
 
@@ -100,11 +100,9 @@ class Watchman:
             if isinstance(response, Exception):
                 continue
             for advisory in response:
-                database_specific = advisory.get("database_specific") or {}
-                severity = str(database_specific.get("severity", "unknown")).lower()
                 findings.append({
                     "package": dependency["name"], "version": dependency["version"],
-                    "cve": advisory.get("id", "OSV-UNKNOWN"), "severity": severity,
+                    "cve": advisory.get("id", "OSV-UNKNOWN"), "severity": severity_from_osv(advisory),
                     "owasp": "A06: Vulnerable and Outdated Components",
                     "summary": advisory.get("summary") or advisory.get("details", "No OSV summary supplied.")[:500],
                 })

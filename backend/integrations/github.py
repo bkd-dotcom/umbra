@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 from urllib.parse import urlparse
 
+import httpx
+
 
 def parse_public_repo(repo_url: str) -> str:
     value = repo_url.strip().rstrip("/")
@@ -28,3 +30,48 @@ def recent_commits(repo_url: str, limit: int = 8) -> list[dict[str, str]]:
     repo = Github(token).get_repo(parse_public_repo(repo_url))
     return [{"sha": commit.sha[:10], "message": commit.commit.message.splitlines()[0]} for commit in repo.get_commits()[:limit]]
 
+
+def parse_pull_diff(diff: str, limit: int = 200_000) -> list[dict[str, object]]:
+    """Return changed-file metadata while bounding review input size."""
+    files: list[dict[str, object]] = []
+    current: dict[str, object] | None = None
+    for line in diff[:limit].splitlines():
+        if line.startswith("diff --git "):
+            if current:
+                files.append(current)
+            path = line.split(" b/", 1)[-1]
+            current = {"file": path, "additions": 0, "deletions": 0}
+        elif current and line.startswith("+") and not line.startswith("+++"):
+            current["additions"] = int(current["additions"]) + 1
+        elif current and line.startswith("-") and not line.startswith("---"):
+            current["deletions"] = int(current["deletions"]) + 1
+    if current:
+        files.append(current)
+    return [item for item in files if int(item["additions"]) + int(item["deletions"]) <= 1500]
+
+
+def _headers() -> dict[str, str]:
+    headers = {"Accept": "application/vnd.github.v3.diff", "User-Agent": "umbra-engineer"}
+    if token := os.getenv("GITHUB_TOKEN"):
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def fetch_pull_request(repo_url: str, pr_number: int) -> dict[str, object]:
+    owner_repo = parse_public_repo(repo_url)
+    patch = httpx.get(f"https://github.com/{owner_repo}/pull/{pr_number}.diff", headers=_headers(), timeout=20)
+    patch.raise_for_status()
+    diff = patch.text[:200_000]
+    api = httpx.get(f"https://api.github.com/repos/{owner_repo}/pulls/{pr_number}", headers=_headers(), timeout=20)
+    api.raise_for_status()
+    details = api.json()
+    return {"number": pr_number, "title": details["title"], "head_sha": details["head"]["sha"], "base_sha": details["base"]["sha"], "changed_files": parse_pull_diff(diff), "diff": diff}
+
+
+def latest_open_pull_request(repo_url: str) -> int | None:
+    owner_repo = parse_public_repo(repo_url)
+    response = httpx.get(f"https://api.github.com/repos/{owner_repo}/pulls", params={"state": "open", "sort": "updated", "direction": "desc", "per_page": 1}, headers=_headers(), timeout=20)
+    if response.status_code >= 400:
+        return None
+    pulls = response.json()
+    return int(pulls[0]["number"]) if pulls else None

@@ -48,14 +48,14 @@ class CodexClient:
     def enabled() -> bool:
         return os.getenv("UMBRA_ENABLE_CODEX_CLI", "false").lower() == "true"
 
-    def propose(self, prompt: str, files: list[str] | None = None, repo_path: Path | None = None) -> CodexOperation:
+    def propose(self, prompt: str, files: list[str] | None = None, repo_path: Path | None = None, read_only: bool = False) -> CodexOperation:
         if os.getenv("UMBRA_DEMO_MODE", "false").lower() == "true":
             return self._record(self._demo_operation(prompt, files or []))
         if not self.enabled():
             return self._record(self._disabled_operation(prompt, files or []))
         if repo_path is None or not repo_path.is_dir():
             raise RuntimeError("A checked-out repository is required when UMBRA_ENABLE_CODEX_CLI=true")
-        return self._record(self._run_cli(prompt, repo_path))
+        return self._record(self._run_cli(prompt, repo_path, read_only=read_only))
 
     def cached_fallback(self, prompt: str, files: list[str] | None = None, note: str = "") -> CodexOperation:
         """Record an honest non-live result after an integration failure."""
@@ -67,12 +67,12 @@ class CodexClient:
         )
         return self._record(operation)
 
-    def _run_cli(self, prompt: str, repo_path: Path) -> CodexOperation:
+    def _run_cli(self, prompt: str, repo_path: Path, read_only: bool = False) -> CodexOperation:
         with tempfile.TemporaryDirectory(prefix="umbra-codex-") as temp_dir:
             final_message = Path(temp_dir) / "final-message.txt"
             command = [
                 "codex", "exec", "--ephemeral", "--color", "never",
-                "--sandbox", "workspace-write", "--ask-for-approval", "never",
+                "--sandbox", "read-only" if read_only else "workspace-write", "--ask-for-approval", "never",
                 "--output-last-message", str(final_message), "-C", str(repo_path),
                 self._safe_prompt(prompt),
             ]

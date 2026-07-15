@@ -17,8 +17,8 @@ def _command(*args: str) -> dict[str, str]:
 def run_preflight(verify_clone: bool = True) -> dict[str, Any]:
     """Return diagnostics; intentionally never raises so demo deployments survive."""
     report: dict[str, Any] = {"codex": _command("codex", "--version"), "git": _command("git", "--version"), "models": {}, "clone": {"status": "skipped"}}
-    help_result = _command("codex", "exec", "--help")
-    flags = help_result["detail"]
+    help_process = subprocess.run(["codex", "exec", "--help"], text=True, capture_output=True, check=False)
+    flags = help_process.stdout + help_process.stderr
     report["codex_flags"] = {"status": "ok" if "read-only" in flags and "workspace-write" in flags else "unavailable", "detail": "read-only and workspace-write sandbox modes checked"}
     for tier in ("fast", "work", "deep"):
         try:

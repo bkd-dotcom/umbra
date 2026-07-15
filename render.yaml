@@ -7,6 +7,10 @@ services:
     envVars:
       - key: UMBRA_DEMO_MODE
         value: "true"
+      # Set this to your deployed frontend origin (e.g. https://umbra-xxx.vercel.app)
+      # after Vercel gives you the URL, then redeploy — otherwise CORS blocks the UI.
+      - key: UMBRA_FRONTEND_ORIGIN
+        sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: GITHUB_TOKEN

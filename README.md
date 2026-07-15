@@ -51,3 +51,8 @@ UMBRA_ENABLE_LIVE_REPOS=true UMBRA_ENABLE_CODEX_CLI=true UMBRA_PREFLIGHT_REASONI
 ```
 Both the engineering and reasoning halves run through the Codex CLI. See
 [docs/live-mode.md](docs/live-mode.md) for the full guide and provider ledger.
+
+## 🚀 Deploy a public URL
+
+Backend → Render, dashboard → Vercel (a public deploy runs in demo mode; live
+agents run locally). Step-by-step: [docs/deploy.md](docs/deploy.md).

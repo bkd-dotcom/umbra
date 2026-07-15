@@ -95,9 +95,7 @@ async def ask_umbra(request: AskRequest) -> dict[str, object]:
 
 @app.get("/api/replays", tags=["agents"])
 async def list_replays() -> list[dict[str, object]]:
-    from backend.orchestrator import load_demo_cache
-
-    return load_demo_cache()["replays"]
+    return orchestrator.replays
 
 
 @app.get("/api/events", tags=["streaming"])

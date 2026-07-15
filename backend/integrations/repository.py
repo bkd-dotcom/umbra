@@ -16,6 +16,13 @@ def live_repositories_enabled() -> bool:
     return os.getenv("UMBRA_ENABLE_LIVE_REPOS", "false").lower() == "true"
 
 
+def cloud_scan_enabled() -> bool:
+    """Run agents' real data pipelines (OSV / git history / git-grep) without the
+    Codex CLI. Lets the cloud demo produce real findings on a user's own repo,
+    with the Codex diff + reasoning narrative honestly labelled as unavailable."""
+    return os.getenv("UMBRA_ENABLE_CLOUD_SCAN", "false").lower() == "true"
+
+
 @contextmanager
 def checkout_public_repo(repo_url: str) -> Iterator[Path]:
     """Clone a public repo to a temporary directory without any credentialed remote."""

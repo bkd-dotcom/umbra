@@ -11,7 +11,7 @@ from backend.agents.base import AgentResult, Replay, codex_reasoning
 from backend.cache import load_demo_cache
 from backend.codex_client import CodexClient, CodexOperation
 from backend.integrations.history import recent_history
-from backend.integrations.repository import checkout_public_repo, live_repositories_enabled
+from backend.integrations.repository import checkout_public_repo, cloud_scan_enabled, live_repositories_enabled
 from backend.reasoning import reason
 
 
@@ -30,7 +30,7 @@ class Detective:
     @staticmethod
     def _live_enabled() -> bool:
         # Codex CLI (ChatGPT login) supplies both the survey and reasoning; no API key required.
-        return os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true" and live_repositories_enabled() and CodexClient.enabled()
+        return os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true" and live_repositories_enabled() and (CodexClient.enabled() or cloud_scan_enabled())
 
     async def _run_live(self, repo_url: str, error_log: str) -> AgentResult:
         with checkout_public_repo(repo_url) as repo_path:

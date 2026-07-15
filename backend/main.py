@@ -13,11 +13,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.sessions import SessionMiddleware
 
+from backend import auth
 from backend.codex_client import CodexClient
 from backend.integrations.github import parse_public_repo
 from backend.integrations.repository import live_repositories_enabled
 from backend.orchestrator import orchestrator
+from backend.settings import cookie_secure, session_secret
 
 
 @asynccontextmanager
@@ -42,6 +45,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Signed session cookie for OAuth sign-in. SameSite=Lax is required so the
+# cookie survives the provider's top-level redirect back to /auth/callback.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=session_secret(),
+    same_site="lax",
+    https_only=cookie_secure(),
+)
+# Auth + per-user routes. Registered before the static mount below so /auth/*
+# and /api/* always match ahead of the greedy "/" UI mount.
+app.include_router(auth.router)
 
 
 @app.get("/api/health", tags=["system"])

@@ -15,7 +15,8 @@ FROM python:3.11-slim
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY backend ./backend
-RUN pip install --no-cache-dir .
+# [cloud] adds google-cloud-firestore for durable per-user storage.
+RUN pip install --no-cache-dir ".[cloud]"
 COPY --from=frontend /fe/out ./frontend/out
 
 ENV PYTHONUNBUFFERED=1 \

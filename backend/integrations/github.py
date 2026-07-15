@@ -31,6 +31,31 @@ def recent_commits(repo_url: str, limit: int = 8) -> list[dict[str, str]]:
     return [{"sha": commit.sha[:10], "message": commit.commit.message.splitlines()[0]} for commit in repo.get_commits()[:limit]]
 
 
+def list_user_repos(token: str, limit: int = 50) -> list[dict[str, object]]:
+    """List the authenticated user's PUBLIC repositories (v1 is public-only).
+
+    Reuses the PyGithub pattern already present in ``recent_commits``. Private
+    repos are filtered out defensively even though we request public visibility.
+    """
+    from github import Github
+
+    user = Github(token).get_user()
+    repos: list[dict[str, object]] = []
+    for repo in user.get_repos(visibility="public", sort="updated"):
+        if repo.private:
+            continue
+        repos.append({
+            "name": repo.name,
+            "full_name": repo.full_name,
+            "url": repo.html_url,
+            "private": repo.private,
+            "stars": repo.stargazers_count,
+        })
+        if len(repos) >= limit:
+            break
+    return repos
+
+
 def parse_pull_diff(diff: str, limit: int = 200_000) -> list[dict[str, object]]:
     """Return changed-file metadata while bounding review input size."""
     files: list[dict[str, object]] = []

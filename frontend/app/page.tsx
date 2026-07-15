@@ -1,63 +1,96 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect } from "react";
+import Radar from "../components/Radar";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-const seedEvents: Array<readonly [string, string, string, string]> = [["02:14:08", "WATCHMAN", "CVE-2025-4723 found in lodash@4.17.20", "critical"], ["02:14:15", "CODEX", "Drafted package-lock.json patch · 3 tests passed", "cyan"], ["02:17:42", "DETECTIVE", "Root cause isolated to auth middleware commit a17e9", "violet"], ["02:18:03", "JANITOR", "Found 12 unused imports across 4 modules", "muted"]];
-type Replay = { id?: string; agent: string; prompt: string; codex_diff: string; tests: string; reasoning: string; timings: { codex_ms?: number; reasoning_ms?: number; tests_ms?: number }; providers?: Record<string, string> };
-// Shown only if the backend is unreachable, so the static demo still tells the story offline.
-const fallbackReplay: Replay = { agent: "WATCHMAN", prompt: "Audit package dependencies and draft the smallest safe patch.", codex_diff: "package-lock.json\nlodash 4.17.20 → patched release", tests: "Targeted dependency regression replay passed.", reasoning: "The dependency is reachable through a transitive parser path. The compatible patch narrows the blast radius to dependency resolution.", timings: { codex_ms: 1840, reasoning_ms: 926, tests_ms: 4810 } };
 
-// The honesty ledger: every provider is labelled with what actually served it — never fabricated.
-const LIVE_PROVIDERS = new Set(["codex-cli", "osv.dev", "local-git", "local-git-grep", "responses-api", "responses-api-stream"]);
-function providerTone(value: string): string { if (LIVE_PROVIDERS.has(value)) return "live"; if (value.includes("cache")) return "cache"; return "off"; }
+const GitHubIcon = () => (
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.36-3.88-1.36-.53-1.34-1.3-1.7-1.3-1.7-1.06-.72.08-.71.08-.71 1.17.08 1.79 1.2 1.79 1.2 1.04 1.79 2.73 1.27 3.4.97.1-.76.4-1.27.74-1.56-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.3-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.75.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.69 5.4-5.25 5.69.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z" /></svg>
+);
+const GoogleIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden><path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.7-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.8Z" /><path fill="#34A853" d="M12 24c3.2 0 5.9-1.1 7.9-2.9l-3.9-3c-1.1.7-2.5 1.2-4 1.2-3 0-5.6-2-6.5-4.8h-4v3c2 3.9 6 6.5 10.5 6.5Z" /><path fill="#FBBC05" d="M5.5 14.5c-.2-.7-.4-1.5-.4-2.5s.1-1.8.4-2.5v-3h-4A11.9 11.9 0 0 0 0 12c0 1.9.5 3.7 1.5 5.5l4-3Z" /><path fill="#EA4335" d="M12 4.8c1.7 0 3.2.6 4.4 1.7l3.3-3.3C17.9 1.2 15.2 0 12 0 7.5 0 3.5 2.6 1.5 6.5l4 3c.9-2.8 3.5-4.7 6.5-4.7Z" /></svg>
+);
 
-function Radar() { const canvas = useRef<HTMLCanvasElement>(null); useEffect(() => { const node = canvas.current; const ctx = node?.getContext("2d"); if (!node || !ctx) return; let frame = 0; let id = 0; const paint = () => { const s = node.clientWidth; const scale = devicePixelRatio; node.width = s * scale; node.height = s * scale; ctx.setTransform(scale, 0, 0, scale, 0, 0); const c = s / 2; ctx.clearRect(0, 0, s, s); ctx.strokeStyle = "rgba(34,211,238,.35)"; [s * .17, s * .33, s * .49].forEach(r => { ctx.beginPath(); ctx.arc(c, c, r, 0, Math.PI * 2); ctx.stroke(); }); ctx.beginPath(); ctx.moveTo(0, c); ctx.lineTo(s, c); ctx.moveTo(c, 0); ctx.lineTo(c, s); ctx.stroke(); const gradient = ctx.createConicGradient(frame * .018, c, c); gradient.addColorStop(0, "rgba(34,211,238,.37)"); gradient.addColorStop(.16, "rgba(34,211,238,0)"); gradient.addColorStop(1, "rgba(34,211,238,0)"); ctx.fillStyle = gradient; ctx.beginPath(); ctx.arc(c, c, s * .49, 0, Math.PI * 2); ctx.fill(); ([[.67, .32, "#fb7185"], [.29, .61, "#facc15"], [.69, .76, "#22d3ee"]] as const).forEach(([x, y, color]) => { ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 12; ctx.beginPath(); ctx.arc(s * x, s * y, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0; }); frame++; id = requestAnimationFrame(paint); }; paint(); return () => cancelAnimationFrame(id); }, []); return <canvas ref={canvas} className="radar-canvas" aria-label="Animated threat radar" />; }
+const crew: Array<[string, string, string, string]> = [
+  ["◉", "WATCHMAN", "Hunts CVEs in your dependencies", "#22D3EE"],
+  ["◈", "REVIEWER", "Scores risk on every pull request", "#A78BFA"],
+  ["⌁", "DETECTIVE", "Traces incidents to the root-cause commit", "#F9A8D4"],
+  ["◒", "JANITOR", "Clears dead code and quiet tech debt", "#5EEAD4"],
+  ["?", "ASK UMBRA", "Answers questions about your codebase", "#FDE68A"],
+];
 
-export default function Home() {
-  const [activeReplay, setActiveReplay] = useState<Replay | null>(null);
-  const [events, setEvents] = useState<string[][]>(seedEvents.map(event => [...event]));
-  const [replays, setReplays] = useState<Replay[]>([]);
-  const [repoUrl, setRepoUrl] = useState("https://github.com/expressjs/express");
-  const [scanning, setScanning] = useState(false);
-  const [scanStatus, setScanStatus] = useState<{ note: string; live: boolean } | null>(null);
-  const scanInput = useRef<HTMLInputElement>(null);
+const steps: Array<[string, string, string]> = [
+  ["01", "Sign in", "Continue with GitHub or Google. GitHub connects your own repositories."],
+  ["02", "Point at a repo", "Pick one of your repositories. The night crew fans out — CVEs, git history, code retrieval."],
+  ["03", "Read the report", "Every finding is grounded and labelled with what produced it. No fabricated results, ever."],
+];
 
-  // Pull whatever replays the backend already holds (seeded demo, or the last live run).
-  useEffect(() => { fetch(`${API}/api/replays`).then(response => response.ok ? response.json() : []).then((data: Replay[]) => { if (Array.isArray(data) && data.length) setReplays(data.map((replay, index) => ({ ...replay, id: replay.id ?? `${replay.agent}-${index}` }))); }).catch(() => { /* offline: fallback replay still opens */ }); }, []);
+export default function Landing() {
+  // Reveal sections as they scroll into view.
+  useEffect(() => {
+    const io = new IntersectionObserver(
+      entries => entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } }),
+      { threshold: 0.15 }
+    );
+    document.querySelectorAll(".reveal").forEach(el => io.observe(el));
+    return () => io.disconnect();
+  }, []);
 
-  useEffect(() => { const source = new EventSource(`${API}/api/events`); source.addEventListener("umbra", event => { try { const incoming = JSON.parse(event.data); setEvents(current => [[String(incoming.time ?? "NOW"), String(incoming.agent ?? "UMBRA"), String(incoming.message ?? "Event received"), incoming.level === "critical" ? "critical" : "cyan"], ...current].slice(0, 5)); } catch { /* seeded demo remains visible */ } }); return () => source.close(); }, []);
+  return (
+    <main>
+      <div className="aurora one" /><div className="aurora two" />
 
-  const launchScan = useCallback(async () => {
-    if (scanning || !repoUrl.trim()) return;
-    setScanning(true);
-    setScanStatus({ note: `Dispatching the night shift on ${repoUrl.replace(/^https?:\/\//, "")}…`, live: false });
-    try {
-      const response = await fetch(`${API}/api/scan`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repo_url: repoUrl.trim() }) });
-      if (!response.ok) throw new Error(`scan returned ${response.status}`);
-      const data = await response.json();
-      const runs: Replay[] = (data.agent_results ?? []).map((run: { agent: string; replay: Replay }) => ({ ...run.replay, id: run.agent }));
-      if (runs.length) setReplays(runs);
-      const liveAgents: string[] = data.live_agents ?? [];
-      setScanStatus({ note: liveAgents.length ? `Live run · ${data.source} · ${liveAgents.join(", ")}` : `Replay assembled · ${data.source ?? "demo-cache"}`, live: liveAgents.length > 0 });
-      // Prefer opening a run that actually reached Codex — that is the money shot.
-      const spotlight = runs.find(run => run.providers && Object.values(run.providers).includes("codex-cli")) ?? runs[0];
-      if (spotlight) setActiveReplay(spotlight);
-    } catch (error) {
-      setScanStatus({ note: `Scan unavailable: ${(error as Error).message}`, live: false });
-    } finally {
-      setScanning(false);
-    }
-  }, [repoUrl, scanning]);
+      <nav>
+        <div className="brand"><span>◐</span> UMBRA</div>
+        <a className="btn btn-google" href={`${API}/auth/login/github`} style={{ padding: "10px 16px", fontSize: 12 }}>Sign in <span style={{ color: "var(--cyan)", marginLeft: 6 }}>↗</span></a>
+      </nav>
 
-  const openReplay = useCallback((agentName: string) => { const match = replays.find(replay => replay.agent?.toUpperCase() === agentName.toUpperCase()) ?? replays[0]; setActiveReplay(match ?? { ...fallbackReplay, agent: agentName }); }, [replays]);
+      <section className="hero">
+        <div>
+          <p className="eyebrow rise">AUTONOMOUS ENGINEERING · MISSION CONTROL</p>
+          <h1 className="rise d1">Your repo never<br /><strong className="shimmer">sleeps alone.</strong></h1>
+          <p className="lede rise d2">Umbra is an autonomous AI engineering team for your GitHub repo. Sign in and the night crew hunts CVEs, traces incidents, reviews risk, and answers your codebase — then hands you the morning report.</p>
+          <div className="signin rise d3">
+            <a className="btn btn-github" href={`${API}/auth/login/github`}><GitHubIcon /> Continue with GitHub</a>
+            <a className="btn btn-google" href={`${API}/auth/login/google`}><GoogleIcon /> Continue with Google</a>
+          </div>
+          <p className="scan-note rise d4" style={{ marginTop: 18 }}>Real OAuth — GitHub unlocks live scans of your own repositories.</p>
+        </div>
+        <article className="glass radar-card rise d2" style={{ padding: 0 }}>
+          <header><div><p className="eyebrow">THREAT RADAR</p><h2 style={{ fontSize: 18 }}>Attack surface</h2></div><span className="live"><i /> LIVE</span></header>
+          <div className="radar-wrap"><Radar /><div className="radar-copy"><b>SCANNING</b><p>Dependency<br />exposure</p><small>OWASP A06</small></div></div>
+        </article>
+      </section>
 
-  return <main>
-    <div className="aurora one" /><div className="aurora two" />
-    <nav><div className="brand"><span>◐</span> UMBRA</div><div className="nav-state"><em /> NIGHT SHIFT ACTIVE</div><button onClick={launchScan} disabled={scanning}>{scanning ? "Scanning…" : "Launch scan"} <span>↗</span></button></nav>
-    <section className="hero"><div><p className="eyebrow">MISSION CONTROL / 03:17 AM</p><h1>Your repo never<br /><strong>sleeps alone.</strong></h1><p className="lede">Umbra finds vulnerabilities, traces incidents, reviews risk, and drafts the pull requests your team sees in the morning.</p><div className="actions"><button className="primary" onClick={launchScan} disabled={scanning}>{scanning ? "Running night shift…" : "View night shift"} <span>→</span></button><button className="ghost" onClick={() => scanInput.current?.focus()}>Ask Umbra <span>⌘ K</span></button></div></div><article className="score glass"><p>UMBRA SCORE <small>↗ 6 this week</small></p><div className="score-row"><strong>82</strong><span>/100<br /><b>RESILIENT</b></span></div><div className="meter"><i /></div><footer><span>Security <b>88</b></span><span>Quality <b>79</b></span><span>Velocity <b>80</b></span></footer></article></section>
-    <section className="grid"><article className="terminal glass"><header><div><p className="eyebrow">LIVE AGENT TERMINAL</p><h2>Night shift activity</h2></div><span className="live"><i /> STREAMING</span></header><div className="feed">{events.map(([time, agent, text, tone], index) => <div className="event" key={`${time}-${index}`}><time>{time}</time><b className={tone}>{agent}</b><span>{text}</span><button onClick={() => openReplay(agent)} aria-label="Open reasoning replay">↗</button></div>)}</div><footer className="scan-bar"><span className="prompt">›</span><input ref={scanInput} className="scan-input" value={repoUrl} onChange={event => setRepoUrl(event.target.value)} onKeyDown={event => { if (event.key === "Enter") launchScan(); }} placeholder="github.com/owner/repo" spellCheck={false} aria-label="Repository to scan" /><button className="scan-run" onClick={launchScan} disabled={scanning}>{scanning ? "RUNNING" : "RUN"}</button>{scanStatus && <span className={`scan-note ${scanStatus.live ? "live" : ""}`}>{scanStatus.note}</span>}</footer></article><article className="glass radar-card"><header><div><p className="eyebrow">THREAT RADAR</p><h2>Attack surface</h2></div><span className="risk">2 open risks</span></header><div className="radar-wrap"><Radar /><div className="radar-copy"><b>HIGH</b><p>Dependency<br />exposure</p><small>OWASP A06</small></div></div></article></section>
-    <section className="agents"><div><p className="eyebrow">THE NIGHT CREW</p><h2>Five specialists. One quiet shift.</h2></div><div className="agent-list">{[["◉", "WATCHMAN", "Hunts CVEs", "#22D3EE"], ["◈", "REVIEWER", "Sees risk", "#A78BFA"], ["⌁", "DETECTIVE", "Traces cause", "#F9A8D4"], ["◒", "JANITOR", "Clears debt", "#5EEAD4"], ["?", "ASK UMBRA", "Answers codebase questions", "#FDE68A"]].map(([mark, name, job, color]) => <article className="glass" key={name} onClick={() => openReplay(name)} style={{ cursor: "pointer" }}><i style={{ color }}>{mark}</i><b>{name}</b><span>{job}</span></article>)}</div></section>
-    {activeReplay && <div className="modal-backdrop" role="presentation" onClick={() => setActiveReplay(null)}><section className="replay glass" role="dialog" aria-modal="true" aria-label="Reasoning Replay" onClick={event => event.stopPropagation()}><button className="close" onClick={() => setActiveReplay(null)}>×</button><p className="eyebrow">REASONING REPLAY / {activeReplay.agent?.toUpperCase()}</p><h2>Every action, inspectable.</h2><div className="replay-step"><span>01</span><div><b>Mission prompt</b><p>{activeReplay.prompt}</p></div></div><div className="replay-step"><span>02</span><div><b>Codex draft</b><pre>{activeReplay.codex_diff || "No diff produced."}</pre></div>{activeReplay.timings.codex_ms != null && <small>{activeReplay.timings.codex_ms}ms</small>}</div><div className="replay-step"><span>03</span><div><b>Test evidence</b><p>{activeReplay.tests}</p></div>{activeReplay.timings.tests_ms != null && <small>{activeReplay.timings.tests_ms}ms</small>}</div><div className="replay-step"><span>04</span><div><b>GPT-5.6 reasoning</b><p>{activeReplay.reasoning}</p></div>{activeReplay.timings.reasoning_ms != null && <small>{activeReplay.timings.reasoning_ms}ms</small>}</div>{activeReplay.providers && Object.keys(activeReplay.providers).length > 0 && <div className="replay-step"><span>05</span><div><b>Provider ledger</b><div className="ledger">{Object.entries(activeReplay.providers).map(([role, provider]) => <span key={role} className={`chip ${providerTone(provider)}`}>{role}: {provider}</span>)}</div></div></div>}<footer>Draft only · Human review required · Never auto-merged</footer></section></div>}
-  </main>;
+      <section className="section">
+        <p className="kicker reveal">The night crew</p>
+        <h2 className="reveal">Five specialists. One quiet shift.</h2>
+        <div className="crew">
+          {crew.map(([mark, name, job, color], i) => (
+            <article className="glass reveal" key={name} style={{ transitionDelay: `${i * 60}ms` }}>
+              <i style={{ color }}>{mark}</i><b>{name}</b><p>{job}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="section">
+        <p className="kicker reveal">How it works</p>
+        <h2 className="reveal">Sign in. Point at a repo. Read the morning report.</h2>
+        <div className="steps">
+          {steps.map(([n, title, body], i) => (
+            <article className="glass step reveal" key={n} style={{ transitionDelay: `${i * 60}ms` }}>
+              <span className="n">{n}</span><h3>{title}</h3><p>{body}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <footer className="foot">
+        <div className="brand"><span>◐</span> UMBRA</div>
+        <small>The public site runs in safe demo mode; the live Codex agents run on your machine.<br />Built with Codex for OpenAI Build Week 2026.</small>
+      </footer>
+    </main>
+  );
 }

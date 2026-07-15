@@ -1,0 +1,15 @@
+{
+  "repo_url": "https://github.com/expressjs/express",
+  "umbra_score": 82,
+  "vulnerabilities": [{"package":"lodash","version":"4.17.20","cve":"CVE-2025-4723","severity":"high","owasp":"A06: Vulnerable and Outdated Components","summary":"Prototype pollution path is reachable through a transitive parser dependency."}],
+  "dead_code": [{"file":"lib/utils.js","symbol":"deprecatedNormalize","kind":"unused_function"},{"file":"lib/application.js","symbol":"legacySettings","kind":"dead_variable"}],
+  "secrets": [{"file":"test/fixtures/example.env","line":8,"kind":"test fixture token","confidence":0.22}],
+  "missing_docs_count": 4,
+  "risk_forecast": "One high-priority dependency fix is recommended before the next release.",
+  "reasoning_summary": "Watchman found one actionable dependency advisory. The proposed patch is constrained to the lockfile and has a green targeted test replay.",
+  "postmortem": {"incident":"500 errors on /api/users after yesterday's deploy","root_cause_commit":"a17e9d4c2b","confidence":0.91,"timeline":["02:03 UTC: deploy completed","02:06 UTC: error rate rose to 12%","02:14 UTC: Detective correlated the route failure with a changed auth guard"],"explanation":"A null session path reaches a new property access before the existing unauthenticated guard runs.","blast_radius":"Authenticated API routes using the shared session middleware.","suggested_fix":"Restore the guard before property access and add a regression test for a missing session.","reasoning_chain":["Stack trace points to session.user.id","Recent commit a17e9d4c2b reordered the middleware branch","The route's unauthenticated fixture reproduces the failure"]},
+  "answer": {"answer":"The request lifecycle starts in app.js, reaches the router, then applies the shared middleware before the controller. Changing the database schema would primarily affect model validation and the affected route serializers.","references":[{"file":"app.js","lines":"41-58","note":"application setup"},{"file":"lib/router/index.js","lines":"17-49","note":"route registration"}],"blast_radius":"Routes that consume the changed model fields and their API clients."},
+  "events": [{"time":"02:14:08","agent":"WATCHMAN","message":"CVE-2025-4723 found in lodash@4.17.20","level":"critical"},{"time":"02:14:15","agent":"CODEX","message":"Drafted package-lock.json patch; 3 tests passed","level":"info"},{"time":"02:17:42","agent":"DETECTIVE","message":"Root cause isolated to auth middleware commit a17e9","level":"analysis"}],
+  "replays": [{"id":"watchman-lodash","agent":"watchman","prompt":"Audit package dependencies and draft the smallest safe patch.","codex_diff":"package-lock.json: lodash 4.17.20 → patched release","tests":"npm test -- lodash regression: passed","reasoning":"The advisory is actionable, reachable through the parser dependency, and has a compatible patched release.","timings":{"codex_ms":1840,"reasoning_ms":926,"tests_ms":4810}}]
+}
+

@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from time import perf_counter
 from typing import AsyncIterator, Iterator
 
-from backend.agents.base import AgentResult, Replay
+from backend.agents.base import AgentResult, Replay, codex_reasoning
 from backend.cache import load_demo_cache
 from backend.codex_client import CodexClient, CodexOperation
 from backend.integrations.repository import checkout_public_repo, live_repositories_enabled
@@ -30,17 +30,19 @@ class AskUmbra:
 
     @staticmethod
     def _live_enabled() -> bool:
-        return os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true" and live_repositories_enabled() and CodexClient.enabled() and bool(os.getenv("OPENAI_API_KEY"))
+        # Codex CLI (ChatGPT login) supplies both retrieval-grounded answering and reasoning; no API key required.
+        return os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true" and live_repositories_enabled() and CodexClient.enabled()
 
     async def _run_live(self, repo_url: str, question: str) -> AgentResult:
         with checkout_public_repo(repo_url) as repo_path:
             context, references, operation, retrieval_ms, codex_ms = await self._prepare(repo_path, question)
             started = perf_counter()
+            developer, user = self._developer_prompt(), self._user_prompt(question, context)
             try:
-                answer = "".join(await self._collect(reason_stream("work", self._developer_prompt(), self._user_prompt(question, context))))
+                answer = "".join(await self._collect(reason_stream("work", developer, user)))
                 provider = "responses-api-stream"
             except RuntimeError as exc:
-                answer, provider = f"GPT-5.6 reasoning unavailable: {exc}", "unavailable"
+                answer, provider = await asyncio.to_thread(codex_reasoning, self.codex, developer, user, exc)
             reasoning_ms = int((perf_counter() - started) * 1000)
         return AgentResult("ask", answer, references, Replay("ask", operation.prompt, operation.diff, operation.summary, answer, {"retrieval_ms": retrieval_ms, "codex_ms": codex_ms, "reasoning_ms": reasoning_ms}, {"retrieval": "local-git-grep", "reasoning": provider, "engineering": operation.provider}))
 
@@ -49,17 +51,31 @@ class AskUmbra:
         if not self._live_enabled():
             yield "Demo Ask Umbra stream replayed from cache; no model or Codex request was made."
             return
+        developer = self._developer_prompt()
         try:
             with checkout_public_repo(repo_url) as repo_path:
                 context, _, _, _, _ = await self._prepare(repo_path, question)
-                iterator = reason_stream("work", self._developer_prompt(), self._user_prompt(question, context))
-                while True:
-                    done, chunk = await asyncio.to_thread(self._next, iterator)
-                    if done:
-                        break
-                    yield chunk
         except Exception as exc:
             yield f"Ask Umbra live stream unavailable: {exc}"
+            return
+        user = self._user_prompt(question, context)
+        iterator = reason_stream("work", developer, user)
+        streamed = False
+        try:
+            while True:
+                done, chunk = await asyncio.to_thread(self._next, iterator)
+                if done:
+                    break
+                streamed = True
+                yield chunk
+        except RuntimeError as exc:
+            if streamed:
+                yield f"\n[Ask Umbra stream interrupted: {exc}]"
+                return
+            # Responses API unavailable before any token: fall back to Codex
+            # reasoning (itself a GPT-5.6 model) delivered as a single chunk.
+            text, _ = await asyncio.to_thread(codex_reasoning, self.codex, developer, user, exc)
+            yield text
 
     async def _prepare(self, repo_path, question: str):
         retrieval_started = perf_counter()

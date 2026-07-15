@@ -7,7 +7,7 @@ import os
 from time import perf_counter
 from typing import Any
 
-from backend.agents.base import AgentResult, Replay
+from backend.agents.base import AgentResult, Replay, codex_reasoning
 from backend.cache import load_demo_cache
 from backend.codex_client import CodexClient, CodexOperation
 from backend.integrations.dependencies import discover_dependencies
@@ -32,11 +32,13 @@ class Watchman:
 
     @staticmethod
     def _live_enabled() -> bool:
+        # No OPENAI_API_KEY requirement: the Codex CLI authenticates via ChatGPT
+        # login and provides both the engineering work and the reasoning
+        # fallback, so Umbra runs live on Codex credits alone.
         return (
             os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true"
             and live_repositories_enabled()
             and CodexClient.enabled()
-            and bool(os.getenv("OPENAI_API_KEY"))
         )
 
     async def _run_live(self, repo_url: str) -> AgentResult:
@@ -50,16 +52,13 @@ class Watchman:
             findings = self._normalize_advisories(dependencies, advisory_lists)
             scan_ms = int((perf_counter() - started) * 1000)
             reasoning_started = perf_counter()
+            developer = "You are Umbra Watchman. Assess concrete OSV advisories. Explain severity, likely blast radius, attack path, OWASP mapping, and the smallest safe remediation. Do not invent facts."
+            user = json.dumps({"repository": repo_url, "dependencies_checked": dependencies, "advisories": findings}, indent=2)
             try:
-                analysis = await asyncio.to_thread(
-                    reason,
-                    "deep",
-                    "You are Umbra Watchman. Assess concrete OSV advisories. Explain severity, likely blast radius, attack path, OWASP mapping, and the smallest safe remediation. Do not invent facts.",
-                    json.dumps({"repository": repo_url, "dependencies_checked": dependencies, "advisories": findings}, indent=2),
-                )
+                analysis = await asyncio.to_thread(reason, "deep", developer, user)
                 reasoning_text, reasoning_provider = analysis.text, analysis.provider
             except RuntimeError as exc:
-                reasoning_text, reasoning_provider = f"GPT-5.6 reasoning unavailable: {exc}", "unavailable"
+                reasoning_text, reasoning_provider = await asyncio.to_thread(codex_reasoning, self.codex, developer, user, exc)
             reasoning_ms = int((perf_counter() - reasoning_started) * 1000)
             codex_started = perf_counter()
             try:

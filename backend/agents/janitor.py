@@ -5,7 +5,7 @@ import asyncio
 import os
 from time import perf_counter
 
-from backend.agents.base import AgentResult, Replay
+from backend.agents.base import AgentResult, Replay, codex_reasoning
 from backend.cache import load_demo_cache
 from backend.codex_client import CodexClient, CodexOperation
 from backend.integrations.repository import checkout_public_repo, live_repositories_enabled
@@ -26,7 +26,8 @@ class Janitor:
 
     @staticmethod
     def _live_enabled() -> bool:
-        return os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true" and live_repositories_enabled() and CodexClient.enabled() and bool(os.getenv("OPENAI_API_KEY"))
+        # Codex CLI (ChatGPT login) supplies both the cleanup and reasoning; no API key required.
+        return os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true" and live_repositories_enabled() and CodexClient.enabled()
 
     async def _run_live(self, repo_url: str) -> AgentResult:
         with checkout_public_repo(repo_url) as repo_path:
@@ -38,11 +39,13 @@ class Janitor:
             codex_ms = int((perf_counter() - codex_started) * 1000)
         findings = [{"file": path, "symbol": None, "kind": self._kind(operation.diff)} for path in operation.files]
         reasoning_started = perf_counter()
+        developer = "You are Umbra Janitor. Explain only the concrete cleanup diff and its expected behavior-preserving risk. Do not invent files or symbols."
+        user = f"Codex summary:\n{operation.summary}\nChanged files: {operation.files}\nDiff:\n{operation.diff}"
         try:
-            analysis = await asyncio.to_thread(reason, "work", "You are Umbra Janitor. Explain only the concrete cleanup diff and its expected behavior-preserving risk. Do not invent files or symbols.", f"Codex summary:\n{operation.summary}\nChanged files: {operation.files}\nDiff:\n{operation.diff}")
+            analysis = await asyncio.to_thread(reason, "work", developer, user)
             reasoning, reasoning_provider = analysis.text, analysis.provider
         except RuntimeError as exc:
-            reasoning, reasoning_provider = f"GPT-5.6 reasoning unavailable: {exc}", "unavailable"
+            reasoning, reasoning_provider = await asyncio.to_thread(codex_reasoning, self.codex, developer, user, exc)
         return AgentResult("janitor", f"Live Janitor produced {len(operation.files)} changed files.", findings, Replay("janitor", operation.prompt, operation.diff, operation.summary, reasoning, {"codex_ms": codex_ms, "reasoning_ms": int((perf_counter() - reasoning_started) * 1000)}, {"engineering": operation.provider, "reasoning": reasoning_provider}))
 
     @staticmethod

@@ -12,7 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from backend.codex_client import CodexClient
 from backend.integrations.github import parse_public_repo
+from backend.integrations.repository import live_repositories_enabled
 from backend.orchestrator import orchestrator
 
 
@@ -43,13 +45,19 @@ app.add_middleware(
 @app.get("/api/health", tags=["system"])
 async def health() -> dict[str, object]:
     demo_mode = os.getenv("UMBRA_DEMO_MODE", "false").lower() == "true"
-    configured = bool(os.getenv("OPENAI_API_KEY"))
+    openai_configured = bool(os.getenv("OPENAI_API_KEY"))
+    codex_cli_enabled = CodexClient.enabled()
+    # The Codex CLI (ChatGPT login) is a full live provider for both the
+    # engineering and reasoning halves, so readiness no longer requires an
+    # OpenAI API key. Demo mode is always ready (zero external dependencies).
+    live_ready = live_repositories_enabled() and codex_cli_enabled
     return {
         "status": "ok",
         "service": "umbra",
         "mode": "demo" if demo_mode else "live",
-        "openai_configured": configured,
-        "ready": demo_mode or configured,
+        "openai_configured": openai_configured,
+        "codex_cli_enabled": codex_cli_enabled,
+        "ready": demo_mode or openai_configured or live_ready,
     }
 
 

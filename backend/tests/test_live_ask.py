@@ -30,5 +30,26 @@ def test_live_ask_retrieves_existing_file_references(monkeypatch, tmp_path: Path
     assert result.replay.providers["reasoning"] == "responses-api-stream"
 
 
+def test_live_ask_stream_falls_back_to_codex_when_responses_denied(monkeypatch, tmp_path: Path):
+    subprocess = __import__("subprocess")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "routes.py").write_text("def route_user():\n    return 'ok'\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    @contextmanager
+    def checkout(_: str): yield tmp_path
+    class Codex:
+        def propose(self, prompt: str, repo_path: Path, read_only: bool): return CodexOperation(prompt, "surveyed routes.py", "", True, [], "codex-cli", datetime.now(UTC).isoformat())
+        def analyze(self, prompt: str): return CodexOperation(prompt, "Codex answer grounded in routes.py.", "", True, [], "codex-cli", datetime.now(UTC).isoformat())
+    def denied_stream(*_):
+        raise RuntimeError("team_model_access_denied")
+        yield ""  # makes this a generator so the error surfaces on first iteration, like the real stream
+    monkeypatch.setattr("backend.agents.ask.checkout_public_repo", checkout)
+    monkeypatch.setattr("backend.agents.ask.reason_stream", denied_stream)
+    agent = AskUmbra(Codex())
+    monkeypatch.setattr(agent, "_live_enabled", lambda: True)
+    chunks = asyncio.run(_collect(agent.stream("https://github.com/a/b", "where route")))
+    assert chunks == ["Codex answer grounded in routes.py."]
+
+
 async def _collect(stream):
     return [chunk async for chunk in stream]

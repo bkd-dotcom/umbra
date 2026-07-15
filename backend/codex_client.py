@@ -57,6 +57,22 @@ class CodexClient:
             raise RuntimeError("A checked-out repository is required when UMBRA_ENABLE_CODEX_CLI=true")
         return self._record(self._run_cli(prompt, repo_path, read_only=read_only))
 
+    def analyze(self, prompt: str) -> CodexOperation:
+        """Read-only Codex reasoning with no repository required.
+
+        The Codex CLI itself runs a GPT-5.6 model, so this is Umbra's honest
+        reasoning fallback when the Responses API is unavailable. The result is
+        always labelled ``codex-cli`` in the provider ledger; it is never
+        presented as the Responses API, and the read-only sandbox guarantees no
+        file, network, or shell side effects.
+        """
+        if os.getenv("UMBRA_DEMO_MODE", "false").lower() == "true":
+            return self._record(self._demo_operation(prompt, []))
+        if not self.enabled():
+            return self._record(self._disabled_operation(prompt, []))
+        with tempfile.TemporaryDirectory(prefix="umbra-reason-") as work_dir:
+            return self._record(self._run_cli(prompt, Path(work_dir), read_only=True, cli_prompt=self._reason_prompt(prompt)))
+
     def cached_fallback(self, prompt: str, files: list[str] | None = None, note: str = "") -> CodexOperation:
         """Record an honest non-live result after an integration failure."""
         operation = CodexOperation(
@@ -67,14 +83,19 @@ class CodexClient:
         )
         return self._record(operation)
 
-    def _run_cli(self, prompt: str, repo_path: Path, read_only: bool = False) -> CodexOperation:
+    def _run_cli(self, prompt: str, repo_path: Path, read_only: bool = False, cli_prompt: str | None = None) -> CodexOperation:
         with tempfile.TemporaryDirectory(prefix="umbra-codex-") as temp_dir:
             final_message = Path(temp_dir) / "final-message.txt"
+            # ``codex exec`` is non-interactive (approval policy is already
+            # ``never``); the removed ``--ask-for-approval`` flag is rejected by
+            # current CLI versions. ``--skip-git-repo-check`` lets read-only
+            # reasoning run in a throwaway directory that is not a Git repo.
             command = [
                 "codex", "exec", "--ephemeral", "--color", "never",
-                "--sandbox", "read-only" if read_only else "workspace-write", "--ask-for-approval", "never",
+                "--sandbox", "read-only" if read_only else "workspace-write",
+                "--skip-git-repo-check",
                 "--output-last-message", str(final_message), "-C", str(repo_path),
-                self._safe_prompt(prompt),
+                cli_prompt or self._safe_prompt(prompt),
             ]
             completed = self.runner(command, text=True, capture_output=True, timeout=900, check=False)
             diff = self._git(repo_path, ["diff", "--binary"])
@@ -111,6 +132,18 @@ Hard rules: never push, commit, create a PR, merge, approve, deploy, force-push,
 or expose a secret. You may inspect and edit only this checkout. Make the minimum
 safe change, run relevant tests, and finish with a concise explanation of changed
 files, exact tests run, and anything that prevented verification."""
+
+    @staticmethod
+    def _reason_prompt(mission: str) -> str:
+        return f"""You are Codex acting as Umbra's reasoning analyst in a read-only, empty workspace.
+Task:
+{mission}
+
+Rules: There is no repository here. Do not attempt to edit, create, run, push, or
+inspect any files. Reason only from the text supplied in the task above. Never
+invent files, line numbers, commit SHAs, CVEs, or behavior. If the supplied
+context is insufficient, say so plainly. Respond with a concise, well-structured
+analysis and nothing else."""
 
     @staticmethod
     def _demo_operation(prompt: str, files: list[str]) -> CodexOperation:

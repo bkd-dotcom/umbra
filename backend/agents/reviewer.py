@@ -6,7 +6,7 @@ import os
 from time import perf_counter
 from typing import Any
 
-from backend.agents.base import AgentResult, Replay
+from backend.agents.base import AgentResult, Replay, codex_reasoning
 from backend.cache import load_demo_cache
 from backend.codex_client import CodexClient, CodexOperation
 from backend.integrations.github import fetch_pull_request, latest_open_pull_request
@@ -32,7 +32,8 @@ class Reviewer:
 
     @staticmethod
     def _live_enabled() -> bool:
-        return os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true" and live_repositories_enabled() and CodexClient.enabled() and bool(os.getenv("OPENAI_API_KEY"))
+        # Codex CLI (ChatGPT login) supplies both review and reasoning; no API key required.
+        return os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true" and live_repositories_enabled() and CodexClient.enabled()
 
     async def _run_live(self, repo_url: str, pr_number: int) -> AgentResult:
         started = perf_counter()
@@ -59,15 +60,13 @@ class Reviewer:
                 operation = self._unavailable_operation(str(exc))
             codex_ms = int((perf_counter() - codex_started) * 1000)
         reasoning_started = perf_counter()
+        developer = "You are Umbra Reviewer. Based only on the supplied PR diff and Codex notes, give a concise blast-radius, missing-test, security, and merge-recommendation assessment. Do not invent file paths or line references."
+        user = f"Risk score: {score}/100\nChanged files: {paths}\nCodex notes: {operation.summary}\nDiff:\n{diff}"
         try:
-            analysis = await asyncio.to_thread(
-                reason, "deep",
-                "You are Umbra Reviewer. Based only on the supplied PR diff and Codex notes, give a concise blast-radius, missing-test, security, and merge-recommendation assessment. Do not invent file paths or line references.",
-                f"Risk score: {score}/100\nChanged files: {paths}\nCodex notes: {operation.summary}\nDiff:\n{diff}",
-            )
+            analysis = await asyncio.to_thread(reason, "deep", developer, user)
             reasoning, reasoning_provider = analysis.text, analysis.provider
         except RuntimeError as exc:
-            reasoning, reasoning_provider = f"GPT-5.6 reasoning unavailable: {exc}", "unavailable"
+            reasoning, reasoning_provider = await asyncio.to_thread(codex_reasoning, self.codex, developer, user, exc)
         finding = {"risk_score": score, "severity": "critical" if score >= 85 else "high" if score >= 70 else "medium" if score >= 40 else "low", "blast_radius": reasoning, "missing_tests": "Missing test coverage in changed paths" if inputs.missing_tests else "Test path changed", "recommendation": "needs discussion" if score >= 70 else "add tests first" if inputs.missing_tests else "merge after human review"}
         return AgentResult("reviewer", f"Live review of PR #{pr_number}: deterministic Risk Score {score}/100.", [finding], Replay("reviewer", operation.prompt, operation.diff, operation.summary, reasoning, {"fetch_ms": fetch_ms, "codex_ms": codex_ms, "reasoning_ms": int((perf_counter() - reasoning_started) * 1000)}, {"review": operation.provider, "reasoning": reasoning_provider, "risk": "deterministic"}))
 

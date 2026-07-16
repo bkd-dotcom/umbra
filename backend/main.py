@@ -11,7 +11,7 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
@@ -21,9 +21,10 @@ from fastapi import BackgroundTasks, Header, Request
 from backend import auth
 from backend.codex_client import CodexClient
 from backend.integrations.github import parse_public_repo
+from backend.integrations.github_app import installation_token
 from backend.integrations.repository import cloud_scan_enabled, live_repositories_enabled
 from backend.orchestrator import orchestrator
-from backend.settings import cookie_secure, founder_ids, session_secret
+from backend.settings import cookie_secure, founder_ids, frontend_origin, github_app_configured, github_app_webhook_secret, session_secret
 from backend.store import get_store
 from backend.webhooks import REVIEWABLE_ACTIONS, verify_github_signature
 
@@ -235,45 +236,82 @@ async def event_stream() -> StreamingResponse:
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-# --- Autonomy: scheduled watch + per-user PR auto-review webhook -------------
-# Auto-review is fully multi-tenant: each user enables it on their own repos and
-# every review is posted with THAT user's own OAuth token (see auth.py). There is
-# no shared service PAT — a single-tenant global webhook was removed.
-async def _run_webhook_review(repo_url: str, pr_number: int, token: str) -> None:
-    """Background PR review (clone + reason take longer than GitHub's 10s ack
-    window, so we ack immediately and do the work here). Never raises."""
+# --- Autonomy: install-once GitHub App PR auto-review -----------------------
+# One app-level webhook receives PR events for every installation (any account,
+# public or private repo). We mint a short-lived installation token from the
+# App's private key, review comment-only, and never merge. No per-repo webhooks,
+# no stored user token — the review is posted as the App itself.
+def _installation_repo_names(payload: dict) -> list[str]:
+    return [str(r.get("full_name")) for r in (payload.get("repositories") or []) if r.get("full_name")]
+
+
+async def _run_app_review(installation_id: int, repo_url: str, pr_number: int) -> None:
+    """Background PR review: mint the installation token here (off the ack path)
+    then review. Never raises — logs failures so they are visible in the logs."""
     try:
+        token = await asyncio.to_thread(installation_token, installation_id)
         await orchestrator.review_pull_request(repo_url, pr_number, token)
     except Exception:  # noqa: BLE001 - a failed review must never crash the worker
-        # Log (never raise): a swallowed error here is invisible, and a PR review
-        # that silently no-ops looks identical to "auto-review isn't working".
-        logging.getLogger("umbra.webhook").exception("PR auto-review failed for %s #%s", repo_url, pr_number)
+        logging.getLogger("umbra.webhook").exception("App PR auto-review failed for %s #%s (installation %s)", repo_url, pr_number, installation_id)
 
 
-@app.post("/api/webhooks/github/{hook_token}", tags=["webhooks"])
-async def github_webhook_per_user(hook_token: str, request: Request, background: BackgroundTasks, x_github_event: str = Header(default=""), x_hub_signature_256: str = Header(default="")) -> dict[str, object]:
-    """Multi-tenant PR auto-review: each user-enabled repo has its own opaque
-    callback path + HMAC secret, and the review is posted with THAT user's own
-    GitHub token. Comment-only; never merges. Acks fast, reviews in background."""
-    rec = get_store().get_repo_hook(hook_token)
-    if not rec:
-        raise HTTPException(status_code=404, detail="Unknown webhook.")
+@app.post("/api/github/app/webhook", tags=["webhooks"])
+async def github_app_webhook(request: Request, background: BackgroundTasks, x_github_event: str = Header(default=""), x_hub_signature_256: str = Header(default="")) -> dict[str, object]:
+    """The Umbra GitHub App's single webhook. Verifies the app-level HMAC secret,
+    tracks installations, and (on a reviewable PR event) mints an installation
+    token and posts one advisory review comment. Acks fast, reviews in background."""
+    if not github_app_configured():
+        raise HTTPException(status_code=503, detail="GitHub App is not configured on this server.")
     body = await request.body()
-    if not verify_github_signature(rec.get("secret"), body, x_hub_signature_256):
+    if not verify_github_signature(github_app_webhook_secret(), body, x_hub_signature_256):
         raise HTTPException(status_code=401, detail="Invalid or missing webhook signature.")
+    payload = json.loads(body or b"{}")
+    store = get_store()
+    installation = payload.get("installation") or {}
+    installation_id = installation.get("id")
+
+    if x_github_event == "installation":
+        account = installation.get("account") or {}
+        if payload.get("action") == "deleted":
+            if installation_id is not None:
+                store.delete_installation(int(installation_id))
+            return {"ok": True, "installation": "deleted"}
+        if installation_id is not None:
+            store.put_installation(int(installation_id), account.get("login") or "", account.get("type") or "", _installation_repo_names(payload))
+        return {"ok": True, "installation": payload.get("action")}
+
+    if x_github_event == "installation_repositories":
+        if installation_id is not None:
+            rec = store.get_installation(int(installation_id)) or {}
+            repos = set(rec.get("repos") or [])
+            repos |= {str(r.get("full_name")) for r in (payload.get("repositories_added") or []) if r.get("full_name")}
+            repos -= {str(r.get("full_name")) for r in (payload.get("repositories_removed") or []) if r.get("full_name")}
+            store.set_installation_repos(int(installation_id), sorted(repos))
+        return {"ok": True, "installation_repositories": payload.get("action")}
+
     if x_github_event != "pull_request":
         return {"ok": True, "ignored_event": x_github_event or "unknown"}
-    payload = json.loads(body or b"{}")
     if payload.get("action") not in REVIEWABLE_ACTIONS:
         return {"ok": True, "ignored_action": payload.get("action")}
     pr = payload.get("pull_request") or {}
     repo_url = (payload.get("repository") or {}).get("html_url") or ""
     number = pr.get("number")
-    token = get_store().get_github_token(rec.get("user_key"))
-    if not (repo_url and number and token):
-        return {"ok": True, "skipped": "missing repo, PR number, or the owner's GitHub connection"}
-    background.add_task(_run_webhook_review, repo_url, int(number), str(token))
+    if not (installation_id and repo_url and number):
+        return {"ok": True, "skipped": "missing installation, repo, or PR number"}
+    background.add_task(_run_app_review, int(installation_id), repo_url, int(number))
     return {"ok": True, "queued": {"pr": number}}
+
+
+@app.get("/api/github/app/setup", tags=["webhooks"], include_in_schema=False)
+async def github_app_setup(request: Request, installation_id: int | None = None, setup_action: str = "") -> RedirectResponse:
+    """GitHub's post-install redirect (Setup URL). If the browser has a signed-in
+    Umbra session, link the installation to that user so the dashboard can show
+    the repos it now auto-reviews. Then bounce back to the dashboard."""
+    if installation_id is not None:
+        user = (request.session or {}).get("user")
+        if user:
+            get_store().link_installation_user(int(installation_id), f"{user['provider']}:{user['sub']}")
+    return RedirectResponse(url=f"{frontend_origin()}/dashboard", status_code=303)
 
 
 # --- ChatGPT plugin / GPT Action surface ------------------------------------

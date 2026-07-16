@@ -88,3 +88,38 @@ def auth_configured() -> bool:
     return github_oauth() is not None or google_oauth() is not None
 
 
+# --- GitHub App (install-once PR auto-review) --------------------------------
+# The App is created by the operator in GitHub's UI; these come from Secret
+# Manager in prod. When unset, the App webhook returns 503 and the dashboard
+# hides the install button — the rest of Umbra is unaffected.
+def github_app_id() -> str | None:
+    return os.getenv("GITHUB_APP_ID") or None
+
+
+def github_app_webhook_secret() -> str | None:
+    return os.getenv("GITHUB_APP_WEBHOOK_SECRET") or None
+
+
+def github_app_slug() -> str | None:
+    return os.getenv("GITHUB_APP_SLUG") or None
+
+
+def github_app_private_key() -> str | None:
+    """The App's RSA private key (PEM). Accepts either a raw PEM or a base64
+    blob of one, so it survives env-var newline mangling on Cloud Run."""
+    raw = os.getenv("GITHUB_APP_PRIVATE_KEY")
+    if not raw:
+        return None
+    if "-----BEGIN" in raw:
+        return raw
+    try:
+        return base64.b64decode(raw).decode()
+    except Exception:  # noqa: BLE001 - not base64 either; hand back as-is
+        return raw
+
+
+def github_app_configured() -> bool:
+    """True only when the App id, private key, and webhook secret are all set."""
+    return bool(github_app_id() and github_app_private_key() and github_app_webhook_secret())
+
+

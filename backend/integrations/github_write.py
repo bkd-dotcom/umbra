@@ -54,49 +54,6 @@ def open_pull_request(
         raise RuntimeError(_scrub(str(exc))) from None
 
 
-def create_repo_webhook(repo_full_name: str, token: str, callback_url: str, secret: str) -> dict[str, object]:
-    """Register a ``pull_request`` webhook on the user's own repo, using the
-    user's OAuth token (which needs admin on the repo — the ``repo`` scope
-    covers it). HMAC-signed with ``secret``; SSL verification on. Comment-only
-    downstream — this only wires up delivery, it never merges or edits code.
-    """
-    from github import Github
-
-    def _scrub(message: str) -> str:
-        return message.replace(token, "***") if token else message
-
-    try:
-        repo = Github(token).get_repo(repo_full_name)
-        hook = repo.create_hook(
-            name="web",
-            config={"url": callback_url, "content_type": "json", "secret": secret, "insecure_ssl": "0"},
-            events=["pull_request"],
-            active=True,
-        )
-        return {"id": hook.id}
-    except Exception as exc:  # noqa: BLE001 - scrub any token before it can surface
-        raise RuntimeError(_scrub(str(exc))) from None
-
-
-def delete_repo_webhook(repo_full_name: str, token: str, hook_id: int) -> None:
-    """Remove a previously-registered webhook (best-effort — a hook already
-    deleted on GitHub is treated as success so 'disable' is idempotent)."""
-    from github import Github, GithubException
-
-    def _scrub(message: str) -> str:
-        return message.replace(token, "***") if token else message
-
-    try:
-        repo = Github(token).get_repo(repo_full_name)
-        try:
-            repo.get_hook(hook_id).delete()
-        except GithubException as exc:
-            if getattr(exc, "status", None) != 404:  # already gone → fine
-                raise
-    except Exception as exc:  # noqa: BLE001 - scrub any token before it can surface
-        raise RuntimeError(_scrub(str(exc))) from None
-
-
 def create_issue_comment(repo_full_name: str, token: str, issue_number: int, body: str) -> dict[str, object]:
     """Post a single comment on a PR/issue — used by the webhook auto-review.
 

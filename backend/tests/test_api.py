@@ -46,51 +46,13 @@ def test_ask_stream_closes_with_done(monkeypatch):
     assert "event: done" in body
 
 
-def test_repo_hook_store_roundtrip():
-    """Per-repo auto-review hook mapping round-trips, with the HMAC secret
-    encrypted at rest and only the caller's own repos listed."""
-    from backend.store import _MemoryStore
-
-    s = _MemoryStore()
-    s.put_repo_hook("t1", "github:1", "a/b", 10, "sekret")
-    assert s._hooks["t1"]["secret"] != "sekret"  # encrypted at rest
-    rec = s.get_repo_hook("t1")
-    assert rec["user_key"] == "github:1" and rec["repo"] == "a/b" and rec["hook_id"] == 10
-    assert rec["secret"] == "sekret"  # decrypted on read
-    assert s.find_repo_hook("github:1", "a/b") == {"hook_token": "t1", "hook_id": 10}
-    assert s.find_repo_hook("github:1", "x/y") is None
-    assert s.list_repo_hooks_for_user("github:1") == ["a/b"]
-    assert s.list_repo_hooks_for_user("github:2") == []
-    s.delete_repo_hook("t1")
-    assert s.get_repo_hook("t1") is None and s.list_repo_hooks_for_user("github:1") == []
-
-
-def test_per_user_webhook_unknown_bad_and_valid_signature():
-    """The per-user webhook path: unknown token → 404, bad HMAC → 401, and a
-    validly-signed ping → 200 ignored (verified against the hook's own secret)."""
-    import hashlib
-    import hmac as _hmac
-
-    from backend.store import _MemoryStore, set_store
-
-    store = _MemoryStore()
-    set_store(store)
-    try:
-        store.put_repo_hook("tok123", "github:1", "owner/repo", 55, "hooksecret")
-        assert client.post("/api/webhooks/github/nope", content=b"{}", headers={"X-GitHub-Event": "ping"}).status_code == 404
-        bad = client.post("/api/webhooks/github/tok123", content=b"{}", headers={"X-GitHub-Event": "ping", "X-Hub-Signature-256": "sha256=bad"})
-        assert bad.status_code == 401
-        body = b'{"zen":"hi"}'
-        sig = "sha256=" + _hmac.new(b"hooksecret", body, hashlib.sha256).hexdigest()
-        ok = client.post("/api/webhooks/github/tok123", content=body, headers={"X-GitHub-Event": "ping", "X-Hub-Signature-256": sig})
-        assert ok.status_code == 200 and ok.json().get("ignored_event") == "ping"
-    finally:
-        set_store(_MemoryStore())  # reset global for other tests
-
-
-def test_auto_review_endpoints_require_auth():
-    assert client.get("/api/my/auto-reviews").status_code == 401
-    assert client.post("/api/my/auto-review", json={"repo": "a/b", "enabled": True}).status_code == 401
+def test_app_endpoints_auth_and_public_config():
+    """The App install-config endpoint is public; the per-user installations
+    endpoint requires auth. (Full App-webhook + token tests are in test_github_app.py.)"""
+    info = client.get("/api/github/app")
+    assert info.status_code == 200
+    assert set(info.json()) == {"configured", "install_url"}
+    assert client.get("/api/my/app-installations").status_code == 401
 
 
 def test_ai_plugin_manifest_is_served():

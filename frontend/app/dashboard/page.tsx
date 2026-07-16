@@ -119,9 +119,8 @@ export default function Dashboard() {
   const [result, setResult] = useState<ScanResult | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   const [history, setHistory] = useState<Scan[]>([]);
-  const [autoReviews, setAutoReviews] = useState<string[]>([]);
-  const [autoReviewErr, setAutoReviewErr] = useState<string | null>(null);
-  const [autoReviewBusy, setAutoReviewBusy] = useState<string | null>(null);
+  const [appInfo, setAppInfo] = useState<{ configured: boolean; install_url: string | null } | null>(null);
+  const [appInstalls, setAppInstalls] = useState<{ installation_id: number; account_login: string; repos: string[] }[]>([]);
   const [activeReplay, setActiveReplay] = useState<Replay | null>(null);
   const [prTarget, setPrTarget] = useState<{ mode: "bump" | "codex"; vuln?: Vuln } | null>(null);
   const [keyInput, setKeyInput] = useState("");
@@ -133,31 +132,13 @@ export default function Dashboard() {
     fetch(`${API}/api/my/scans`, creds).then((r) => (r.ok ? r.json() : [])).then((d: Scan[]) => Array.isArray(d) && setHistory(d)).catch(() => {});
   }, []);
 
-  const loadAutoReviews = useCallback(() => {
-    fetch(`${API}/api/my/auto-reviews`, creds).then((r) => (r.ok ? r.json() : [])).then((d: string[]) => Array.isArray(d) && setAutoReviews(d)).catch(() => {});
+  // PR auto-review is an install-once GitHub App: the user installs it (and picks
+  // repos) in GitHub's own UI, so there is nothing to toggle here — we just show
+  // whether it's available and which repos it currently covers.
+  const loadApp = useCallback(() => {
+    fetch(`${API}/api/github/app`, creds).then((r) => (r.ok ? r.json() : null)).then((d) => d && setAppInfo(d)).catch(() => {});
+    fetch(`${API}/api/my/app-installations`, creds).then((r) => (r.ok ? r.json() : [])).then((d) => Array.isArray(d) && setAppInstalls(d)).catch(() => {});
   }, []);
-
-  // Auto-review registers/removes a REAL GitHub webhook on the user's repo, so
-  // (unlike watch) it can fail (needs repo-admin) — await, surface, and revert.
-  const toggleAutoReview = useCallback(async (fullName: string) => {
-    if (!fullName || autoReviewBusy) return;
-    const enabled = !autoReviews.includes(fullName);
-    setAutoReviewErr(null);
-    setAutoReviewBusy(fullName);
-    try {
-      const res = await fetch(`${API}/api/my/auto-review`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo: fullName, enabled }) });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setAutoReviewErr(body?.detail || `Couldn't ${enabled ? "enable" : "disable"} auto-review (${res.status}).`);
-      } else {
-        setAutoReviews((prev) => (enabled ? [...new Set([...prev, fullName])] : prev.filter((r) => r !== fullName)));
-      }
-    } catch {
-      setAutoReviewErr("Network error — please try again.");
-    } finally {
-      setAutoReviewBusy(null);
-    }
-  }, [autoReviews, autoReviewBusy]);
 
   const loadRepos = useCallback(() => {
     setRepoError(null);
@@ -180,7 +161,8 @@ export default function Dashboard() {
       .then((r) => { if (!r.ok) throw new Error("unauthenticated"); return r.json(); })
       .then((me: User) => {
         setUser(me);
-        if (me.github_connected) { loadRepos(); loadAutoReviews(); }
+        if (me.github_connected) { loadRepos(); }
+        loadApp();
         loadHistory();
       })
       .catch(() => { setUser(null); window.location.replace("/"); });
@@ -312,12 +294,9 @@ export default function Dashboard() {
             setRepoUrl={setRepoUrl}
             scanning={scanning}
             onRun={() => launchScan()}
-            autoReviews={autoReviews}
-            onToggleAutoReview={toggleAutoReview}
-            autoReviewBusy={autoReviewBusy}
-            autoReviewErr={autoReviewErr}
           />
           <ScanOptions model={model} setModel={setModel} effort={effort} setEffort={setEffort} crew={crew} setCrew={setCrew} />
+          <AutoReviewPanel appInfo={appInfo} installs={appInstalls} />
         </div>
         {scanError && <p className="mt-3 font-mono text-xs text-rose-300">Scan unavailable: {scanError}</p>}
       </section>
@@ -509,11 +488,10 @@ function AuthLoading() {
   );
 }
 
-function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery, repoUrl, setRepoUrl, scanning, onRun, autoReviews, onToggleAutoReview, autoReviewBusy, autoReviewErr }: {
+function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery, repoUrl, setRepoUrl, scanning, onRun }: {
   user: User; repos: Repo[] | null; repoError: { status: number; msg: string } | null; onRetry: () => void;
   filtered: Repo[]; query: string; setQuery: (v: string) => void;
   repoUrl: string; setRepoUrl: (v: string) => void; scanning: boolean; onRun: () => void;
-  autoReviews: string[]; onToggleAutoReview: (fullName: string) => void; autoReviewBusy: string | null; autoReviewErr: string | null;
 }) {
   const hasGitHub = !!user.github_connected;
   const [mode, setMode] = useState<"mine" | "public">(hasGitHub ? "mine" : "public");
@@ -562,10 +540,8 @@ function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery
               className="min-w-[260px] flex-1 rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-3.5 py-2.5 font-mono text-[13px] outline-none focus:border-cyan/50"
             />
             <Magnetic><StatefulButton loading={scanning} onClick={onRun}>{scanning ? "Running" : "Run scan"}</StatefulButton></Magnetic>
-            {hasGitHub && <AutoReviewToggle fullName={repoUrl ? repoFullName(repoUrl) : ""} autoReviews={autoReviews} busy={autoReviewBusy} onToggle={onToggleAutoReview} />}
           </div>
           <p className="text-[12px] text-fog">Scan any public GitHub repository — great for auditing a dependency or contributing a fix to open source.</p>
-          {autoReviewErr && <p className="font-mono text-[12px] text-rose-300">{autoReviewErr}</p>}
         </div>
       ) : !hasGitHub ? (
         <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -653,27 +629,51 @@ function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery
             </AnimatePresence>
           </div>
           <Magnetic><StatefulButton loading={scanning} onClick={onRun}>{scanning ? "Running" : "Run scan"}</StatefulButton></Magnetic>
-          <AutoReviewToggle fullName={selected?.full_name ?? (repoUrl ? repoFullName(repoUrl) : "")} autoReviews={autoReviews} busy={autoReviewBusy} onToggle={onToggleAutoReview} />
         </div>
       )}
-      {autoReviewErr && mode === "mine" && <p className="mt-3 font-mono text-[12px] text-rose-300">{autoReviewErr}</p>}
     </GlowCard>
   );
 }
 
-function AutoReviewToggle({ fullName, autoReviews, busy, onToggle }: { fullName: string; autoReviews: string[]; busy: string | null; onToggle: (fullName: string) => void }) {
-  if (!fullName) return null;
-  const on = autoReviews.includes(fullName);
-  const pending = busy === fullName;
+// Install-once PR auto-review via the Umbra GitHub App. There is no per-repo
+// toggle: the user installs the App (and picks repos) in GitHub's own UI. We
+// only render the install link and the repos it currently auto-reviews.
+function AutoReviewPanel({ appInfo, installs }: { appInfo: { configured: boolean; install_url: string | null } | null; installs: { installation_id: number; account_login: string; repos: string[] }[] }) {
+  if (!appInfo) return null;
+  const covered = installs.flatMap((i) => i.repos);
   return (
-    <button
-      onClick={() => onToggle(fullName)}
-      disabled={pending}
-      title={on ? "Auto-review is on — Umbra comments on every new PR using your GitHub connection. Click to remove the webhook." : "Auto-review PRs — Umbra registers a webhook on your repo and posts an advisory review on each new PR (never merges). Needs repo admin."}
-      className={`shrink-0 rounded-xl border px-3.5 py-2.5 font-mono text-[11px] transition-colors disabled:opacity-60 ${on ? "border-violet/50 bg-violet/10 text-violet" : "border-[color:var(--surface-border)] text-fog hover:border-violet/40 hover:text-cloud"}`}
-    >
-      {pending ? "…" : on ? "⟳ Auto-review" : "○ Auto-review"}
-    </button>
+    <div className="mt-4 rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-cloud">Autonomous PR auto-review</p>
+          <p className="mt-0.5 text-[12px] text-fog">
+            Install the Umbra GitHub App once, pick your repos, and Umbra posts an advisory review on every new PR — public or private, never merges.
+          </p>
+        </div>
+        {appInfo.configured && appInfo.install_url ? (
+          <a
+            href={appInfo.install_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0 rounded-xl border border-violet/50 bg-violet/10 px-3.5 py-2.5 text-center font-mono text-[12px] text-violet transition-colors hover:bg-violet/20"
+          >
+            {covered.length ? "Manage installation" : "Install GitHub App"}
+          </a>
+        ) : (
+          <span className="shrink-0 rounded-xl border border-[color:var(--surface-border)] px-3.5 py-2.5 font-mono text-[11px] text-fog">Coming soon</span>
+        )}
+      </div>
+      {covered.length > 0 && (
+        <div className="mt-3 border-t border-[color:var(--surface-border)] pt-3">
+          <p className="font-mono text-[11px] text-fog">Auto-reviewing {covered.length} repo{covered.length === 1 ? "" : "s"}:</p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {covered.map((r) => (
+              <span key={r} className="rounded-md border border-violet/30 bg-violet/5 px-2 py-1 font-mono text-[11px] text-violet">{r}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

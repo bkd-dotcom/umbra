@@ -21,8 +21,9 @@ Tools / Agents** (see [SUBMISSION.md](SUBMISSION.md)).
   - Build instructions: [`custom_gpt/`](custom_gpt/instructions.md) → e.g. *“Scan github.com/expressjs/express”*
 - **Autonomous ("works while you sleep"):** drop [`.github/workflows/umbra.yml`](.github/workflows/umbra.yml)
   into any repo (add an `OPENAI_API_KEY` secret) — Umbra reviews every PR and runs a nightly scan
-  that opens branch-only fix PRs. Or, on the hosted app, enable **Auto-review PRs** on your own repo —
-  Umbra registers a webhook with your GitHub connection and comments on each new PR (advisory, never merges).
+  that opens branch-only fix PRs. Or install the **Umbra GitHub App** once (any account/org, public or
+  private repos, pick your repos in GitHub's UI) — every new PR gets an advisory review comment posted by
+  the App (never merges). Setup: [docs/github-app.md](docs/github-app.md).
 
 ## 🤖 How Codex + GPT-5.6 are used
 
@@ -85,10 +86,11 @@ Copy the sample env files and fill what you need (everything is optional in demo
 - Backend: [`backend/.env.example`](backend/.env.example) · Frontend: [`frontend/.env.example`](frontend/.env.example) (`NEXT_PUBLIC_API_URL`).
 
 Autonomy / plugin extras (hosted): `UMBRA_PUBLIC_URL` (absolute base for the plugin manifest). PR
-auto-review is multi-tenant — each user enables it on their own repos from the dashboard, and Umbra
-registers the webhook and posts reviews with that user's own OAuth token (per-repo HMAC secret
-generated at enable time, stored encrypted), so no shared webhook secret or service PAT is required.
-`GITHUB_TOKEN` is optional and read-only (a zero-scope token just raises the public-read rate limit).
+auto-review is an **install-once GitHub App**: `GITHUB_APP_ID`, `GITHUB_APP_SLUG`,
+`GITHUB_APP_WEBHOOK_SECRET`, and `GITHUB_APP_PRIVATE_KEY` (PEM or base64; prod mounts it from Secret
+Manager). Reviews are posted by the App via a short-lived installation token — no per-repo webhooks and
+no stored user token. Full setup in [docs/github-app.md](docs/github-app.md). `GITHUB_TOKEN` is optional
+and read-only (a zero-scope token just raises the public-read rate limit).
 
 ## ✅ Tests
 

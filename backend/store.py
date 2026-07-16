@@ -36,7 +36,7 @@ class _MemoryStore:
         self._tokens: dict[str, str] = {}
         self._openai_keys: dict[str, str] = {}
         self._scans: dict[str, list[dict[str, Any]]] = {}
-        self._hooks: dict[str, dict[str, Any]] = {}  # hook_token -> {user_key, repo, hook_id, secret(enc)}
+        self._installations: dict[str, dict[str, Any]] = {}  # installation_id -> {account_login, account_type, repos, user_key}
         self._lock = threading.Lock()
 
     def get_or_create_user(self, key: str, profile: dict[str, Any]) -> dict[str, Any]:
@@ -81,32 +81,49 @@ class _MemoryStore:
         with self._lock:
             self._scans.pop(key, None)
 
-    # --- Per-repo auto-review webhooks (multi-tenant PR review) ---
-    def put_repo_hook(self, hook_token: str, user_key: str, repo: str, hook_id: int, secret: str) -> None:
+    # --- GitHub App installations (install-once PR auto-review) ---
+    # Keyed by installation_id (str). No secrets stored here — the App webhook
+    # secret is a single env var, verified per delivery.
+    def put_installation(self, installation_id: int, account_login: str, account_type: str, repos: list[str], user_key: str | None = None) -> None:
         with self._lock:
-            self._hooks[hook_token] = {"user_key": user_key, "repo": repo, "hook_id": hook_id, "secret": encrypt(secret)}
+            key = str(installation_id)
+            existing = self._installations.get(key, {})
+            self._installations[key] = {
+                "account_login": account_login,
+                "account_type": account_type,
+                "repos": sorted(set(repos)),
+                # keep an existing user_key link unless a new one is supplied
+                "user_key": user_key or existing.get("user_key"),
+            }
 
-    def get_repo_hook(self, hook_token: str) -> dict[str, Any] | None:
+    def get_installation(self, installation_id: int) -> dict[str, Any] | None:
         with self._lock:
-            rec = self._hooks.get(hook_token)
-            if not rec:
-                return None
-            return {**rec, "secret": _safe_decrypt(rec.get("secret"))}
+            rec = self._installations.get(str(installation_id))
+            return dict(rec) if rec else None
 
-    def delete_repo_hook(self, hook_token: str) -> None:
+    def delete_installation(self, installation_id: int) -> None:
         with self._lock:
-            self._hooks.pop(hook_token, None)
+            self._installations.pop(str(installation_id), None)
 
-    def find_repo_hook(self, user_key: str, repo: str) -> dict[str, Any] | None:
+    def set_installation_repos(self, installation_id: int, repos: list[str]) -> None:
         with self._lock:
-            for token, rec in self._hooks.items():
-                if rec.get("user_key") == user_key and rec.get("repo") == repo:
-                    return {"hook_token": token, "hook_id": rec.get("hook_id")}
-            return None
+            rec = self._installations.get(str(installation_id))
+            if rec is not None:
+                rec["repos"] = sorted(set(repos))
 
-    def list_repo_hooks_for_user(self, user_key: str) -> list[str]:
+    def link_installation_user(self, installation_id: int, user_key: str) -> None:
         with self._lock:
-            return sorted({rec["repo"] for rec in self._hooks.values() if rec.get("user_key") == user_key})
+            rec = self._installations.get(str(installation_id))
+            if rec is not None:
+                rec["user_key"] = user_key
+
+    def list_installations_for_user(self, user_key: str) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                {"installation_id": int(iid), "account_login": rec.get("account_login"), "repos": rec.get("repos", [])}
+                for iid, rec in self._installations.items()
+                if rec.get("user_key") == user_key
+            ]
 
 
 class _FirestoreStore:
@@ -174,32 +191,40 @@ class _FirestoreStore:
         if pending:
             batch.commit()
 
-    # --- Per-repo auto-review webhooks (multi-tenant PR review) ---
-    def put_repo_hook(self, hook_token: str, user_key: str, repo: str, hook_id: int, secret: str) -> None:
-        self._db.collection("repo_hooks").document(hook_token).set(
-            {"user_key": user_key, "repo": repo, "hook_id": hook_id, "secret": encrypt(secret), "created_at": _now()}
-        )
+    # --- GitHub App installations (install-once PR auto-review) ---
+    # Top-level collection keyed by installation_id; no secrets stored (the App
+    # webhook secret is a single env var, verified per delivery).
+    def _installations(self):
+        return self._db.collection("app_installations")
 
-    def get_repo_hook(self, hook_token: str) -> dict[str, Any] | None:
-        snap = self._db.collection("repo_hooks").document(hook_token).get()
-        if not snap.exists:
-            return None
-        rec = snap.to_dict() or {}
-        return {"user_key": rec.get("user_key"), "repo": rec.get("repo"), "hook_id": rec.get("hook_id"), "secret": _safe_decrypt(rec.get("secret"))}
+    def put_installation(self, installation_id: int, account_login: str, account_type: str, repos: list[str], user_key: str | None = None) -> None:
+        doc = self._installations().document(str(installation_id))
+        payload = {"account_login": account_login, "account_type": account_type, "repos": sorted(set(repos)), "updated_at": _now()}
+        if user_key is not None:
+            payload["user_key"] = user_key
+        # merge so an installation event does not clobber a user_key set at setup
+        doc.set(payload, merge=True)
 
-    def delete_repo_hook(self, hook_token: str) -> None:
-        self._db.collection("repo_hooks").document(hook_token).delete()
+    def get_installation(self, installation_id: int) -> dict[str, Any] | None:
+        snap = self._installations().document(str(installation_id)).get()
+        return (snap.to_dict() or {}) if snap.exists else None
 
-    def find_repo_hook(self, user_key: str, repo: str) -> dict[str, Any] | None:
-        query = self._db.collection("repo_hooks").where("user_key", "==", user_key).where("repo", "==", repo).limit(1)
+    def delete_installation(self, installation_id: int) -> None:
+        self._installations().document(str(installation_id)).delete()
+
+    def set_installation_repos(self, installation_id: int, repos: list[str]) -> None:
+        self._installations().document(str(installation_id)).set({"repos": sorted(set(repos)), "updated_at": _now()}, merge=True)
+
+    def link_installation_user(self, installation_id: int, user_key: str) -> None:
+        self._installations().document(str(installation_id)).set({"user_key": user_key, "updated_at": _now()}, merge=True)
+
+    def list_installations_for_user(self, user_key: str) -> list[dict[str, Any]]:
+        query = self._installations().where("user_key", "==", user_key)
+        out = []
         for doc in query.stream():
             rec = doc.to_dict() or {}
-            return {"hook_token": doc.id, "hook_id": rec.get("hook_id")}
-        return None
-
-    def list_repo_hooks_for_user(self, user_key: str) -> list[str]:
-        query = self._db.collection("repo_hooks").where("user_key", "==", user_key)
-        return sorted({(doc.to_dict() or {}).get("repo") for doc in query.stream() if (doc.to_dict() or {}).get("repo")})
+            out.append({"installation_id": int(doc.id), "account_login": rec.get("account_login"), "repos": rec.get("repos", [])})
+        return out
 
 
 _store: Any = None

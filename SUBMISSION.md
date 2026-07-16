@@ -26,8 +26,9 @@ Surfaces:
 - **Web app** — [umbra.engineer](https://umbra.engineer) (Cloud Run, single service).
 - **ChatGPT plugin / GPT Action** — public read-only actions (`scanRepo`, `investigateIncident`,
   `askUmbra`).
-- **Autonomous** — GitHub Actions night-shift (per-repo) + per-user PR auto-review (hosted): each user
-  enables it on their own repo and reviews are posted with that user's own GitHub connection.
+- **Autonomous** — GitHub Actions night-shift (per-repo) + an **install-once GitHub App** (hosted): a
+  user installs Umbra on their account/org (public or private repos) and every new PR gets an advisory
+  review comment posted by the App via a short-lived installation token — comment-only, never merges.
 
 ## How Codex + GPT-5.6 were used (technical implementation)
 - Live engineering: [`backend/codex_client.py`](backend/codex_client.py) — `codex exec --ephemeral -m <model>

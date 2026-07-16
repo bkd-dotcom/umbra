@@ -78,18 +78,25 @@ def test_open_fix_pr_bump_requires_a_fix_version(monkeypatch, tmp_path):
         asyncio.run(orchestrator.open_fix_pr("https://github.com/a/b", "tok", "bump", "lodash", "4.17.20", None))
 
 
-def test_create_repo_webhook_sends_pull_request_event_and_secret(monkeypatch):
+def test_create_issue_comment_posts_via_token(monkeypatch):
+    """The webhook auto-review's only write: one advisory PR comment (comment-only)."""
     import github as pygithub
 
     captured: dict = {}
 
-    class FakeHook:
-        id = 4242
+    class FakeComment:
+        html_url = "https://github.com/a/b/pull/7#issuecomment-1"
+        id = 99
+
+    class FakeIssue:
+        def create_comment(self, body):
+            captured["body"] = body
+            return FakeComment()
 
     class FakeRepo:
-        def create_hook(self, name, config, events, active):
-            captured.update(name=name, config=config, events=events, active=active)
-            return FakeHook()
+        def get_issue(self, number):
+            captured["number"] = number
+            return FakeIssue()
 
     class FakeGithub:
         def __init__(self, _token):
@@ -99,38 +106,8 @@ def test_create_repo_webhook_sends_pull_request_event_and_secret(monkeypatch):
             return FakeRepo()
 
     monkeypatch.setattr(pygithub, "Github", FakeGithub)
-    from backend.integrations.github_write import create_repo_webhook
+    from backend.integrations.github_write import create_issue_comment
 
-    out = create_repo_webhook("a/b", "tok", "https://x.example/api/webhooks/github/t1", "sekret")
-    assert out["id"] == 4242
-    assert captured["events"] == ["pull_request"]
-    assert captured["config"]["secret"] == "sekret"
-    assert captured["config"]["url"].endswith("/t1")
-    assert captured["config"]["insecure_ssl"] == "0" and captured["active"] is True
-
-
-def test_delete_repo_webhook_calls_delete(monkeypatch):
-    import github as pygithub
-
-    calls = {"deleted": False}
-
-    class FakeHook:
-        def delete(self):
-            calls["deleted"] = True
-
-    class FakeRepo:
-        def get_hook(self, _id):
-            return FakeHook()
-
-    class FakeGithub:
-        def __init__(self, _token):
-            pass
-
-        def get_repo(self, _full_name):
-            return FakeRepo()
-
-    monkeypatch.setattr(pygithub, "Github", FakeGithub)
-    from backend.integrations.github_write import delete_repo_webhook
-
-    delete_repo_webhook("a/b", "tok", 4242)
-    assert calls["deleted"] is True
+    out = create_issue_comment("a/b", "tok", 7, "🌑 Umbra Review")
+    assert out == {"url": "https://github.com/a/b/pull/7#issuecomment-1", "id": 99}
+    assert captured == {"number": 7, "body": "🌑 Umbra Review"}

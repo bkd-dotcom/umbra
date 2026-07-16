@@ -8,9 +8,6 @@ store (backend/store.py), never in the cookie.
 from __future__ import annotations
 
 import asyncio
-import os
-import re
-import secrets as _secrets
 from typing import Any
 
 from authlib.integrations.starlette_client import OAuth
@@ -19,11 +16,9 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from backend.integrations.github import list_user_repos
-from backend.integrations.github_write import create_repo_webhook, delete_repo_webhook
-from backend.settings import founder_ids, frontend_origin, github_oauth, google_oauth, oauth_redirect_base
+from backend.integrations.github_app import install_url
+from backend.settings import founder_ids, frontend_origin, github_app_configured, github_oauth, google_oauth, oauth_redirect_base
 from backend.store import get_store
-
-_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 router = APIRouter()
 
@@ -269,59 +264,16 @@ async def clear_my_scans(request: Request):
     return {"ok": True}
 
 
-class AutoReviewBody(BaseModel):
-    repo: str = Field(min_length=3, max_length=200, description="owner/name of a repo the user administers")
-    enabled: bool = True
+@router.get("/api/github/app")
+async def github_app_info():
+    """Public: whether the Umbra GitHub App is configured on this server and where
+    to install it. Lets the dashboard render (or hide) the install button."""
+    return {"configured": github_app_configured(), "install_url": install_url()}
 
 
-def _public_base(request: Request) -> str:
-    """Absolute base URL for the webhook callback — pinned via UMBRA_PUBLIC_URL in
-    prod, else derived from the request (local dev)."""
-    return (os.getenv("UMBRA_PUBLIC_URL") or str(request.base_url)).rstrip("/")
-
-
-@router.get("/api/my/auto-reviews")
-async def my_auto_reviews(request: Request):
-    """Repos the signed-in user has PR auto-review enabled on (repo names only)."""
+@router.get("/api/my/app-installations")
+async def my_app_installations(request: Request):
+    """Installations the signed-in user has linked (via the App setup redirect),
+    with the repos each one auto-reviews. Only ever the caller's own records."""
     user = get_current_user(request)
-    return get_store().list_repo_hooks_for_user(_user_key(user))
-
-
-@router.post("/api/my/auto-review")
-async def set_auto_review(request: Request, body: AutoReviewBody):
-    """Enable/disable PR auto-review on ONE of the caller's own repos by
-    registering (or removing) a GitHub webhook with the user's OWN token. The
-    webhook posts advisory review comments only — it never merges. Each repo gets
-    its own opaque callback path + HMAC secret (stored encrypted)."""
-    user = get_current_user(request)
-    key = _user_key(user)
-    store = get_store()
-    token = store.get_github_token(key)
-    if not token:
-        raise HTTPException(status_code=400, detail="Connect GitHub (with repo access) to enable auto-review.")
-    repo = body.repo.strip().removeprefix("https://github.com/").strip("/")
-    if not _REPO_RE.match(repo):
-        raise HTTPException(status_code=422, detail="Expected a repository as 'owner/name'.")
-
-    existing = store.find_repo_hook(key, repo)
-    if body.enabled:
-        if existing:
-            return {"ok": True, "repo": repo, "enabled": True}  # idempotent
-        hook_token = _secrets.token_urlsafe(24)
-        secret = _secrets.token_hex(32)
-        callback = f"{_public_base(request)}/api/webhooks/github/{hook_token}"
-        try:
-            result = await asyncio.to_thread(create_repo_webhook, repo, str(token), callback, secret)
-        except Exception as exc:  # noqa: BLE001 - message is already token-scrubbed
-            raise HTTPException(status_code=403, detail=f"Couldn't enable auto-review on {repo} — you need admin access on the repo and a current GitHub connection. ({exc})") from None
-        store.put_repo_hook(hook_token, key, repo, int(result["id"]), secret)
-        return {"ok": True, "repo": repo, "enabled": True}
-
-    # disable: remove the GitHub hook (best-effort) then forget the mapping
-    if existing:
-        try:
-            await asyncio.to_thread(delete_repo_webhook, repo, str(token), int(existing["hook_id"]))
-        except Exception:  # noqa: BLE001 - leave no orphaned mapping even if the API call fails
-            pass
-        store.delete_repo_hook(existing["hook_token"])
-    return {"ok": True, "repo": repo, "enabled": False}
+    return get_store().list_installations_for_user(_user_key(user))

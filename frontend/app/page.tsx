@@ -4,6 +4,10 @@ import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import Radar from "@/components/Radar";
 import { Aurora } from "@/components/ui/aurora-background";
+import { BackgroundBeams } from "@/components/ui/background-beams";
+import { Spotlight } from "@/components/ui/spotlight";
+import { DitherImage } from "@/components/ui/dither-image";
+import { Magnetic } from "@/components/ui/magnetic-button";
 import { Meteors } from "@/components/ui/meteors";
 import { TextGenerate } from "@/components/ui/text-generate";
 import { FlipWords } from "@/components/ui/flip-words";
@@ -47,11 +51,13 @@ export default function Landing() {
 
   return (
     <main className="relative mx-auto min-h-screen w-full max-w-[1240px] px-6 md:px-10">
-      {/* Landing signature background: an expressive, slowly-drifting Aurora over
-          the shared base gradient. Fixed + behind content; the global
-          reduced-motion rule freezes the drift for accessibility. */}
+      {/* Landing signature backdrop (bold): Aceternity Background Beams + Spotlight
+          layered over the drifting Aurora and the shared base gradient. Fixed and
+          behind content; every layer is reduced-motion aware. */}
       <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden" aria-hidden>
-        <Aurora intensity={0.55} />
+        <Aurora intensity={0.62} />
+        <BackgroundBeams className="opacity-70" />
+        <Spotlight className="left-0 top-[-30%] md:left-[20%] md:top-[-20%]" fill="#22d3ee" />
       </div>
       <SignInDialog open={signIn} onClose={() => setSignIn(false)} api={API} />
 
@@ -90,9 +96,11 @@ export default function Landing() {
             traces incidents, reviews risk, and answers your codebase — then hands you the morning report.
           </motion.p>
           <motion.div variants={fadeUp} initial="hidden" animate="show" transition={{ delay: 0.65 }} className="mt-9 flex flex-wrap items-center gap-4">
-            <HoverBorderGradient onClick={() => setSignIn(true)} className="px-6 py-3.5 text-sm font-semibold">
-              Start the night shift
-            </HoverBorderGradient>
+            <Magnetic>
+              <HoverBorderGradient onClick={() => setSignIn(true)} className="px-6 py-3.5 text-sm font-semibold">
+                Start the night shift
+              </HoverBorderGradient>
+            </Magnetic>
             <a href="#crew" className="text-sm text-fog transition-colors hover:text-cloud">See the crew ↓</a>
           </motion.div>
           <p className="mt-5 font-mono text-[11px] text-fog/80">Real OAuth — GitHub unlocks live scans of your own repositories.</p>
@@ -216,7 +224,7 @@ function FounderCard() {
       className="transition-transform duration-200 ease-out"
     >
       <GlowCard glow="rgba(34,211,238,0.28)" className="p-8 text-center">
-        <div className="mx-auto grid h-20 w-20 place-items-center rounded-full bg-gradient-to-br from-violet/40 to-cyan/40 font-serif text-3xl">BD</div>
+        <DitherImage src="/founder.jpg" rounded pixelSize={3} className="mx-auto h-24 w-24 border border-[color:var(--surface-border)] shadow-[0_0_28px_-8px_var(--color-cyan)]" />
         <div className="mt-5 font-serif text-2xl">Binay Dalai</div>
         <div className="mt-1 font-mono text-[11px] uppercase tracking-[0.18em] text-cyan">Founder</div>
         <p className="mx-auto mt-4 max-w-[34ch] text-[13px] leading-relaxed text-fog">

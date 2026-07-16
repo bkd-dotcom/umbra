@@ -7,6 +7,11 @@ import { GlowCard } from "@/components/ui/glow-card";
 import { MovingBorderCard } from "@/components/ui/moving-border";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
 import { StatefulButton } from "@/components/ui/stateful-button";
+import { BackgroundBeams } from "@/components/ui/background-beams";
+import { Spotlight } from "@/components/ui/spotlight";
+import { DitherImage } from "@/components/ui/dither-image";
+import { Magnetic } from "@/components/ui/magnetic-button";
+import { SegmentedTabs } from "@/components/ui/tabs";
 import { ScoreDial } from "@/components/ui/score-dial";
 import { SeverityChip } from "@/components/ui/severity-chip";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -204,9 +209,15 @@ export default function Dashboard() {
 
   return (
     <main className="relative mx-auto min-h-screen w-full max-w-[1240px] px-6 pb-24 md:px-10">
-      {/* Dashboard's distinct background: a calm, slowly-drifting dot grid (vs the
-          landing's aurora) — subtle enough never to compete with the data. */}
-      <div className="pointer-events-none fixed inset-0 -z-10 dot-bg-drift opacity-[0.13]" />
+      {/* Dashboard backdrop (bold but readable): Aceternity Background Beams +
+          a violet Spotlight layered over the slowly-drifting dot grid. Behind
+          content, pointer-events-none, and reduced-motion aware; the glassy cards
+          keep the data legible on top. */}
+      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden" aria-hidden>
+        <div className="absolute inset-0 dot-bg-drift opacity-[0.13]" />
+        <BackgroundBeams className="opacity-50" />
+        <Spotlight className="left-0 top-[-30%] md:left-[30%] md:top-[-25%]" fill="#a78bfa" />
+      </div>
 
       {/* Header */}
       <header className="sticky top-0 z-30 -mx-6 mb-2 flex items-center justify-between gap-4 bg-ink/85 px-6 py-4 backdrop-blur-md md:-mx-10 md:px-10">
@@ -214,7 +225,7 @@ export default function Dashboard() {
         <div className="flex items-center gap-3">
           <LocalWeather />
           {user.is_founder && <span className="hidden rounded-full border border-violet/40 bg-violet/10 px-2.5 py-1 font-mono text-[10px] text-violet sm:inline">FOUNDER · LIVE CODEX</span>}
-          {user.avatar ? <img src={user.avatar} alt="" className="h-9 w-9 rounded-full border border-[color:var(--surface-border)] object-cover" /> : <div className="h-9 w-9 rounded-full bg-white/10" />}
+          <DitherImage src={user.avatar || "/founder.jpg"} rounded pixelSize={2} className="h-9 w-9 border border-[color:var(--surface-border)]" />
           <div className="hidden sm:block">
             <div className="text-sm font-semibold leading-tight">{user.name || user.login}</div>
             <div className="text-[11px] text-fog">{user.email || user.provider}</div>
@@ -462,10 +473,13 @@ function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery
     <GlowCard className="relative z-30 overflow-visible p-5">
       {/* Mode tabs: browse your own repos, or scan any public repo (works for
           Google-only users and even if repo listing is unavailable). */}
-      <div className="mb-4 inline-flex rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] p-0.5 text-[12px]">
-        <TabBtn active={mode === "mine"} onClick={() => setMode("mine")}>My repositories</TabBtn>
-        <TabBtn active={mode === "public"} onClick={() => setMode("public")}>Public repo</TabBtn>
-      </div>
+      <SegmentedTabs
+        className="mb-4"
+        layoutId="repo-mode"
+        value={mode}
+        onChange={setMode}
+        options={[{ value: "mine", label: "My repositories" }, { value: "public", label: "Public repo" }]}
+      />
 
       {mode === "public" ? (
         <div className="flex flex-col gap-2">
@@ -479,7 +493,7 @@ function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery
               autoFocus
               className="min-w-[260px] flex-1 rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-3.5 py-2.5 font-mono text-[13px] outline-none focus:border-cyan/50"
             />
-            <StatefulButton loading={scanning} onClick={onRun}>{scanning ? "Running" : "Run scan"}</StatefulButton>
+            <Magnetic><StatefulButton loading={scanning} onClick={onRun}>{scanning ? "Running" : "Run scan"}</StatefulButton></Magnetic>
           </div>
           <p className="text-[12px] text-fog">Scan any public GitHub repository — great for auditing a dependency or contributing a fix to open source.</p>
         </div>
@@ -575,17 +589,11 @@ function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery
   );
 }
 
-function TabBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button onClick={onClick} className={`rounded-md px-3 py-1.5 font-mono transition-colors ${active ? "bg-cyan/15 text-cyan" : "text-fog hover:text-cloud"}`}>{children}</button>
-  );
-}
-
 function OptionGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center gap-2">
       <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fog">{label}</span>
-      <div className="inline-flex rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] p-0.5 text-[12px]">{children}</div>
+      {children}
     </div>
   );
 }
@@ -600,14 +608,13 @@ function ScanOptions({ model, setModel, effort, setEffort, crew, setCrew }: {
     <div className="mt-3 flex flex-col gap-3 rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-4 py-3.5">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
         <OptionGroup label="Model">
-          {MODELS.map((m) => <TabBtn key={m.id} active={model === m.id} onClick={() => setModel(m.id)}>{m.label}</TabBtn>)}
+          <SegmentedTabs layoutId="opt-model" value={model} onChange={setModel} options={MODELS.map((m) => ({ value: m.id, label: m.label }))} />
         </OptionGroup>
         <OptionGroup label="Reasoning">
-          {EFFORTS.map((e) => <TabBtn key={e} active={effort === e} onClick={() => setEffort(e)}>{e[0].toUpperCase() + e.slice(1)}</TabBtn>)}
+          <SegmentedTabs layoutId="opt-effort" value={effort} onChange={setEffort} options={EFFORTS.map((e) => ({ value: e, label: e[0].toUpperCase() + e.slice(1) }))} />
         </OptionGroup>
         <OptionGroup label="Crew">
-          <TabBtn active={crew === "quick"} onClick={() => setCrew("quick")}>Quick · 1</TabBtn>
-          <TabBtn active={crew === "full"} onClick={() => setCrew("full")}>Full · 3</TabBtn>
+          <SegmentedTabs layoutId="opt-crew" value={crew} onChange={setCrew} options={[{ value: "quick", label: "Quick · 1" }, { value: "full", label: "Full · 3" }]} />
         </OptionGroup>
       </div>
       <p className={`font-mono text-[11px] ${eta.warn ? "text-amber" : "text-fog"}`}>

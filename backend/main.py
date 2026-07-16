@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -244,7 +245,9 @@ async def _run_webhook_review(repo_url: str, pr_number: int, token: str) -> None
     try:
         await orchestrator.review_pull_request(repo_url, pr_number, token)
     except Exception:  # noqa: BLE001 - a failed review must never crash the worker
-        pass
+        # Log (never raise): a swallowed error here is invisible, and a PR review
+        # that silently no-ops looks identical to "auto-review isn't working".
+        logging.getLogger("umbra.webhook").exception("PR auto-review failed for %s #%s", repo_url, pr_number)
 
 
 @app.post("/api/webhooks/github/{hook_token}", tags=["webhooks"])

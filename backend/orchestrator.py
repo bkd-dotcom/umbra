@@ -150,7 +150,10 @@ class Orchestrator:
         from backend.integrations.github_write import create_issue_comment
         from backend.webhooks import format_review_comment
 
-        result = await Reviewer().run(repo_url, pr_number=pr_number, allow_codex=False)
+        # Pass the owner's token so the Reviewer can read the PR diff and clone the
+        # repo even when it is private (allow_codex=False keeps it comment-only, so
+        # the token never reaches the Codex child process).
+        result = await Reviewer().run(repo_url, pr_number=pr_number, github_token=token, allow_codex=False)
         finding = result.findings[0] if result.findings else {}
         owner_repo = parse_public_repo(repo_url)
         posted = await asyncio.to_thread(create_issue_comment, owner_repo, token, pr_number, format_review_comment(finding, pr_number))

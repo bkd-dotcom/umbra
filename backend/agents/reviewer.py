@@ -22,7 +22,7 @@ class Reviewer:
     async def run(self, repo_url: str, diff: str = "", pr_number: int | None = None, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> AgentResult:
         if self._live_enabled():
             try:
-                number = pr_number or await asyncio.to_thread(latest_open_pull_request, repo_url)
+                number = pr_number or await asyncio.to_thread(latest_open_pull_request, repo_url, github_token)
                 if number is None:
                     return self._cached_result("No open pull request was available for live review.")
                 return await self._run_live(repo_url, number, github_token, openai_key, allow_codex)
@@ -37,7 +37,7 @@ class Reviewer:
 
     async def _run_live(self, repo_url: str, pr_number: int, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> AgentResult:
         started = perf_counter()
-        pull = await asyncio.to_thread(fetch_pull_request, repo_url, pr_number)
+        pull = await asyncio.to_thread(fetch_pull_request, repo_url, pr_number, github_token)
         changed_files: list[dict[str, Any]] = pull["changed_files"]
         diff = str(pull["diff"])
         paths = [str(item["file"]) for item in changed_files]

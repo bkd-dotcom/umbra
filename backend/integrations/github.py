@@ -89,30 +89,39 @@ def parse_pull_diff(diff: str, limit: int = 200_000) -> list[dict[str, object]]:
     return [item for item in files if int(item["additions"]) + int(item["deletions"]) <= 1500]
 
 
-def _headers() -> dict[str, str]:
-    headers = {"Accept": "application/vnd.github.v3.diff", "User-Agent": "umbra-engineer"}
-    if token := os.getenv("GITHUB_TOKEN"):
-        headers["Authorization"] = f"Bearer {token}"
+_JSON_ACCEPT = "application/vnd.github+json"
+_DIFF_ACCEPT = "application/vnd.github.v3.diff"
+
+
+def _headers(token: str | None = None, accept: str = _JSON_ACCEPT) -> dict[str, str]:
+    # Prefer an explicit per-request token (the repo owner's OAuth token, for
+    # private-repo auto-review) and fall back to the ambient read-only GITHUB_TOKEN.
+    headers = {"Accept": accept, "User-Agent": "umbra-engineer"}
+    if tok := (token or os.getenv("GITHUB_TOKEN")):
+        headers["Authorization"] = f"Bearer {tok}"
     return headers
 
 
-def fetch_pull_request(repo_url: str, pr_number: int) -> dict[str, object]:
+def fetch_pull_request(repo_url: str, pr_number: int, token: str | None = None) -> dict[str, object]:
     owner_repo = parse_public_repo(repo_url)
-    # ``github.com/<repo>/pull/N.diff`` 302-redirects to patch-diff.githubusercontent.com;
-    # httpx does not follow redirects by default (unlike requests), so raise_for_status()
-    # would throw on the 302 and the whole review would fail. Follow it explicitly.
-    patch = httpx.get(f"https://github.com/{owner_repo}/pull/{pr_number}.diff", headers=_headers(), timeout=20, follow_redirects=True)
+    # Fetch BOTH the diff and the metadata from the api.github.com endpoint (with
+    # the appropriate Accept per call): the JSON endpoint honours the diff media
+    # type, and — unlike the github.com/<repo>/pull/N.diff URL, which 302s to a
+    # different host and drops the Authorization header — it keeps the token on
+    # the same host, so private-repo diffs work with the owner's token.
+    api_url = f"https://api.github.com/repos/{owner_repo}/pulls/{pr_number}"
+    patch = httpx.get(api_url, headers=_headers(token, _DIFF_ACCEPT), timeout=20, follow_redirects=True)
     patch.raise_for_status()
     diff = patch.text[:200_000]
-    api = httpx.get(f"https://api.github.com/repos/{owner_repo}/pulls/{pr_number}", headers=_headers(), timeout=20, follow_redirects=True)
+    api = httpx.get(api_url, headers=_headers(token), timeout=20, follow_redirects=True)
     api.raise_for_status()
     details = api.json()
     return {"number": pr_number, "title": details["title"], "head_sha": details["head"]["sha"], "base_sha": details["base"]["sha"], "changed_files": parse_pull_diff(diff), "diff": diff}
 
 
-def latest_open_pull_request(repo_url: str) -> int | None:
+def latest_open_pull_request(repo_url: str, token: str | None = None) -> int | None:
     owner_repo = parse_public_repo(repo_url)
-    response = httpx.get(f"https://api.github.com/repos/{owner_repo}/pulls", params={"state": "open", "sort": "updated", "direction": "desc", "per_page": 1}, headers=_headers(), timeout=20, follow_redirects=True)
+    response = httpx.get(f"https://api.github.com/repos/{owner_repo}/pulls", params={"state": "open", "sort": "updated", "direction": "desc", "per_page": 1}, headers=_headers(token), timeout=20, follow_redirects=True)
     if response.status_code >= 400:
         return None
     pulls = response.json()

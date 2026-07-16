@@ -198,28 +198,39 @@ def test_checkout_defaults_to_depth_one_and_honors_env(monkeypatch):
     assert seen[-1][seen[-1].index("--depth") + 1] == "20"
 
 
-def test_fetch_pull_request_follows_redirects(monkeypatch):
-    # github.com/<repo>/pull/N.diff 302-redirects; every external GET must follow it.
+def test_fetch_pull_request_uses_api_endpoint_with_correct_accept_and_token(monkeypatch):
+    """Both the diff and the metadata are fetched from api.github.com (same host,
+    so the Authorization survives — the github.com/<repo>/pull/N.diff URL 302s to
+    a different host and drops the token), each with the right Accept, and the
+    owner's token is sent as a Bearer. Regression: the metadata call once reused
+    the *diff* Accept, so GitHub returned a diff and `.json()` raised, making EVERY
+    webhook review silently fall back to a cached comment (public and private)."""
     import backend.integrations.github as gh
 
-    seen: list[object] = []
+    calls: list[tuple[str, str, str, object]] = []  # url, accept, authorization, follow_redirects
 
     class _Resp:
         def __init__(self, text: str = "", data: dict | None = None) -> None:
             self.text = text
-            self._data = data or {}
-        def raise_for_status(self) -> None:  # 302 would have thrown here before the fix
+            self._data = data
+        def raise_for_status(self) -> None:
             return None
         def json(self) -> dict:
+            if self._data is None:  # mimic GitHub returning a diff (not JSON) to .json()
+                raise ValueError("Expecting value")
             return self._data
 
     def fake_get(url: str, **kwargs):
-        seen.append(kwargs.get("follow_redirects"))
-        if url.endswith(".diff"):
+        headers = kwargs.get("headers", {})
+        calls.append((url, headers.get("Accept", ""), headers.get("Authorization", ""), kwargs.get("follow_redirects")))
+        if headers.get("Accept") == gh._DIFF_ACCEPT:
             return _Resp(text="diff --git a/a.py b/a.py\n+x\n")
         return _Resp(data={"title": "t", "head": {"sha": "h"}, "base": {"sha": "b"}})
 
     monkeypatch.setattr(gh.httpx, "get", fake_get)
-    result = gh.fetch_pull_request("https://github.com/o/r", 1)
-    assert result["number"] == 1
-    assert seen and all(v is True for v in seen)
+    result = gh.fetch_pull_request("https://github.com/o/r", 1, token="owner-tok")
+    assert result["number"] == 1 and result["title"] == "t"
+    assert all("api.github.com/repos/o/r/pulls/1" in url for url, *_ in calls)
+    assert {accept for _, accept, _, _ in calls} == {gh._DIFF_ACCEPT, gh._JSON_ACCEPT}
+    assert all(auth == "Bearer owner-tok" for _, _, auth, _ in calls)
+    assert all(follow is True for *_, follow in calls)

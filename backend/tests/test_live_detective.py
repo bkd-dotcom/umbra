@@ -15,7 +15,7 @@ def test_demo_detective_is_labelled(monkeypatch):
 
 def test_detective_discards_unverified_model_sha(monkeypatch, tmp_path: Path):
     @contextmanager
-    def checkout(_: str): yield tmp_path
+    def checkout(_, __=None): yield tmp_path
     class Codex:
         def propose(self, prompt: str, repo_path: Path): return CodexOperation(prompt, "survey", "", True, [], "codex-cli", datetime.now(UTC).isoformat())
     monkeypatch.setattr("backend.agents.detective.checkout_public_repo", checkout)

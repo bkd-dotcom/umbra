@@ -9,7 +9,7 @@ info:
     operations; GPT-5.6 performs the reasoning.
   version: "1.0.0"
 servers:
-  - url: https://api.umbra.engineer
+  - url: https://umbra.engineer
     description: Umbra backend (replace with your deployed host)
 paths:
   /api/scan:

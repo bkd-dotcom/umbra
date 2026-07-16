@@ -7,8 +7,15 @@ engineering; GPT-5.6 does the reasoning; you approve the merge.
 
 ## 🧑‍⚖️ Test it
 
-**Live dashboard (0 setup):** [umbra-712918182816.us-central1.run.app](https://umbra-712918182816.us-central1.run.app) — hosted on Google Cloud Run, demo mode.
-**Local, real agents (the money shot):** clone and run live mode on your own Codex login — real CVEs, real diffs, real reasoning. See [Run from source](#-run-from-source).
+**Live site:** [umbra.engineer](https://umbra.engineer) — hosted on Google Cloud Run. Sign in
+with **GitHub or Google**, then point the night crew at one of your own repositories (public or
+private). Findings are **real** — CVEs from OSV, dependency graph, git-history root-cause — and
+every half is labelled with what produced it.
+**Live reasoning, your choice:** connect your own **OpenAI API key** in the dashboard to run GPT
+reasoning on your account; the founder account runs full live **Codex** diffs on the server.
+Without either, findings are still real and Codex is honestly labelled "runs on your machine".
+**Local, real agents (the money shot):** clone and run live mode on your own Codex login — real
+CVEs, real diffs, real reasoning. See [Run from source](#-run-from-source).
 **Custom GPT (in ChatGPT):** open **Umbra Engineer** (instructions in [`custom_gpt/`](custom_gpt/instructions.md)) → `Scan https://github.com/expressjs/express`
 
 ## 🤖 How Codex + GPT-5.6 are used

@@ -35,6 +35,25 @@ Confirm the CLI is authenticated with `codex login status` (expect
 When both are configured, Umbra tries the Responses API first and falls back to
 Codex only if that tier is denied or errors.
 
+### Running Codex inside a container (Cloud Run / gVisor)
+
+Codex's own Linux sandbox (Landlock/seccomp) cannot initialize under some
+container runtimes — notably Cloud Run's gVisor — so `codex exec` exits non-zero
+with no output on every agent. Set `UMBRA_CODEX_SANDBOX` to bypass Codex's
+sandbox layer when the container is already the isolation boundary:
+
+```bash
+UMBRA_CODEX_SANDBOX=danger-full-access   # or: bypass (uses --dangerously-bypass-approvals-and-sandbox)
+```
+
+This is safe here because the guardrails hold without Codex's Landlock layer: the
+checkout is disposable, its `origin` remote is stripped, the agent runs under a
+hard no-push/no-merge prompt, GitHub write credentials are never passed to the
+child process, and the container itself sandboxes the process. Leave it unset for
+local dev (defaults stay `read-only`/`workspace-write`). If the surfaced Codex
+stderr shows an auth error instead, re-run `codex login` and update the
+`umbra-codex-auth` secret.
+
 ## What a live run does
 
 Each agent clones the public repository into a disposable temporary directory and

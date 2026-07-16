@@ -25,8 +25,12 @@ class ReasoningResult:
     provider: str
 
 
-def reason(tier: str, developer: str, user: str, effort: str | None = None) -> ReasoningResult:
-    """Run a Responses request or produce a deterministic, safe demo explanation."""
+def reason(tier: str, developer: str, user: str, effort: str | None = None, api_key: str | None = None) -> ReasoningResult:
+    """Run a Responses request or produce a deterministic, safe demo explanation.
+
+    ``api_key`` lets a caller supply a per-user (bring-your-own) OpenAI key so the
+    reasoning is billed to that user; it falls back to the server ``OPENAI_API_KEY``.
+    """
     if tier not in MODELS:
         raise ValueError(f"Unknown reasoning tier: {tier}")
     model, default_effort = MODELS[tier]
@@ -38,7 +42,7 @@ def reason(tier: str, developer: str, user: str, effort: str | None = None) -> R
             effort=selected_effort,
             provider="demo-cache",
         )
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = api_key or os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is required unless UMBRA_DEMO_MODE=true")
     try:
@@ -58,7 +62,7 @@ def reason(tier: str, developer: str, user: str, effort: str | None = None) -> R
     return ReasoningResult(response.output_text, model, selected_effort, "responses-api")
 
 
-def reason_stream(tier: str, developer: str, user: str, effort: str | None = None) -> Iterator[str]:
+def reason_stream(tier: str, developer: str, user: str, effort: str | None = None, api_key: str | None = None) -> Iterator[str]:
     """Yield Responses text deltas, with the same no-fabrication boundary as ``reason``."""
     if tier not in MODELS:
         raise ValueError(f"Unknown reasoning tier: {tier}")
@@ -67,7 +71,7 @@ def reason_stream(tier: str, developer: str, user: str, effort: str | None = Non
     if os.getenv("UMBRA_DEMO_MODE", "false").lower() == "true":
         yield "Demo reasoning stream replayed from cache; no model request was made."
         return
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = api_key or os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is required unless UMBRA_DEMO_MODE=true")
     try:

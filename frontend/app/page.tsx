@@ -1,96 +1,251 @@
 "use client";
 
-import { useEffect } from "react";
-import Radar from "../components/Radar";
+import { useEffect, useState } from "react";
+import { motion } from "motion/react";
+import Radar from "@/components/Radar";
+import { Aurora } from "@/components/ui/aurora-background";
+import { Meteors } from "@/components/ui/meteors";
+import { TextGenerate } from "@/components/ui/text-generate";
+import { FlipWords } from "@/components/ui/flip-words";
+import { GlowCard } from "@/components/ui/glow-card";
+import { MovingBorderCard } from "@/components/ui/moving-border";
+import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
+import { InfiniteMovingCards } from "@/components/ui/infinite-moving-cards";
+import { SignInDialog } from "@/components/ui/sign-in-dialog";
+import { Reveal, RevealGroup } from "@/components/ui/reveal";
+import { GitHubIcon } from "@/components/ui/icons";
+import { LocalWeather } from "@/components/ui/local-weather";
+import { fadeUp } from "@/lib/motion";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-const GitHubIcon = () => (
-  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.36-3.88-1.36-.53-1.34-1.3-1.7-1.3-1.7-1.06-.72.08-.71.08-.71 1.17.08 1.79 1.2 1.79 1.2 1.04 1.79 2.73 1.27 3.4.97.1-.76.4-1.27.74-1.56-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.3-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.75.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.69 5.4-5.25 5.69.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z" /></svg>
-);
-const GoogleIcon = () => (
-  <svg viewBox="0 0 24 24" aria-hidden><path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.7-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.8Z" /><path fill="#34A853" d="M12 24c3.2 0 5.9-1.1 7.9-2.9l-3.9-3c-1.1.7-2.5 1.2-4 1.2-3 0-5.6-2-6.5-4.8h-4v3c2 3.9 6 6.5 10.5 6.5Z" /><path fill="#FBBC05" d="M5.5 14.5c-.2-.7-.4-1.5-.4-2.5s.1-1.8.4-2.5v-3h-4A11.9 11.9 0 0 0 0 12c0 1.9.5 3.7 1.5 5.5l4-3Z" /><path fill="#EA4335" d="M12 4.8c1.7 0 3.2.6 4.4 1.7l3.3-3.3C17.9 1.2 15.2 0 12 0 7.5 0 3.5 2.6 1.5 6.5l4 3c.9-2.8 3.5-4.7 6.5-4.7Z" /></svg>
-);
-
-const crew: Array<[string, string, string, string]> = [
-  ["◉", "WATCHMAN", "Hunts CVEs in your dependencies", "#22D3EE"],
-  ["◈", "REVIEWER", "Scores risk on every pull request", "#A78BFA"],
-  ["⌁", "DETECTIVE", "Traces incidents to the root-cause commit", "#F9A8D4"],
-  ["◒", "JANITOR", "Clears dead code and quiet tech debt", "#5EEAD4"],
-  ["?", "ASK UMBRA", "Answers questions about your codebase", "#FDE68A"],
+const crew: Array<{ mark: string; name: string; job: string; color: string }> = [
+  { mark: "◉", name: "WATCHMAN", job: "Hunts CVEs in your dependencies with live OSV advisories.", color: "#22d3ee" },
+  { mark: "◈", name: "REVIEWER", job: "Scores blast-radius and risk on every open pull request.", color: "#a78bfa" },
+  { mark: "⌁", name: "DETECTIVE", job: "Traces incidents to the root-cause commit from real git history.", color: "#f472b6" },
+  { mark: "◒", name: "JANITOR", job: "Clears dead code and quiet tech debt in a disposable checkout.", color: "#5eead4" },
+  { mark: "?", name: "ASK UMBRA", job: "Answers questions about your codebase, grounded in real refs.", color: "#fbbf24" },
 ];
 
-const steps: Array<[string, string, string]> = [
-  ["01", "Sign in", "Continue with GitHub or Google. GitHub connects your own repositories."],
-  ["02", "Point at a repo", "Pick one of your repositories. The night crew fans out — CVEs, git history, code retrieval."],
-  ["03", "Read the report", "Every finding is grounded and labelled with what produced it. No fabricated results, ever."],
+const steps: Array<{ n: string; title: string; body: string }> = [
+  { n: "01", title: "Sign in", body: "Continue with GitHub or Google. GitHub connects your own public and private repositories." },
+  { n: "02", title: "Point at a repo", body: "Pick one of your repos. The night crew fans out — CVEs, git history, code retrieval — in parallel." },
+  { n: "03", title: "Read the morning report", body: "Every finding is grounded and labelled with what produced it. No fabricated results, ever." },
 ];
+
+const marquee = ["Runs on Codex credits", "OSV.dev advisories", "GitHub public + private", "Grounded, never fabricated", "PRs only — never auto-merge", "Root-cause from git history"];
 
 export default function Landing() {
-  // Reveal sections as they scroll into view.
+  const [signIn, setSignIn] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+
   useEffect(() => {
-    const io = new IntersectionObserver(
-      entries => entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } }),
-      { threshold: 0.15 }
-    );
-    document.querySelectorAll(".reveal").forEach(el => io.observe(el));
-    return () => io.disconnect();
+    const onScroll = () => setScrolled(window.scrollY > 24);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
   return (
-    <main>
-      <div className="aurora one" /><div className="aurora two" />
+    <main className="relative mx-auto min-h-screen w-full max-w-[1240px] px-6 md:px-10">
+      {/* Landing signature background: an expressive, slowly-drifting Aurora over
+          the shared base gradient. Fixed + behind content; the global
+          reduced-motion rule freezes the drift for accessibility. */}
+      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden" aria-hidden>
+        <Aurora intensity={0.55} />
+      </div>
+      <SignInDialog open={signIn} onClose={() => setSignIn(false)} api={API} />
 
-      <nav>
-        <div className="brand"><span>◐</span> UMBRA</div>
-        <a className="btn btn-google" href={`${API}/auth/login/github`} style={{ padding: "10px 16px", fontSize: 12 }}>Sign in <span style={{ color: "var(--cyan)", marginLeft: 6 }}>↗</span></a>
-      </nav>
+      {/* Nav */}
+      <motion.nav
+        initial={{ y: -20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ duration: 0.6 }}
+        className={`sticky top-3 z-40 mt-3 flex items-center justify-between rounded-2xl px-5 py-3 transition-all duration-300 ${scrolled ? "glass shadow-[0_10px_40px_-12px_#000]" : ""}`}
+      >
+        <div className="flex items-center gap-2 text-[15px] font-extrabold tracking-[0.35em]">
+          <span className="text-2xl text-cyan tracking-normal">◐</span> UMBRA
+        </div>
+        <div className="flex items-center gap-3">
+          <LocalWeather />
+          <HoverBorderGradient onClick={() => setSignIn(true)} className="px-4 py-2 text-xs">
+            Sign in <span className="text-cyan">↗</span>
+          </HoverBorderGradient>
+        </div>
+      </motion.nav>
 
-      <section className="hero">
-        <div>
-          <p className="eyebrow rise">AUTONOMOUS ENGINEERING · MISSION CONTROL</p>
-          <h1 className="rise d1">Your repo never<br /><strong className="shimmer">sleeps alone.</strong></h1>
-          <p className="lede rise d2">Umbra is an autonomous AI engineering team for your GitHub repo. Sign in and the night crew hunts CVEs, traces incidents, reviews risk, and answers your codebase — then hands you the morning report.</p>
-          <div className="signin rise d3">
-            <a className="btn btn-github" href={`${API}/auth/login/github`}><GitHubIcon /> Continue with GitHub</a>
-            <a className="btn btn-google" href={`${API}/auth/login/google`}><GoogleIcon /> Continue with Google</a>
+      {/* Hero */}
+      <section className="relative grid items-center gap-16 py-20 md:grid-cols-[1.4fr_0.85fr] md:py-28">
+        <div className="relative z-10">
+          <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }} className="mb-4 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-cyan">
+            Autonomous engineering · mission control
+          </motion.p>
+          <h1 className="font-serif text-[clamp(44px,5.6vw,76px)] font-normal leading-[0.98] tracking-[-0.03em]">
+            <TextGenerate words="Your repo never sleeps alone." />
+          </h1>
+          <div className="mt-3 font-serif text-[clamp(26px,3.2vw,40px)] leading-tight text-fog">
+            It <FlipWords words={["hunts CVEs", "traces incidents", "reviews PRs", "answers your codebase"]} className="text-shimmer font-medium" />
           </div>
-          <p className="scan-note rise d4" style={{ marginTop: 18 }}>Real OAuth — GitHub unlocks live scans of your own repositories.</p>
+          <motion.p variants={fadeUp} initial="hidden" animate="show" transition={{ delay: 0.5 }} className="mt-7 max-w-[540px] text-[15px] leading-relaxed text-fog">
+            Umbra is an autonomous AI engineering team for your GitHub repo. Sign in and the night crew hunts CVEs,
+            traces incidents, reviews risk, and answers your codebase — then hands you the morning report.
+          </motion.p>
+          <motion.div variants={fadeUp} initial="hidden" animate="show" transition={{ delay: 0.65 }} className="mt-9 flex flex-wrap items-center gap-4">
+            <HoverBorderGradient onClick={() => setSignIn(true)} className="px-6 py-3.5 text-sm font-semibold">
+              Start the night shift
+            </HoverBorderGradient>
+            <a href="#crew" className="text-sm text-fog transition-colors hover:text-cloud">See the crew ↓</a>
+          </motion.div>
+          <p className="mt-5 font-mono text-[11px] text-fog/80">Real OAuth — GitHub unlocks live scans of your own repositories.</p>
         </div>
-        <article className="glass radar-card rise d2" style={{ padding: 0 }}>
-          <header><div><p className="eyebrow">THREAT RADAR</p><h2 style={{ fontSize: 18 }}>Attack surface</h2></div><span className="live"><i /> LIVE</span></header>
-          <div className="radar-wrap"><Radar /><div className="radar-copy"><b>SCANNING</b><p>Dependency<br />exposure</p><small>OWASP A06</small></div></div>
-        </article>
+
+        {/* Showcase radar card */}
+        <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} transition={{ delay: 0.4, duration: 0.8 }} className="relative z-10">
+          <MovingBorderCard>
+            <div className="relative overflow-hidden rounded-2xl p-6">
+              <Meteors number={12} />
+              <div className="relative z-10 mb-4 flex items-center justify-between">
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-cyan">Threat radar</p>
+                  <p className="mt-1 text-lg">Attack surface</p>
+                </div>
+                <span className="flex items-center gap-2 font-mono text-[10px] text-teal">
+                  <i className="inline-block h-1.5 w-1.5 animate-pulse-glow rounded-full bg-teal shadow-[0_0_10px_#5eead4]" /> LIVE
+                </span>
+              </div>
+              <div className="relative z-10 flex items-center justify-center gap-4 py-3">
+                <Radar />
+                <div className="text-left">
+                  <b className="font-mono text-[10px] tracking-[0.12em] text-pink">SCANNING</b>
+                  <p className="my-2 text-sm leading-tight">Dependency<br />exposure</p>
+                  <small className="text-[10px] text-fog">OWASP A06</small>
+                </div>
+              </div>
+            </div>
+          </MovingBorderCard>
+        </motion.div>
       </section>
 
-      <section className="section">
-        <p className="kicker reveal">The night crew</p>
-        <h2 className="reveal">Five specialists. One quiet shift.</h2>
-        <div className="crew">
-          {crew.map(([mark, name, job, color], i) => (
-            <article className="glass reveal" key={name} style={{ transitionDelay: `${i * 60}ms` }}>
-              <i style={{ color }}>{mark}</i><b>{name}</b><p>{job}</p>
-            </article>
+      {/* Trust strip */}
+      <Reveal className="py-6">
+        <InfiniteMovingCards
+          items={marquee.map((m) => (
+            <span key={m} className="glass flex items-center gap-2 rounded-full px-5 py-2.5 font-mono text-xs text-fog">
+              <span className="h-1.5 w-1.5 rounded-full bg-cyan" /> {m}
+            </span>
           ))}
-        </div>
-      </section>
+        />
+      </Reveal>
 
-      <section className="section">
-        <p className="kicker reveal">How it works</p>
-        <h2 className="reveal">Sign in. Point at a repo. Read the morning report.</h2>
-        <div className="steps">
-          {steps.map(([n, title, body], i) => (
-            <article className="glass step reveal" key={n} style={{ transitionDelay: `${i * 60}ms` }}>
-              <span className="n">{n}</span><h3>{title}</h3><p>{body}</p>
-            </article>
+      {/* Night crew */}
+      <section id="crew" className="relative py-20">
+        <Reveal>
+          <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-cyan">The night crew</p>
+          <h2 className="mt-3 max-w-[16ch] font-serif text-[clamp(28px,3.6vw,46px)] tracking-[-0.03em]">Five specialists. One quiet shift.</h2>
+        </Reveal>
+        <RevealGroup className="mt-9 grid gap-4 md:grid-cols-3 lg:grid-cols-6">
+          {crew.map((c, i) => (
+            <Reveal key={c.name} variants={fadeUp} className={i === 0 ? "lg:col-span-2" : i === 4 ? "lg:col-span-2" : "lg:col-span-2"}>
+              <GlowCard glow={`${c.color}30`} className="h-full p-6">
+                <i className="mb-4 block text-2xl not-italic" style={{ color: c.color }}>{c.mark}</i>
+                <b className="font-mono text-[11px] tracking-[0.11em]">{c.name}</b>
+                <p className="mt-2.5 text-[13px] leading-relaxed text-fog">{c.job}</p>
+              </GlowCard>
+            </Reveal>
           ))}
-        </div>
+        </RevealGroup>
       </section>
 
-      <footer className="foot">
-        <div className="brand"><span>◐</span> UMBRA</div>
-        <small>The public site runs in safe demo mode; the live Codex agents run on your machine.<br />Built with Codex for OpenAI Build Week 2026.</small>
+      {/* How it works */}
+      <section className="relative py-20">
+        <Reveal>
+          <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-cyan">How it works</p>
+          <h2 className="mt-3 max-w-[20ch] font-serif text-[clamp(28px,3.6vw,46px)] tracking-[-0.03em]">Sign in. Point at a repo. Read the morning report.</h2>
+        </Reveal>
+        <RevealGroup className="mt-9 grid gap-4 md:grid-cols-3">
+          {steps.map((s) => (
+            <Reveal key={s.n} variants={fadeUp}>
+              <GlowCard className="h-full p-7">
+                <span className="font-mono text-[11px] tracking-[0.1em] text-cyan">{s.n}</span>
+                <h3 className="mb-2.5 mt-3 font-serif text-2xl">{s.title}</h3>
+                <p className="text-[13px] leading-relaxed text-fog">{s.body}</p>
+              </GlowCard>
+            </Reveal>
+          ))}
+        </RevealGroup>
+      </section>
+
+      {/* Meet the team */}
+      <section id="team" className="relative py-20">
+        <Reveal className="text-center">
+          <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-cyan">Meet the team</p>
+          <h2 className="mx-auto mt-3 max-w-[18ch] font-serif text-[clamp(28px,3.6vw,46px)] tracking-[-0.03em]">Built by one engineer, for every engineer.</h2>
+        </Reveal>
+        <Reveal className="mx-auto mt-9 max-w-[440px]">
+          <FounderCard />
+        </Reveal>
+      </section>
+
+      {/* Footer */}
+      <footer className="mt-16 flex flex-wrap items-center justify-between gap-4 border-t border-line py-10">
+        <div className="flex items-center gap-2 text-sm font-extrabold tracking-[0.35em]">
+          <span className="text-xl text-cyan tracking-normal">◐</span> UMBRA
+        </div>
+        <small className="text-[11px] leading-relaxed text-fog">
+          Findings are real and grounded. Live Codex runs on your own account or the founder&apos;s.<br />
+          Built with Codex for OpenAI Build Week 2026.
+        </small>
       </footer>
     </main>
+  );
+}
+
+/** Founder card — Comet-style 3D tilt + glow. Handles are best-guess; correct
+ *  them in this file if needed. */
+function FounderCard() {
+  const [tilt, setTilt] = useState({ rx: 0, ry: 0 });
+  return (
+    <motion.div
+      style={{ transformStyle: "preserve-3d", transform: `perspective(900px) rotateX(${tilt.rx}deg) rotateY(${tilt.ry}deg)` }}
+      onMouseMove={(e) => {
+        const r = e.currentTarget.getBoundingClientRect();
+        const px = (e.clientX - r.left) / r.width - 0.5;
+        const py = (e.clientY - r.top) / r.height - 0.5;
+        setTilt({ rx: -py * 8, ry: px * 8 });
+      }}
+      onMouseLeave={() => setTilt({ rx: 0, ry: 0 })}
+      className="transition-transform duration-200 ease-out"
+    >
+      <GlowCard glow="rgba(34,211,238,0.28)" className="p-8 text-center">
+        <div className="mx-auto grid h-20 w-20 place-items-center rounded-full bg-gradient-to-br from-violet/40 to-cyan/40 font-serif text-3xl">BD</div>
+        <div className="mt-5 font-serif text-2xl">Binay Dalai</div>
+        <div className="mt-1 font-mono text-[11px] uppercase tracking-[0.18em] text-cyan">Founder</div>
+        <p className="mx-auto mt-4 max-w-[34ch] text-[13px] leading-relaxed text-fog">
+          Building Umbra so every repo has an autonomous engineering team on the night shift — grounded, auditable, and honest about what it did.
+        </p>
+        <div className="mt-6 flex items-center justify-center gap-3">
+          <FounderLink href="https://github.com/bkd-dotcom" label="GitHub"><GitHubIcon className="h-4 w-4" /></FounderLink>
+          <FounderLink href="https://www.linkedin.com/in/binay-dalai/" label="LinkedIn">
+            <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4" aria-hidden><path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.13 1.45-2.13 2.94v5.67H9.35V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.07 2.07 0 1 1 0-4.14 2.07 2.07 0 0 1 0 4.14zM7.12 20.45H3.55V9h3.57v11.45zM22.22 0H1.77C.8 0 0 .78 0 1.75v20.5C0 23.22.8 24 1.77 24h20.45c.98 0 1.78-.78 1.78-1.75V1.75C24 .78 23.2 0 22.22 0z" /></svg>
+          </FounderLink>
+          <FounderLink href="mailto:binaydalai2024@gmail.com" label="Email">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" /></svg>
+          </FounderLink>
+        </div>
+      </GlowCard>
+    </motion.div>
+  );
+}
+
+function FounderLink({ href, label, children }: { href: string; label: string; children: React.ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      aria-label={label}
+      className="grid h-10 w-10 place-items-center rounded-full border border-[color:var(--surface-border)] bg-[color:var(--surface)] text-fog transition-all duration-300 hover:-translate-y-0.5 hover:border-cyan/50 hover:text-cloud"
+    >
+      {children}
+    </a>
   );
 }

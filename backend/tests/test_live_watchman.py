@@ -46,7 +46,7 @@ def test_live_watchman_uses_osv_reasoning_and_codex(monkeypatch, tmp_path: Path)
     (tmp_path / "package.json").write_text('{"dependencies":{"express":"5.1.0"}}')
 
     @contextmanager
-    def checkout(_: str):
+    def checkout(_, __=None):
         yield tmp_path
 
     class FakeOSV:

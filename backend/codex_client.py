@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import tempfile
@@ -9,6 +10,14 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
+
+logger = logging.getLogger("umbra.codex")
+
+# Whitelists for user-selectable speed knobs. Only these values are ever passed
+# into `codex exec`'s `-m` / `-c` flags, so an arbitrary client can never inject
+# config. gpt-5.6-luna = fastest, terra = balanced, sol = deepest.
+_CODEX_MODELS = {"gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"}
+_CODEX_EFFORTS = {"minimal", "low", "medium", "high"}
 
 
 @dataclass
@@ -40,13 +49,35 @@ class CodexClient:
     credentials to the child process.
     """
 
-    def __init__(self, replay_dir: Path | None = None, runner: Runner = subprocess.run) -> None:
+    def __init__(
+        self,
+        replay_dir: Path | None = None,
+        runner: Runner = subprocess.run,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> None:
         self.replay_dir = replay_dir
         self.runner = runner
+        # A caller value wins over the env default; both are validated so an
+        # unknown model/effort simply falls back to Codex's own default (no flag).
+        self.model = self.resolve_model(model if model is not None else os.getenv("UMBRA_CODEX_MODEL"))
+        self.reasoning_effort = self.resolve_effort(
+            reasoning_effort if reasoning_effort is not None else os.getenv("UMBRA_CODEX_REASONING_EFFORT")
+        )
 
     @staticmethod
     def enabled() -> bool:
         return os.getenv("UMBRA_ENABLE_CODEX_CLI", "false").lower() == "true"
+
+    @staticmethod
+    def resolve_model(value: str | None) -> str | None:
+        value = (value or "").strip()
+        return value if value in _CODEX_MODELS else None
+
+    @staticmethod
+    def resolve_effort(value: str | None) -> str | None:
+        value = (value or "").strip().lower()
+        return value if value in _CODEX_EFFORTS else None
 
     def propose(self, prompt: str, files: list[str] | None = None, repo_path: Path | None = None, read_only: bool = False) -> CodexOperation:
         if os.getenv("UMBRA_DEMO_MODE", "false").lower() == "true":
@@ -83,6 +114,45 @@ class CodexClient:
         )
         return self._record(operation)
 
+    @staticmethod
+    def _resolve_sandbox(read_only: bool) -> str:
+        """Sandbox mode for ``codex exec``.
+
+        Codex's own Linux sandbox (Landlock/seccomp) cannot initialize under some
+        container runtimes (e.g. Cloud Run's gVisor), so ``codex exec`` exits
+        non-zero with no output regardless of the requested mode. ``UMBRA_CODEX_SANDBOX``
+        lets the deploy bypass that layer (``danger-full-access`` or ``bypass``);
+        the real guardrails still hold — disposable checkout, ``origin`` stripped,
+        hard no-push prompt, GitHub write creds never handed to the child, and the
+        container itself is the isolation boundary. Unset → today's safe defaults.
+        """
+        override = os.getenv("UMBRA_CODEX_SANDBOX", "").strip().lower()
+        if override in {"read-only", "workspace-write", "danger-full-access", "bypass"}:
+            return override
+        return "read-only" if read_only else "workspace-write"
+
+    @staticmethod
+    def _short_reason(stderr: str) -> str:
+        """The most actionable single line from Codex stderr (for an honest summary).
+
+        Known failure signatures are mapped to a clean, human message so the UI
+        never surfaces raw Cloudflare/transport noise (``cf-ray``, ``wss://…``).
+        A 401 against ``api.openai.com`` means Codex could not use the mounted
+        ChatGPT login — almost always because that account has no Codex access
+        (a free plan) or the login expired — and no ``OPENAI_API_KEY`` is set.
+        Unknown failures fall through to the raw last line so real errors (e.g. a
+        Landlock/sandbox message) are still surfaced verbatim, not swallowed.
+        """
+        low = (stderr or "").lower()
+        if any(sig in low for sig in ("401 unauthorized", "missing bearer", "invalid_api_key", "unauthorized")):
+            return ("Codex could not authenticate with OpenAI (401). The connected ChatGPT "
+                    "account needs Codex access — sign in with a paid ChatGPT plan via `codex "
+                    "login`, or set an OPENAI_API_KEY.")
+        if any(sig in low for sig in ("429", "rate limit", "quota", "insufficient_quota")):
+            return "Codex hit an OpenAI rate limit or quota. Try again shortly."
+        lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+        return (lines[-1][:300] if lines else "no output on stderr")
+
     def _run_cli(self, prompt: str, repo_path: Path, read_only: bool = False, cli_prompt: str | None = None) -> CodexOperation:
         with tempfile.TemporaryDirectory(prefix="umbra-codex-") as temp_dir:
             final_message = Path(temp_dir) / "final-message.txt"
@@ -90,9 +160,24 @@ class CodexClient:
             # ``never``); the removed ``--ask-for-approval`` flag is rejected by
             # current CLI versions. ``--skip-git-repo-check`` lets read-only
             # reasoning run in a throwaway directory that is not a Git repo.
+            sandbox = self._resolve_sandbox(read_only)
+            sandbox_args = (
+                ["--dangerously-bypass-approvals-and-sandbox"]
+                if sandbox == "bypass"
+                else ["--sandbox", sandbox]
+            )
+            # Speed knobs: a lighter model and/or lower reasoning effort make the
+            # scan dramatically faster. Both are already whitelisted (see __init__),
+            # so this never forwards unvalidated input into the CLI config.
+            model_args = ["-m", self.model] if self.model else []
+            effort_args = (
+                ["-c", f'model_reasoning_effort="{self.reasoning_effort}"'] if self.reasoning_effort else []
+            )
             command = [
                 "codex", "exec", "--ephemeral", "--color", "never",
-                "--sandbox", "read-only" if read_only else "workspace-write",
+                *sandbox_args,
+                *model_args,
+                *effort_args,
                 "--skip-git-repo-check",
                 "--output-last-message", str(final_message), "-C", str(repo_path),
                 cli_prompt or self._safe_prompt(prompt),
@@ -103,7 +188,15 @@ class CodexClient:
             final = final_message.read_text(errors="replace") if final_message.exists() else completed.stdout
             summary = final.strip() or completed.stdout.strip()
             if not summary:
-                summary = "Codex CLI completed successfully without a final text summary." if completed.returncode == 0 else "Codex CLI exited without a final text summary."
+                if completed.returncode == 0:
+                    summary = "Codex ran and produced no changes — nothing needed here." if not diff else "Codex completed; see the diff below."
+                else:
+                    # Surface the real reason instead of an opaque message, and log the
+                    # full stderr so Cloud Run captures it (it is otherwise dropped).
+                    reason = self._short_reason(completed.stderr)
+                    summary = f"Codex CLI failed (exit {completed.returncode}, sandbox={sandbox}): {reason}"
+            if completed.returncode != 0:
+                logger.warning("codex exec failed (rc=%s, sandbox=%s): %s", completed.returncode, sandbox, (completed.stderr or "")[-2000:])
             operation = CodexOperation(
                 prompt=prompt,
                 summary=summary,

@@ -4,13 +4,18 @@ Umbra deploys as a **single service**: the Docker image builds the Next.js
 dashboard into a static bundle and the FastAPI backend serves it, so the whole
 product lives on **one URL** — no separate frontend host, no CORS to wire up.
 
-**Live demo:** [umbra-712918182816.us-central1.run.app](https://umbra-712918182816.us-central1.run.app) (Google Cloud Run, demo mode).
+**Live site:** [umbra.engineer](https://umbra.engineer) (Google Cloud Run). Sign in with GitHub
+or Google, then scan your own public/private repos — findings are real (OSV, dependency graph,
+git-history root-cause).
 
-> **A public deploy runs in demo mode.** The live agents need the Codex CLI's
-> ChatGPT login, which only exists on your local machine — a cloud host cannot
-> authenticate to Codex. So the public URL is the safe, zero-cost demo; run the
-> live money-shot locally (`UMBRA_ENABLE_LIVE_REPOS=true UMBRA_ENABLE_CODEX_CLI=true`).
-> No API keys or secrets ever need to live in the cloud.
+> **How live work runs on the hosted site.** Real *findings* (CVEs, dependency graph, git-history)
+> run server-side without any model. For the *reasoning + Codex diffs*, there are three tiers:
+> **(1)** any signed-in user can add their **own OpenAI API key** in the dashboard for live GPT
+> reasoning billed to them; **(2)** the **founder account** runs full live **Codex** on the server
+> — the Codex CLI + a mounted ChatGPT credential (Secret Manager), hard-gated to
+> `UMBRA_FOUNDER_IDS` so no visitor can spend those credits; **(3)** everyone else sees findings
+> plus an honest "Codex runs on your machine" label. Run the full local money-shot with
+> `UMBRA_ENABLE_LIVE_REPOS=true UMBRA_ENABLE_CODEX_CLI=true` on your own `codex login`.
 
 ---
 

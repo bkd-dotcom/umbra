@@ -15,7 +15,7 @@ def test_demo_janitor_is_labelled(monkeypatch):
 
 def test_live_janitor_returns_real_diff_metadata(monkeypatch, tmp_path: Path):
     @contextmanager
-    def checkout(_: str): yield tmp_path
+    def checkout(_, __=None): yield tmp_path
     class Codex:
         def propose(self, prompt: str, repo_path: Path): return CodexOperation(prompt, "pytest passed", "diff --git a/old.py b/old.py\n-def stale(): pass", True, ["old.py"], "codex-cli", datetime.now(UTC).isoformat())
     monkeypatch.setattr("backend.agents.janitor.checkout_public_repo", checkout)
@@ -29,16 +29,17 @@ def test_live_janitor_returns_real_diff_metadata(monkeypatch, tmp_path: Path):
 
 def test_live_janitor_falls_back_to_codex_reasoning(monkeypatch, tmp_path: Path):
     @contextmanager
-    def checkout(_: str): yield tmp_path
+    def checkout(_, __=None): yield tmp_path
     class Codex:
-        def propose(self, prompt: str, repo_path: Path): return CodexOperation(prompt, "cleanup done", "diff --git a/x.py b/x.py\n-import os", True, ["x.py"], "codex-cli", datetime.now(UTC).isoformat())
-        def analyze(self, prompt: str): return CodexOperation(prompt, "Codex reasoning: the import was unused and safe to drop.", "", True, [], "codex-cli", datetime.now(UTC).isoformat())
+        def propose(self, prompt: str, repo_path: Path): return CodexOperation(prompt, "cleanup done: dropped the unused import", "diff --git a/x.py b/x.py\n-import os", True, ["x.py"], "codex-cli", datetime.now(UTC).isoformat())
+        def analyze(self, prompt: str): raise AssertionError("analyze must not run when propose already explained the change")
     def denied(*_): raise RuntimeError("team_model_access_denied")
     monkeypatch.setattr("backend.agents.janitor.checkout_public_repo", checkout)
     monkeypatch.setattr("backend.agents.janitor.reason", denied)
     agent = Janitor(Codex())
     monkeypatch.setattr(agent, "_live_enabled", lambda: True)
     result = asyncio.run(agent.run("https://github.com/a/b"))
-    # Responses API denied → reasoning comes from Codex, honestly labelled; never fabricated or 'responses-api'.
+    # Responses API denied → reasoning is reused from Codex's own propose summary
+    # (one call, honestly labelled 'codex-cli'), never fabricated or 'responses-api'.
     assert result.replay.providers == {"engineering": "codex-cli", "reasoning": "codex-cli"}
-    assert result.replay.reasoning == "Codex reasoning: the import was unused and safe to drop."
+    assert result.replay.reasoning == "cleanup done: dropped the unused import"

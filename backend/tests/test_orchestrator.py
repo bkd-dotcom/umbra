@@ -25,7 +25,10 @@ def test_event_bus_replays_and_streams():
 
 def test_live_watchman_replaces_top_level_demo_findings(monkeypatch):
     class LiveWatchman:
-        async def run(self, _: str):
+        def __init__(self, **__):  # orchestrator injects a shared codex client
+            pass
+
+        async def run(self, _: str, **__):
             return AgentResult(
                 "watchman", "Live result", [{"severity": "high", "cve": "GHSA-live"}],
                 Replay("watchman", "prompt", "", "tests", "reasoning", {}, {"vulnerabilities": "osv.dev", "reasoning": "unavailable", "engineering": "codex-cli"}),
@@ -40,7 +43,7 @@ def test_live_watchman_replaces_top_level_demo_findings(monkeypatch):
 
 def test_ask_response_exposes_live_source(monkeypatch):
     class LiveAsk:
-        async def run(self, *_):
+        async def run(self, *_, **__):
             return AgentResult("ask", "Live answer", [{"file": "app.py", "lines": "3", "note": "verified"}], Replay("ask", "p", "", "", "", {}, {"retrieval": "local-git-grep", "reasoning": "responses-api-stream", "engineering": "codex-cli"}))
     monkeypatch.setattr("backend.agents.AskUmbra", LiveAsk)
     result = asyncio.run(Orchestrator().ask("https://github.com/acme/demo", "question"))

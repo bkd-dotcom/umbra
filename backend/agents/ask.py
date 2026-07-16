@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from time import perf_counter
 from typing import AsyncIterator, Iterator
 
-from backend.agents.base import AgentResult, Replay, codex_reasoning
+from backend.agents.base import CODEX_HOST_NOTE, AgentResult, Replay, codex_reasoning
 from backend.cache import load_demo_cache
 from backend.codex_client import CodexClient, CodexOperation
 from backend.integrations.repository import checkout_public_repo, cloud_scan_enabled, live_repositories_enabled
@@ -20,10 +20,10 @@ class AskUmbra:
     def __init__(self, codex: CodexClient | None = None) -> None:
         self.codex = codex or CodexClient()
 
-    async def run(self, repo_url: str, question: str) -> AgentResult:
+    async def run(self, repo_url: str, question: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> AgentResult:
         if self._live_enabled():
             try:
-                return await self._run_live(repo_url, question)
+                return await self._run_live(repo_url, question, github_token, openai_key, allow_codex)
             except Exception as exc:
                 return self._cached_result(f"Live Ask Umbra unavailable: {exc}")
         return self._cached_result()
@@ -33,33 +33,36 @@ class AskUmbra:
         # Codex CLI (ChatGPT login) supplies both retrieval-grounded answering and reasoning; no API key required.
         return os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true" and live_repositories_enabled() and (CodexClient.enabled() or cloud_scan_enabled())
 
-    async def _run_live(self, repo_url: str, question: str) -> AgentResult:
-        with checkout_public_repo(repo_url) as repo_path:
-            context, references, operation, retrieval_ms, codex_ms = await self._prepare(repo_path, question)
+    async def _run_live(self, repo_url: str, question: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> AgentResult:
+        with checkout_public_repo(repo_url, github_token) as repo_path:
+            context, references, operation, retrieval_ms, codex_ms = await self._prepare(repo_path, question, allow_codex)
             started = perf_counter()
             developer, user = self._developer_prompt(), self._user_prompt(question, context)
             try:
-                answer = "".join(await self._collect(reason_stream("work", developer, user)))
+                answer = "".join(await self._collect(reason_stream("work", developer, user, None, openai_key)))
                 provider = "responses-api-stream"
             except RuntimeError as exc:
-                answer, provider = await asyncio.to_thread(codex_reasoning, self.codex, developer, user, exc)
+                if allow_codex is False:
+                    answer, provider = f"Grounded retrieval succeeded, but live reasoning is unavailable: {exc}. Add your own OpenAI key to unlock answers here.", "unavailable"
+                else:
+                    answer, provider = await asyncio.to_thread(codex_reasoning, self.codex, developer, user, exc)
             reasoning_ms = int((perf_counter() - started) * 1000)
         return AgentResult("ask", answer, references, Replay("ask", operation.prompt, operation.diff, operation.summary, answer, {"retrieval_ms": retrieval_ms, "codex_ms": codex_ms, "reasoning_ms": reasoning_ms}, {"retrieval": "local-git-grep", "reasoning": provider, "engineering": operation.provider}))
 
-    async def stream(self, repo_url: str, question: str) -> AsyncIterator[str]:
+    async def stream(self, repo_url: str, question: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> AsyncIterator[str]:
         """Yield grounded text chunks for FastAPI SSE; no demo stream uses network."""
         if not self._live_enabled():
             yield "Demo Ask Umbra stream replayed from cache; no model or Codex request was made."
             return
         developer = self._developer_prompt()
         try:
-            with checkout_public_repo(repo_url) as repo_path:
-                context, _, _, _, _ = await self._prepare(repo_path, question)
+            with checkout_public_repo(repo_url, github_token) as repo_path:
+                context, _, _, _, _ = await self._prepare(repo_path, question, allow_codex)
         except Exception as exc:
             yield f"Ask Umbra live stream unavailable: {exc}"
             return
         user = self._user_prompt(question, context)
-        iterator = reason_stream("work", developer, user)
+        iterator = reason_stream("work", developer, user, None, openai_key)
         streamed = False
         try:
             while True:
@@ -72,20 +75,26 @@ class AskUmbra:
             if streamed:
                 yield f"\n[Ask Umbra stream interrupted: {exc}]"
                 return
+            if allow_codex is False:
+                yield f"Grounded retrieval succeeded, but live reasoning is unavailable: {exc}. Add your own OpenAI key to unlock answers here."
+                return
             # Responses API unavailable before any token: fall back to Codex
             # reasoning (itself a GPT-5.6 model) delivered as a single chunk.
             text, _ = await asyncio.to_thread(codex_reasoning, self.codex, developer, user, exc)
             yield text
 
-    async def _prepare(self, repo_path, question: str):
+    async def _prepare(self, repo_path, question: str, allow_codex: bool | None = None):
         retrieval_started = perf_counter()
         references, context = self._retrieve(repo_path, question)
         retrieval_ms = int((perf_counter() - retrieval_started) * 1000)
         codex_started = perf_counter()
-        try:
-            operation = self.codex.propose(f"Read-only codebase survey for this question: {question}. Identify only relevant files; do not edit anything.", repo_path=repo_path, read_only=True)
-        except RuntimeError as exc:
-            operation = self._unavailable_operation(str(exc))
+        if allow_codex is False:
+            operation = self._unavailable_operation(CODEX_HOST_NOTE)
+        else:
+            try:
+                operation = self.codex.propose(f"Read-only codebase survey for this question: {question}. Identify only relevant files; do not edit anything.", repo_path=repo_path, read_only=True)
+            except RuntimeError as exc:
+                operation = self._unavailable_operation(str(exc))
         return context, references, operation, retrieval_ms, int((perf_counter() - codex_started) * 1000)
 
     # Common English/question words never make good code-search terms; they flood
@@ -93,6 +102,53 @@ class AskUmbra:
     _STOPWORDS = {"what", "when", "where", "which", "whether", "who", "whom", "why", "how", "the", "and", "for", "are", "was", "were", "this", "that", "these", "those", "with", "from", "does", "did", "doing", "work", "works", "change", "break", "has", "have", "had", "can", "could", "would", "should", "will", "into", "over", "about", "its", "their", "there", "here", "you", "your"}
 
     _CODE_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb", ".c", ".h", ".hpp", ".cpp", ".cc", ".cs", ".php", ".swift", ".kt", ".scala", ".sql", ".sh"}
+
+    # Files that describe a repo at a glance. Keyword git-grep can't answer broad
+    # "what is this repo about?" questions — the terms never appear literally — so
+    # we always seed the context with these real, grounded overview files.
+    _README_NAMES = ("README.md", "README.rst", "README.txt", "README", "readme.md", "Readme.md", "docs/README.md")
+    _MANIFESTS = ("package.json", "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Cargo.toml", "go.mod", "pom.xml", "build.gradle", "Gemfile", "composer.json", "pubspec.yaml", "Package.swift")
+
+    @staticmethod
+    def _read_head(path, limit: int) -> str:
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")[:limit].strip()
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _overview(repo_path) -> tuple[list[dict[str, object]], str]:
+        """Grounded repo orientation: README head + primary manifest + top-level layout.
+
+        Always included so high-level questions ("what's this about?") have real
+        material to summarise, and every other answer is oriented. Every line here
+        is read from actual files with real references — nothing is invented.
+        """
+        refs: list[dict[str, object]] = []
+        blocks: list[str] = []
+        for name in AskUmbra._README_NAMES:
+            head = AskUmbra._read_head(repo_path / name, 1600)
+            if head:
+                refs.append({"file": name, "lines": "1", "note": "Project README (overview)."})
+                blocks.append(f"# {name}\n{head}")
+                break
+        for name in AskUmbra._MANIFESTS:
+            head = AskUmbra._read_head(repo_path / name, 700)
+            if head:
+                refs.append({"file": name, "lines": "1", "note": "Dependency / build manifest."})
+                blocks.append(f"# {name}\n{head}")
+                break
+        try:
+            entries = sorted(
+                entry.name + ("/" if entry.is_dir() else "")
+                for entry in repo_path.iterdir()
+                if not entry.name.startswith(".")
+            )[:40]
+        except OSError:
+            entries = []
+        if entries:
+            blocks.append("# Repository layout (top level)\n" + "  ".join(entries))
+        return refs, "\n\n".join(blocks)
 
     @staticmethod
     def _path_rank(path: str) -> int:
@@ -129,8 +185,11 @@ class AskUmbra:
                 matches.append((AskUmbra._path_rank(path), order, path, number, text, keyword))
         # Rank code files ahead of docs, and more specific terms ahead of broad ones.
         matches.sort(key=lambda match: (match[0], match[1]))
-        references: list[dict[str, object]] = []
-        snippets: list[str] = []
+        # Always lead with a grounded repo overview so broad questions have material
+        # to summarise even when no keyword matched; keyword hits follow.
+        overview_refs, overview_ctx = AskUmbra._overview(repo_path)
+        references: list[dict[str, object]] = list(overview_refs)
+        snippets: list[str] = [overview_ctx] if overview_ctx else []
         seen: set[tuple[str, int]] = set()
         for _, _, path, number, text, keyword in matches:
             if (path, number) in seen:
@@ -138,9 +197,9 @@ class AskUmbra:
             seen.add((path, number))
             references.append({"file": path, "lines": str(number), "note": f"Matched query term '{keyword}'."})
             snippets.append(f"{path}:{number}: {text[:300]}")
-            if len(references) >= 8:
+            if len(references) >= 8 + len(overview_refs):
                 break
-        return references, "\n".join(snippets)
+        return references, "\n\n".join(snippets)
 
     @staticmethod
     def _next(iterator: Iterator[str]) -> tuple[bool, str]:

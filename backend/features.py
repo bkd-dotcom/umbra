@@ -38,11 +38,30 @@ def roi_estimate(findings: int, review_minutes: int = 18, engineer_rate: int = 1
     return {"findings_automated": max(0, findings), "hours_saved": hours_saved, "estimated_value_usd": hours_saved * engineer_rate}
 
 
-def dependency_galaxy() -> dict[str, object]:
-    return {
-        "nodes": [{"id": "express", "group": "app"}, {"id": "router", "group": "internal"}, {"id": "lodash", "group": "risk"}, {"id": "body-parser", "group": "dependency"}],
-        "links": [{"source": "express", "target": "router"}, {"source": "express", "target": "body-parser"}, {"source": "body-parser", "target": "lodash"}],
-    }
+def dependency_galaxy(deps: list[dict[str, object]] | None = None, root: str = "repository") -> dict[str, object]:
+    """Build a dependency graph for the dashboard map.
+
+    With ``deps`` (Watchman's real discovered dependencies, each optionally
+    flagged ``vulnerable``) the graph reflects the actual repo — vulnerable
+    packages are grouped ``risk`` so the UI can light them up. Without it, the
+    seeded demo shape is returned so the offline demo is unchanged.
+    """
+    if not deps:
+        return {
+            "nodes": [{"id": "express", "group": "app"}, {"id": "router", "group": "internal"}, {"id": "lodash", "group": "risk"}, {"id": "body-parser", "group": "dependency"}],
+            "links": [{"source": "express", "target": "router"}, {"source": "express", "target": "body-parser"}, {"source": "body-parser", "target": "lodash"}],
+        }
+    nodes: list[dict[str, object]] = [{"id": root, "group": "app"}]
+    links: list[dict[str, object]] = []
+    seen: set[str] = {root}
+    for dep in deps[:60]:  # bound the graph so a huge lockfile stays legible
+        name = str(dep.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        nodes.append({"id": name, "group": "risk" if dep.get("vulnerable") else "dependency"})
+        links.append({"source": root, "target": name})
+    return {"nodes": nodes, "links": links}
 
 
 def kill_chain() -> list[dict[str, str]]:

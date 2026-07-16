@@ -5,6 +5,8 @@ backend) so importing this module never fails and demo mode needs nothing set.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 
 # Insecure fallback used ONLY when SESSION_SECRET is unset (local dev, tests,
@@ -15,6 +17,44 @@ _DEV_SESSION_SECRET = "umbra-dev-insecure-session-key-set-SESSION_SECRET-in-prod
 
 def session_secret() -> str:
     return os.getenv("SESSION_SECRET") or _DEV_SESSION_SECRET
+
+
+def founder_ids() -> set[str]:
+    """Accounts allowed to spend the founder's Codex credits on the server.
+
+    Comma-separated ``provider:sub`` values in ``UMBRA_FOUNDER_IDS`` (the same
+    key shape the store uses). Empty by default → nobody is a founder, so the
+    server-side Codex CLI is never triggered by a request.
+    """
+    raw = os.getenv("UMBRA_FOUNDER_IDS", "")
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def fernet_key() -> bytes:
+    """Symmetric key for encrypting stored secrets (GitHub tokens, OpenAI keys).
+
+    Prod sets ``UMBRA_FERNET_KEY`` (a urlsafe-base64 32-byte Fernet key) via
+    Secret Manager. The dev fallback is deterministic so local/tests round-trip;
+    it is NOT a real secret and never protects production data.
+    """
+    provided = os.getenv("UMBRA_FERNET_KEY")
+    if provided:
+        return provided.encode()
+    return base64.urlsafe_b64encode(hashlib.sha256(b"umbra-dev-insecure-fernet").digest())
+
+
+def encrypt(value: str) -> str:
+    """Encrypt a secret for at-rest storage. Returns urlsafe-base64 ciphertext."""
+    from cryptography.fernet import Fernet
+
+    return Fernet(fernet_key()).encrypt(value.encode()).decode()
+
+
+def decrypt(token: str) -> str:
+    """Inverse of :func:`encrypt`. Raises if the ciphertext is invalid/foreign."""
+    from cryptography.fernet import Fernet
+
+    return Fernet(fernet_key()).decrypt(token.encode()).decode()
 
 
 def github_oauth() -> tuple[str, str] | None:

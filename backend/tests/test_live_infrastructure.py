@@ -68,6 +68,45 @@ def test_analyze_is_disabled_without_the_flag(monkeypatch):
     assert CodexClient().analyze("Explain this").provider == "codex-cli-disabled"
 
 
+def test_codex_sandbox_override_replaces_landlock_mode(monkeypatch, tmp_path: Path):
+    # On gVisor (Cloud Run) Codex's own sandbox can't init, so the deploy overrides it.
+    monkeypatch.setenv("UMBRA_ENABLE_CODEX_CLI", "true")
+    monkeypatch.setenv("UMBRA_DEMO_MODE", "false")
+    monkeypatch.setenv("UMBRA_CODEX_SANDBOX", "danger-full-access")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    captured: list[str] = []
+    def runner(command, **_kwargs):
+        captured.extend(command)
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+    CodexClient(runner=runner).propose("Fix it", repo_path=tmp_path)
+    assert captured[captured.index("--sandbox") + 1] == "danger-full-access"
+
+
+def test_codex_sandbox_bypass_uses_dedicated_flag(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("UMBRA_ENABLE_CODEX_CLI", "true")
+    monkeypatch.setenv("UMBRA_DEMO_MODE", "false")
+    monkeypatch.setenv("UMBRA_CODEX_SANDBOX", "bypass")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    captured: list[str] = []
+    def runner(command, **_kwargs):
+        captured.extend(command)
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+    CodexClient(runner=runner).propose("Fix it", repo_path=tmp_path)
+    assert "--dangerously-bypass-approvals-and-sandbox" in captured
+    assert "--sandbox" not in captured
+
+
+def test_codex_failure_surfaces_reason(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("UMBRA_ENABLE_CODEX_CLI", "true")
+    monkeypatch.setenv("UMBRA_DEMO_MODE", "false")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    def runner(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 1, "", "landlock: operation not permitted")
+    op = CodexClient(runner=runner).propose("Fix it", repo_path=tmp_path)
+    assert op.tests_passed is False
+    assert "landlock: operation not permitted" in op.summary  # real reason, not an opaque message
+
+
 def test_live_gate_does_not_require_openai_api_key(monkeypatch):
     from backend.agents.janitor import Janitor
 
@@ -76,3 +115,111 @@ def test_live_gate_does_not_require_openai_api_key(monkeypatch):
     monkeypatch.setenv("UMBRA_ENABLE_CODEX_CLI", "true")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     assert Janitor._live_enabled() is True
+
+
+def test_codex_auth_failure_gives_clean_message(monkeypatch, tmp_path: Path):
+    # A 401 from Codex (e.g. a free ChatGPT plan with no Codex access) must surface
+    # as an actionable message, never the raw Cloudflare/transport noise.
+    monkeypatch.setenv("UMBRA_ENABLE_CODEX_CLI", "true")
+    monkeypatch.setenv("UMBRA_DEMO_MODE", "false")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    stderr = ("ERROR: unexpected status 401 Unauthorized: Missing bearer or basic "
+              "authentication in header, url: https://api.openai.com/v1/responses, "
+              "cf-ray: a1bd9228596f34d9-ORD")
+    def runner(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 1, "", stderr)
+    op = CodexClient(runner=runner).propose("Fix it", repo_path=tmp_path)
+    assert op.tests_passed is False
+    assert "authenticate" in op.summary.lower()
+    assert "cf-ray" not in op.summary and "Missing bearer" not in op.summary
+    assert stderr[-4000:] == op.error  # full stderr still preserved for debugging
+
+
+def test_model_and_reasoning_effort_flags_are_passed(monkeypatch, tmp_path: Path):
+    # The user-selected speed knobs must reach `codex exec` as -m / -c flags.
+    monkeypatch.setenv("UMBRA_ENABLE_CODEX_CLI", "true")
+    monkeypatch.setenv("UMBRA_DEMO_MODE", "false")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    captured: list[str] = []
+    def runner(command, **_kwargs):
+        captured.extend(command)
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+    CodexClient(runner=runner, model="gpt-5.6-luna", reasoning_effort="low").propose("x", repo_path=tmp_path, read_only=True)
+    assert captured[captured.index("-m") + 1] == "gpt-5.6-luna"
+    assert 'model_reasoning_effort="low"' in captured
+
+
+def test_invalid_model_and_effort_fall_back_to_default(monkeypatch, tmp_path: Path):
+    # Anything outside the whitelist is dropped (no flag) so a bad/hostile value
+    # can never be injected into the CLI config and never breaks the scan.
+    monkeypatch.setenv("UMBRA_ENABLE_CODEX_CLI", "true")
+    monkeypatch.setenv("UMBRA_DEMO_MODE", "false")
+    monkeypatch.delenv("UMBRA_CODEX_MODEL", raising=False)
+    monkeypatch.delenv("UMBRA_CODEX_REASONING_EFFORT", raising=False)
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    captured: list[str] = []
+    def runner(command, **_kwargs):
+        captured.extend(command)
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+    CodexClient(runner=runner, model="evil; rm -rf /", reasoning_effort="ludicrous").propose("x", repo_path=tmp_path, read_only=True)
+    assert "-m" not in captured and not any("model_reasoning_effort" in c for c in captured)
+
+
+def test_model_effort_env_fallback(monkeypatch):
+    monkeypatch.setenv("UMBRA_CODEX_MODEL", "gpt-5.6-terra")
+    monkeypatch.setenv("UMBRA_CODEX_REASONING_EFFORT", "HIGH")  # case-insensitive
+    client = CodexClient()
+    assert client.model == "gpt-5.6-terra" and client.reasoning_effort == "high"
+
+
+def test_checkout_defaults_to_depth_one_and_honors_env(monkeypatch):
+    # Shallow clone: faster and (on Cloud Run's tmpfs) far less memory per scan.
+    import os
+
+    import backend.integrations.repository as repo
+
+    monkeypatch.setenv("UMBRA_ENABLE_LIVE_REPOS", "true")
+    seen: list[list[str]] = []
+    def fake_run(cmd, **_kw):
+        if cmd[:2] == ["git", "clone"]:
+            seen.append(cmd)
+            os.makedirs(cmd[-1], exist_ok=True)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(repo.subprocess, "run", fake_run)
+
+    monkeypatch.delenv("UMBRA_CLONE_DEPTH", raising=False)
+    with repo.checkout_public_repo("https://github.com/a/b"):
+        pass
+    assert seen[-1][seen[-1].index("--depth") + 1] == "1"
+
+    monkeypatch.setenv("UMBRA_CLONE_DEPTH", "20")
+    with repo.checkout_public_repo("https://github.com/a/b"):
+        pass
+    assert seen[-1][seen[-1].index("--depth") + 1] == "20"
+
+
+def test_fetch_pull_request_follows_redirects(monkeypatch):
+    # github.com/<repo>/pull/N.diff 302-redirects; every external GET must follow it.
+    import backend.integrations.github as gh
+
+    seen: list[object] = []
+
+    class _Resp:
+        def __init__(self, text: str = "", data: dict | None = None) -> None:
+            self.text = text
+            self._data = data or {}
+        def raise_for_status(self) -> None:  # 302 would have thrown here before the fix
+            return None
+        def json(self) -> dict:
+            return self._data
+
+    def fake_get(url: str, **kwargs):
+        seen.append(kwargs.get("follow_redirects"))
+        if url.endswith(".diff"):
+            return _Resp(text="diff --git a/a.py b/a.py\n+x\n")
+        return _Resp(data={"title": "t", "head": {"sha": "h"}, "base": {"sha": "b"}})
+
+    monkeypatch.setattr(gh.httpx, "get", fake_get)
+    result = gh.fetch_pull_request("https://github.com/o/r", 1)
+    assert result["number"] == 1
+    assert seen and all(v is True for v in seen)

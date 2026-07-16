@@ -8,3 +8,4 @@ frontend/.next/
 frontend/out/
 /.next/
 frontend/.env.local
+*.tsbuildinfo

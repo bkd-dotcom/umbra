@@ -16,7 +16,7 @@ def test_demo_reviewer_is_labelled(monkeypatch):
 
 def test_live_reviewer_wires_real_boundaries(monkeypatch, tmp_path: Path):
     @contextmanager
-    def checkout(_: str): yield tmp_path
+    def checkout(_, __=None): yield tmp_path
     class Codex:
         def propose(self, prompt: str, repo_path: Path, read_only: bool):
             assert read_only is True

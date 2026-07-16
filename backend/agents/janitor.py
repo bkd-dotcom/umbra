@@ -5,7 +5,7 @@ import asyncio
 import os
 from time import perf_counter
 
-from backend.agents.base import AgentResult, Replay, codex_reasoning
+from backend.agents.base import AgentResult, Replay, codex_reasoning, reasoning_from_operation
 from backend.cache import load_demo_cache
 from backend.codex_client import CodexClient, CodexOperation
 from backend.integrations.repository import checkout_public_repo, live_repositories_enabled
@@ -16,10 +16,15 @@ class Janitor:
     def __init__(self, codex: CodexClient | None = None) -> None:
         self.codex = codex or CodexClient()
 
-    async def run(self, repo_url: str) -> AgentResult:
+    async def run(self, repo_url: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> AgentResult:
+        # Janitor's only real work is a Codex edit, so when Codex is not permitted
+        # for this request (non-founder on the hosted deploy) it stays on the clean
+        # cached replay rather than spending the founder's credits.
+        if allow_codex is False:
+            return self._cached_result()
         if self._live_enabled():
             try:
-                return await self._run_live(repo_url)
+                return await self._run_live(repo_url, github_token, openai_key)
             except Exception as exc:
                 return self._cached_result(f"Live Janitor unavailable: {exc}")
         return self._cached_result()
@@ -29,8 +34,8 @@ class Janitor:
         # Codex CLI (ChatGPT login) supplies both the cleanup and reasoning; no API key required.
         return os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true" and live_repositories_enabled() and CodexClient.enabled()
 
-    async def _run_live(self, repo_url: str) -> AgentResult:
-        with checkout_public_repo(repo_url) as repo_path:
+    async def _run_live(self, repo_url: str, github_token: str | None = None, openai_key: str | None = None) -> AgentResult:
+        with checkout_public_repo(repo_url, github_token) as repo_path:
             codex_started = perf_counter()
             try:
                 operation = self.codex.propose("Find behavior-preserving dead code, unused imports, and orphaned environment variables. Make one smallest focused cleanup change, run relevant tests, and do not push, commit, or merge.", repo_path=repo_path)
@@ -42,10 +47,17 @@ class Janitor:
         developer = "You are Umbra Janitor. Explain only the concrete cleanup diff and its expected behavior-preserving risk. Do not invent files or symbols."
         user = f"Codex summary:\n{operation.summary}\nChanged files: {operation.files}\nDiff:\n{operation.diff}"
         try:
-            analysis = await asyncio.to_thread(reason, "work", developer, user)
+            analysis = await asyncio.to_thread(reason, "work", developer, user, None, openai_key)
             reasoning, reasoning_provider = analysis.text, analysis.provider
         except RuntimeError as exc:
-            reasoning, reasoning_provider = await asyncio.to_thread(codex_reasoning, self.codex, developer, user, exc)
+            # Responses API unavailable (the codex-only deploy): reuse Codex's own
+            # explanation of the cleanup — one call instead of a second analyze —
+            # and only fall back to a dedicated analyze if propose gave nothing usable.
+            reused = reasoning_from_operation(operation)
+            if reused:
+                reasoning, reasoning_provider = reused
+            else:
+                reasoning, reasoning_provider = await asyncio.to_thread(codex_reasoning, self.codex, developer, user, exc)
         return AgentResult("janitor", f"Live Janitor produced {len(operation.files)} changed files.", findings, Replay("janitor", operation.prompt, operation.diff, operation.summary, reasoning, {"codex_ms": codex_ms, "reasoning_ms": int((perf_counter() - reasoning_started) * 1000)}, {"engineering": operation.provider, "reasoning": reasoning_provider}))
 
     @staticmethod

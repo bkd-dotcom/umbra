@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import deque
 from typing import Any, AsyncIterator
 
@@ -41,29 +42,35 @@ class Orchestrator:
         for event in load_demo_cache()["events"]:
             await self.bus.emit(event)
 
-    async def scan(self, repo_url: str, agents: list[str] | None = None, pr_number: int | None = None) -> dict[str, Any]:
+    async def scan(self, repo_url: str, agents: list[str] | None = None, pr_number: int | None = None, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None, model: str | None = None, reasoning_effort: str | None = None) -> dict[str, Any]:
         # Cache is intentionally the availability boundary: a demo never depends on third parties.
         from backend.agents import Janitor, Reviewer, Watchman
+        from backend.codex_client import CodexClient
 
         payload = load_demo_cache()
         payload["repo_url"] = repo_url
         requested = set(agents or ["watchman", "reviewer", "janitor"])
+        # One Codex client for the whole scan carries the caller's speed choice
+        # (lighter model / lower reasoning effort) to every agent it runs.
+        codex = CodexClient(model=model, reasoning_effort=reasoning_effort)
         agent_runs = []
         if "watchman" in requested:
-            agent_runs.append(await Watchman().run(repo_url))
+            agent_runs.append(await Watchman(codex=codex).run(repo_url, github_token=github_token, openai_key=openai_key, allow_codex=allow_codex))
         if "reviewer" in requested:
-            agent_runs.append(await Reviewer().run(repo_url, pr_number=pr_number))
+            agent_runs.append(await Reviewer(codex=codex).run(repo_url, pr_number=pr_number, github_token=github_token, openai_key=openai_key, allow_codex=allow_codex))
         if "janitor" in requested:
-            agent_runs.append(await Janitor().run(repo_url))
+            agent_runs.append(await Janitor(codex=codex).run(repo_url, github_token=github_token, openai_key=openai_key, allow_codex=allow_codex))
         self.replays = [result.replay.__dict__ for result in agent_runs] or self.replays
         await self.replay_demo_events()
         response = {key: value for key, value in payload.items() if key not in {"events", "postmortem", "answer", "replays"}}
         watchman = next((result for result in agent_runs if result.agent == "watchman"), None)
-        if watchman and watchman.replay.providers.get("vulnerabilities") == "osv.dev":
+        live_watchman = bool(watchman and watchman.replay.providers.get("vulnerabilities") == "osv.dev")
+        if live_watchman:
             # This is the one live, end-to-end source of truth. Do not blend it
             # with seeded categories and accidentally present a cache as a scan.
             response.update({
                 "vulnerabilities": watchman.findings,
+                "dependencies": watchman.dependencies,
                 "dead_code": [],
                 "secrets": [],
                 "missing_docs_count": 0,
@@ -86,36 +93,123 @@ class Orchestrator:
             response["source"] = f"live-{live_agents[0]}" if len(live_agents) == 1 else "live"
             response["live_agents"] = live_agents
         response["agent_results"] = [result.as_dict() for result in agent_runs]
-        response["kill_chain"] = kill_chain()
-        response["dependency_galaxy"] = dependency_galaxy()
-        response["roi"] = roi_estimate(len(payload["vulnerabilities"]) + len(payload["dead_code"]))
+        live_deps = watchman.dependencies if live_watchman else None
+        response["kill_chain"] = kill_chain() if response.get("vulnerabilities") else []
+        response["dependency_galaxy"] = dependency_galaxy(live_deps)
+        finding_count = len(response["vulnerabilities"]) + len(response.get("dead_code", [])) if live_watchman else len(payload["vulnerabilities"]) + len(payload["dead_code"])
+        response["roi"] = roi_estimate(finding_count)
         response["benchmark"] = {"mode": "precomputed", "baseline_minutes": 96, "umbra_minutes": 18, "coverage": "seeded express-style repository"}
         return response
 
-    async def investigate(self, repo_url: str, error_log: str) -> dict[str, Any]:
+    async def investigate(self, repo_url: str, error_log: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> dict[str, Any]:
         from backend.agents import Detective
 
-        result = await Detective().run(repo_url, error_log)
+        result = await Detective().run(repo_url, error_log, github_token=github_token, openai_key=openai_key, allow_codex=allow_codex)
         payload = result.findings[0]
         self.replays = [result.replay.__dict__]
         payload["source"] = "live-detective" if result.replay.providers.get("history") == "local-git" else "demo-cache"
         await self.bus.emit({"agent": "DETECTIVE", "message": "Live incident analysis complete" if payload["source"] == "live-detective" else "Incident replay assembled from verified cache", "level": "analysis"})
         return payload
 
-    async def ask(self, repo_url: str, question: str) -> dict[str, Any]:
+    async def ask(self, repo_url: str, question: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> dict[str, Any]:
         from backend.agents import AskUmbra
 
-        result = await AskUmbra().run(repo_url, question)
+        result = await AskUmbra().run(repo_url, question, github_token=github_token, openai_key=openai_key, allow_codex=allow_codex)
         self.replays = [result.replay.__dict__]
         payload = {"answer": result.summary, "references": result.findings, "blast_radius": "Grounded only in the listed retrieved references.", "source": "live-ask" if result.replay.providers.get("retrieval") == "local-git-grep" else "demo-cache"}
         await self.bus.emit({"agent": "ASK UMBRA", "message": f"Grounding answer for: {question[:80]}", "level": "info"})
         return payload
 
-    async def ask_stream(self, repo_url: str, question: str) -> AsyncIterator[str]:
+    async def ask_stream(self, repo_url: str, question: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> AsyncIterator[str]:
         from backend.agents import AskUmbra
 
-        async for chunk in AskUmbra().stream(repo_url, question):
+        async for chunk in AskUmbra().stream(repo_url, question, github_token=github_token, openai_key=openai_key, allow_codex=allow_codex):
             yield chunk
+
+    async def open_fix_pr(self, repo_url: str, token: str, mode: str = "bump", package: str | None = None, version: str | None = None, cve: str | None = None, allow_codex: bool | None = None) -> dict[str, Any]:
+        """Open a fix PR on the user's explicit request. Branch-only, never merges.
+        The write ``token`` is used only here (and inside github_write) — never
+        passed to the Codex child process."""
+        from backend.integrations.github import parse_public_repo
+
+        owner_repo = parse_public_repo(repo_url)
+        if mode == "codex":
+            return await asyncio.to_thread(self._codex_pr, repo_url, owner_repo, token, allow_codex)
+        return await asyncio.to_thread(self._bump_pr, repo_url, owner_repo, token, package, version, cve)
+
+    @staticmethod
+    def _bump_pr(repo_url: str, owner_repo: str, token: str, package: str | None, version: str | None, cve: str | None) -> dict[str, Any]:
+        import os
+
+        import httpx
+
+        from backend.integrations.dependencies import discover_dependencies
+        from backend.integrations.github_write import open_pull_request
+        from backend.integrations.repository import checkout_public_repo
+        from backend.remediation import bump_manifest, pick_fixed_version
+
+        if not package:
+            raise ValueError("A package name is required for a dependency-bump PR.")
+        with checkout_public_repo(repo_url, token) as repo_path:
+            deps = discover_dependencies(repo_path)
+            dep = next((d for d in deps if d["name"].lower() == package.lower() and (not version or d["version"] == version)), None) \
+                or next((d for d in deps if d["name"].lower() == package.lower()), None)
+            if not dep:
+                raise ValueError(f"'{package}' was not found in this repository's manifests.")
+            ecosystem, current = dep["ecosystem"], dep["version"]
+            base = os.getenv("OSV_API_BASE", "https://api.osv.dev/v1").rstrip("/")
+            response = httpx.post(f"{base}/query", json={"package": {"name": package, "ecosystem": ecosystem}, "version": current}, timeout=15)
+            response.raise_for_status()
+            fixed = pick_fixed_version(response.json().get("vulns", []), current)
+            if not fixed:
+                raise ValueError(f"OSV lists no fixed version for {package} {current}, so no safe automatic bump is available.")
+            edit = bump_manifest(repo_path, package, ecosystem, fixed)
+            if not edit:
+                raise ValueError(f"Could not locate {package} in the manifest to edit it.")
+            manifest_path, new_content = edit
+        branch = f"umbra/fix-{re.sub(r'[^a-zA-Z0-9._-]+', '-', package.lower())}-{fixed}"
+        title = f"Bump {package} to {fixed}"
+        body = (
+            f"### Umbra dependency fix\n\n"
+            f"Bumps **{package}** from `{current}` to `{fixed}` in `{manifest_path}`"
+            + (f" to remediate **{cve}**" if cve else "")
+            + " (fixed version per [OSV](https://osv.dev)).\n\n"
+            "- Deterministic edit — no model or Codex involved.\n"
+            "- Opened on a new branch; **Umbra never merges** — review and merge yourself.\n"
+        )
+        return open_pull_request(owner_repo, token, branch, title, body, {manifest_path: new_content})
+
+    @staticmethod
+    def _codex_pr(repo_url: str, owner_repo: str, token: str, allow_codex: bool | None) -> dict[str, Any]:
+        from datetime import UTC, datetime
+
+        from backend.codex_client import CodexClient
+        from backend.integrations.github_write import open_pull_request
+        from backend.integrations.repository import checkout_public_repo
+
+        if allow_codex is False:
+            raise PermissionError("Codex-authored PRs are founder-only on the hosted demo.")
+        codex = CodexClient()
+        with checkout_public_repo(repo_url, token) as repo_path:
+            operation = codex.propose(
+                "Find and fix the single highest-value, behavior-preserving issue you can (a security fix, a clear bug, or dead-code removal). Make the smallest safe change and run relevant tests. Do not push, commit, or merge.",
+                repo_path=repo_path,
+            )
+            file_changes: dict[str, str] = {}
+            for rel in operation.files:
+                path = repo_path / rel
+                if path.is_file():
+                    file_changes[rel] = path.read_text(errors="replace")
+            if not file_changes:
+                raise ValueError("Codex proposed no readable changes, so there is nothing to open a PR for.")
+            summary = operation.summary
+        branch = f"umbra/codex-fix-{datetime.now(UTC).strftime('%Y%m%d%H%M')}"
+        body = (
+            f"### Umbra Codex fix\n\n{summary}\n\n"
+            "- Authored by Codex in a disposable checkout (origin stripped; the agent never pushes or merges).\n"
+            "- Opened on a new branch; **Umbra never merges** — review and merge yourself.\n"
+        )
+        return open_pull_request(owner_repo, token, branch, "Umbra Codex: proposed fix", body, file_changes)
 
 
 orchestrator = Orchestrator()

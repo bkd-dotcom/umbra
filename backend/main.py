@@ -215,8 +215,30 @@ async def event_stream() -> StreamingResponse:
 # DEAD LAST (after every /api/* route) so the greedy "/" mount never shadows an
 # API route. Absent in dev (dashboard runs on :3000 via `npm run dev`), so this
 # mount is simply skipped there.
+class _CachedStaticFiles(StaticFiles):
+    """StaticFiles with correct cache headers for a hashed static export.
+
+    Vanilla StaticFiles sends etag/last-modified but no Cache-Control, so
+    browsers *heuristically* cache the entry HTML — and that stale HTML still
+    points at the previous build's chunk hashes, making fresh deploys look like
+    "nothing changed" until a hard refresh. Fix: content-hashed assets under
+    /_next/static/ are immutable (safe to cache forever — the filename changes
+    when the content does); everything else (HTML, favicon) must revalidate, so
+    a new deploy shows up on the next normal refresh. etag keeps revalidation a
+    cheap 304.
+    """
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if path.startswith("_next/static/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 _STATIC_DIR = Path(
     os.getenv("UMBRA_STATIC_DIR", str(Path(__file__).resolve().parent.parent / "frontend" / "out"))
 )
 if _STATIC_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")
+    app.mount("/", _CachedStaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")

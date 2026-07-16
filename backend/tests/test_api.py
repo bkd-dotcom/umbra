@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from backend.main import app
+from backend.main import app, _STATIC_DIR
 
 
 client = TestClient(app)
@@ -41,3 +41,21 @@ def test_static_ui_mount_never_shadows_api_routes():
     assert max(api_indices) < min(mount_indices), (
         "the '/' UI mount is registered before an /api route and will shadow it"
     )
+
+
+def test_static_cache_headers_revalidate_html_and_freeze_hashed_assets():
+    """Entry HTML must revalidate (Cache-Control: no-cache) so a new deploy shows
+    up on the next refresh instead of a browser-cached stale shell that points at
+    old chunk hashes; content-hashed /_next/static assets are immutable. Vacuously
+    passes when the static bundle isn't built (dev / fresh checkout)."""
+    if not _STATIC_DIR.is_dir():
+        return
+    root = client.get("/")
+    if root.status_code == 200:
+        assert root.headers.get("cache-control") == "no-cache"
+    assets = list(_STATIC_DIR.glob("_next/static/**/*.js"))
+    if assets:
+        rel = assets[0].relative_to(_STATIC_DIR).as_posix()
+        resp = client.get("/" + rel)
+        assert resp.status_code == 200
+        assert "immutable" in resp.headers.get("cache-control", "")

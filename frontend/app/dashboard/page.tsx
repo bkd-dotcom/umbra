@@ -119,6 +119,7 @@ export default function Dashboard() {
   const [result, setResult] = useState<ScanResult | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   const [history, setHistory] = useState<Scan[]>([]);
+  const [watched, setWatched] = useState<string[]>([]);
   const [activeReplay, setActiveReplay] = useState<Replay | null>(null);
   const [prTarget, setPrTarget] = useState<{ mode: "bump" | "codex"; vuln?: Vuln } | null>(null);
   const [keyInput, setKeyInput] = useState("");
@@ -129,6 +130,19 @@ export default function Dashboard() {
   const loadHistory = useCallback(() => {
     fetch(`${API}/api/my/scans`, creds).then((r) => (r.ok ? r.json() : [])).then((d: Scan[]) => Array.isArray(d) && setHistory(d)).catch(() => {});
   }, []);
+
+  const loadWatched = useCallback(() => {
+    fetch(`${API}/api/my/watched`, creds).then((r) => (r.ok ? r.json() : [])).then((d: string[]) => Array.isArray(d) && setWatched(d)).catch(() => {});
+  }, []);
+
+  const toggleWatch = useCallback(async (fullName: string) => {
+    if (!fullName) return;
+    const next = watched.includes(fullName) ? watched.filter((r) => r !== fullName) : [...watched, fullName];
+    setWatched(next); // optimistic — Umbra rescans watched repos on a schedule
+    try {
+      await fetch(`${API}/api/my/watched`, { method: "PUT", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repos: next }) });
+    } catch { loadWatched(); }
+  }, [watched, loadWatched]);
 
   const loadRepos = useCallback(() => {
     setRepoError(null);
@@ -153,6 +167,7 @@ export default function Dashboard() {
         setUser(me);
         if (me.github_connected) loadRepos();
         loadHistory();
+        loadWatched();
       })
       .catch(() => { setUser(null); window.location.replace("/"); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -283,6 +298,8 @@ export default function Dashboard() {
             setRepoUrl={setRepoUrl}
             scanning={scanning}
             onRun={() => launchScan()}
+            watched={watched}
+            onToggleWatch={toggleWatch}
           />
           <ScanOptions model={model} setModel={setModel} effort={effort} setEffort={setEffort} crew={crew} setCrew={setCrew} />
         </div>
@@ -411,6 +428,14 @@ export default function Dashboard() {
         <ByoKeyPanel user={user} keyInput={keyInput} setKeyInput={setKeyInput} onSave={saveKey} onRemove={removeKey} saving={savingKey} />
       </section>
 
+      {/* Portfolio rollup + remediation queue — aggregated across saved scans */}
+      {history.length > 0 && (
+        <section className="mt-10 grid gap-6">
+          <RepoRollup history={history} onView={viewSaved} />
+          <RemediationQueue history={history} canPr={canPr} />
+        </section>
+      )}
+
       {/* History */}
       {history.length > 0 && (
         <section className="mt-10">
@@ -468,10 +493,11 @@ function AuthLoading() {
   );
 }
 
-function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery, repoUrl, setRepoUrl, scanning, onRun }: {
+function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery, repoUrl, setRepoUrl, scanning, onRun, watched, onToggleWatch }: {
   user: User; repos: Repo[] | null; repoError: { status: number; msg: string } | null; onRetry: () => void;
   filtered: Repo[]; query: string; setQuery: (v: string) => void;
   repoUrl: string; setRepoUrl: (v: string) => void; scanning: boolean; onRun: () => void;
+  watched: string[]; onToggleWatch: (fullName: string) => void;
 }) {
   const hasGitHub = !!user.github_connected;
   const [mode, setMode] = useState<"mine" | "public">(hasGitHub ? "mine" : "public");
@@ -520,6 +546,7 @@ function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery
               className="min-w-[260px] flex-1 rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-3.5 py-2.5 font-mono text-[13px] outline-none focus:border-cyan/50"
             />
             <Magnetic><StatefulButton loading={scanning} onClick={onRun}>{scanning ? "Running" : "Run scan"}</StatefulButton></Magnetic>
+            <WatchToggle fullName={repoUrl ? repoFullName(repoUrl) : ""} watched={watched} onToggle={onToggleWatch} />
           </div>
           <p className="text-[12px] text-fog">Scan any public GitHub repository — great for auditing a dependency or contributing a fix to open source.</p>
         </div>
@@ -608,10 +635,25 @@ function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery
               )}
             </AnimatePresence>
           </div>
-          <StatefulButton loading={scanning} onClick={onRun}>{scanning ? "Running" : "Run scan"}</StatefulButton>
+          <Magnetic><StatefulButton loading={scanning} onClick={onRun}>{scanning ? "Running" : "Run scan"}</StatefulButton></Magnetic>
+          <WatchToggle fullName={selected?.full_name ?? (repoUrl ? repoFullName(repoUrl) : "")} watched={watched} onToggle={onToggleWatch} />
         </div>
       )}
     </GlowCard>
+  );
+}
+
+function WatchToggle({ fullName, watched, onToggle }: { fullName: string; watched: string[]; onToggle: (fullName: string) => void }) {
+  if (!fullName) return null;
+  const on = watched.includes(fullName);
+  return (
+    <button
+      onClick={() => onToggle(fullName)}
+      title={on ? "Watching — Umbra rescans this repo on a schedule. Click to stop." : "Watch — Umbra rescans this repo on a schedule and flags new advisories."}
+      className={`shrink-0 rounded-xl border px-3.5 py-2.5 font-mono text-[11px] transition-colors ${on ? "border-cyan/50 bg-cyan/10 text-cyan" : "border-[color:var(--surface-border)] text-fog hover:border-cyan/40 hover:text-cloud"}`}
+    >
+      {on ? "★ Watching" : "☆ Watch"}
+    </button>
   );
 }
 
@@ -899,6 +941,158 @@ function DetectivePanel({ repo }: { repo: string }) {
         </div>
       )}
     </GlowCard>
+  );
+}
+
+const SEV_ORDER = ["critical", "high", "medium", "low"] as const;
+const SEV_COLOR: Record<string, string> = { critical: "#fb7185", high: "#fbbf24", medium: "#22d3ee", low: "#5eead4" };
+
+// Latest saved scan per repo (history is newest-first).
+function latestPerRepo(history: Scan[]): Scan[] {
+  const seen = new Map<string, Scan>();
+  for (const s of history) if (!seen.has(s.repo_full_name)) seen.set(s.repo_full_name, s);
+  return [...seen.values()];
+}
+
+function RepoRollup({ history, onView }: { history: Scan[]; onView: (s: Scan) => void }) {
+  const latest = useMemo(() => latestPerRepo(history), [history]);
+  const stats = useMemo(() => {
+    const scores = latest.map((s) => s.umbra_score).filter((n): n is number => typeof n === "number");
+    const sev: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+    for (const s of latest) for (const v of s.report?.vulnerabilities ?? []) if (v.severity in sev) sev[v.severity]++;
+    return {
+      repos: latest.length,
+      avg: scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null,
+      worst: scores.length ? Math.min(...scores) : null,
+      advisories: latest.reduce((a, s) => a + (s.vuln_count ?? 0), 0),
+      sev,
+      offenders: [...latest].sort((a, b) => (a.umbra_score ?? 101) - (b.umbra_score ?? 101)).slice(0, 5),
+    };
+  }, [latest]);
+  if (latest.length < 2) return null; // a rollup only earns its place across multiple repos
+
+  return (
+    <Reveal>
+      <GlowCard className="p-7">
+        <div className="mb-5 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="font-serif text-2xl">Portfolio overview</h2>
+          <span className="font-mono text-[11px] text-fog">{stats.repos} repositories · latest scan each</span>
+        </div>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <Stat label="Repos" value={String(stats.repos)} />
+          <Stat label="Avg score" value={stats.avg == null ? "—" : String(stats.avg)} tone={stats.avg != null && stats.avg < 60 ? "warn" : "ok"} />
+          <Stat label="Worst score" value={stats.worst == null ? "—" : String(stats.worst)} tone={stats.worst != null && stats.worst < 60 ? "bad" : "ok"} />
+          <Stat label="Advisories" value={String(stats.advisories)} tone={stats.advisories > 0 ? "warn" : "ok"} />
+        </div>
+        {stats.advisories > 0 && (
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            {SEV_ORDER.filter((k) => stats.sev[k] > 0).map((k) => (
+              <span key={k} className="inline-flex items-center gap-1.5 font-mono text-[11px] text-fog">
+                <span className="h-2 w-2 rounded-full" style={{ background: SEV_COLOR[k] }} />
+                {stats.sev[k]} {k}
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="mt-6 flex flex-col gap-2">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-fog">Needs attention</p>
+          {stats.offenders.map((s) => (
+            <button key={s.repo_full_name} onClick={() => onView(s)} className="group flex items-center justify-between gap-3 rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-4 py-2.5 text-left transition-colors hover:border-cyan/40">
+              <b className="truncate font-mono text-[13px] text-cyan/90">{s.repo_full_name}</b>
+              <span className="flex shrink-0 items-center gap-3 font-mono text-[11px] text-fog">
+                <span>score {s.umbra_score ?? "—"}</span>
+                <span>{s.vuln_count ?? 0} adv</span>
+                <span className="text-cyan opacity-0 transition-opacity group-hover:opacity-100">open →</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      </GlowCard>
+    </Reveal>
+  );
+}
+
+function Stat({ label, value, tone = "ok" }: { label: string; value: string; tone?: "ok" | "warn" | "bad" }) {
+  const color = tone === "bad" ? "text-rose-300" : tone === "warn" ? "text-amber" : "text-cloud";
+  return (
+    <div className="rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-4 py-3">
+      <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-fog">{label}</div>
+      <div className={`mt-1 font-serif text-2xl ${color}`}>{value}</div>
+    </div>
+  );
+}
+
+function RemediationQueue({ history, canPr }: { history: Scan[]; canPr: boolean }) {
+  const items = useMemo(() => {
+    const out: { repo: string; v: Vuln }[] = [];
+    const seenKey = new Set<string>();
+    for (const s of latestPerRepo(history)) {
+      for (const v of s.report?.vulnerabilities ?? []) {
+        const key = `${s.repo_full_name}:${v.package}@${v.version}:${v.cve}`;
+        if (seenKey.has(key)) continue;
+        seenKey.add(key);
+        out.push({ repo: s.repo_full_name, v });
+      }
+    }
+    // Worst first.
+    return out.sort((a, b) => SEV_ORDER.indexOf(a.v.severity as typeof SEV_ORDER[number]) - SEV_ORDER.indexOf(b.v.severity as typeof SEV_ORDER[number])).slice(0, 25);
+  }, [history]);
+  if (items.length === 0) return null;
+
+  return (
+    <Reveal>
+      <GlowCard glow="rgba(94,234,212,0.2)" className="p-7">
+        <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="font-serif text-2xl">Remediation queue</h2>
+          <span className="font-mono text-[11px] text-fog">{items.length} fixable {items.length === 1 ? "advisory" : "advisories"}</span>
+        </div>
+        <p className="mb-4 text-[13px] text-fog">
+          One click opens a <b className="text-cloud">branch-only</b> dependency-bump PR (deterministic, no Codex credits) — Umbra never merges.
+          {!canPr && <> Connect GitHub with repo access to enable this.</>}
+        </p>
+        <div className="flex flex-col gap-2.5">
+          {items.map((it) => <RemediationRow key={`${it.repo}:${it.v.package}:${it.v.cve}`} repo={it.repo} v={it.v} canPr={canPr} />)}
+        </div>
+      </GlowCard>
+    </Reveal>
+  );
+}
+
+function RemediationRow({ repo, v, canPr }: { repo: string; v: Vuln; canPr: boolean }) {
+  const [status, setStatus] = useState<"idle" | "working" | "done" | "error">("idle");
+  const [pr, setPr] = useState<{ url: string; number: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const openPr = useCallback(async () => {
+    setStatus("working"); setErr(null);
+    try {
+      const r = await fetch(`${API}/api/my/pr`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo_url: `https://github.com/${repo}`, mode: "bump", package: v.package, version: v.version, cve: v.cve }) });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data?.detail || `PR request failed (${r.status})`);
+      setPr(data); setStatus("done");
+    } catch (e) { setErr((e as Error).message); setStatus("error"); }
+  }, [repo, v]);
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-4 py-3">
+      <SeverityChip severity={v.severity} />
+      <span className="font-mono text-[13px] text-cloud">{v.package}<span className="text-fog">@{v.version}</span></span>
+      <span className="font-mono text-[11px] text-fog">{v.cve}</span>
+      <span className="ml-auto truncate font-mono text-[11px] text-fog/70">{repo}</span>
+      {status === "done" && pr ? (
+        <a href={pr.url} target="_blank" rel="noreferrer" className="font-mono text-[11px] text-teal hover:underline">✓ PR #{pr.number} ↗</a>
+      ) : (
+        <button
+          onClick={openPr}
+          disabled={!canPr || status === "working"}
+          title={canPr ? "Open a dependency-bump PR" : "Connect GitHub to open PRs"}
+          className="rounded-full border border-cyan/40 bg-cyan/10 px-3 py-1 font-mono text-[10px] text-cyan transition-colors hover:bg-cyan/20 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {status === "working" ? "Opening…" : "Open bump PR →"}
+        </button>
+      )}
+      {err && <span className="w-full font-mono text-[10px] text-rose-300">{err}</span>}
+    </div>
   );
 }
 

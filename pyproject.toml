@@ -7,6 +7,8 @@ name = "umbra-engineer"
 version = "0.1.0"
 description = "The AI engineer that works the night shift."
 readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Binay Dalai" }]
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115.0",

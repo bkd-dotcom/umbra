@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
 from contextlib import asynccontextmanager
@@ -10,20 +11,21 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-from fastapi import Request
+from fastapi import BackgroundTasks, Header, Request
 
 from backend import auth
 from backend.codex_client import CodexClient
 from backend.integrations.github import parse_public_repo
 from backend.integrations.repository import cloud_scan_enabled, live_repositories_enabled
 from backend.orchestrator import orchestrator
-from backend.settings import cookie_secure, founder_ids, session_secret
+from backend.settings import cookie_secure, cron_key, founder_ids, github_webhook_secret, service_github_token, session_secret
 from backend.store import get_store
+from backend.webhooks import REVIEWABLE_ACTIONS, verify_github_signature
 
 
 @asynccontextmanager
@@ -231,6 +233,89 @@ async def event_stream() -> StreamingResponse:
             await asyncio.sleep(0)
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# --- Autonomy: scheduled watch + PR auto-review webhook ---------------------
+async def _run_webhook_review(repo_url: str, pr_number: int, token: str) -> None:
+    """Background PR review (clone + reason take longer than GitHub's 10s ack
+    window, so we ack immediately and do the work here). Never raises."""
+    try:
+        await orchestrator.review_pull_request(repo_url, pr_number, token)
+    except Exception:  # noqa: BLE001 - a failed review must never crash the worker
+        pass
+
+
+@app.post("/api/webhooks/github", tags=["webhooks"])
+async def github_webhook(request: Request, background: BackgroundTasks, x_github_event: str = Header(default=""), x_hub_signature_256: str = Header(default="")) -> dict[str, object]:
+    """GitHub PR webhook → auto-review. HMAC-verified; comment-only; never merges.
+    Acks fast and runs the review in the background so GitHub doesn't time out."""
+    body = await request.body()
+    if not verify_github_signature(github_webhook_secret(), body, x_hub_signature_256):
+        raise HTTPException(status_code=401, detail="Invalid or missing webhook signature.")
+    if x_github_event != "pull_request":
+        return {"ok": True, "ignored_event": x_github_event or "unknown"}
+    payload = json.loads(body or b"{}")
+    if payload.get("action") not in REVIEWABLE_ACTIONS:
+        return {"ok": True, "ignored_action": payload.get("action")}
+    pr = payload.get("pull_request") or {}
+    repo_url = (payload.get("repository") or {}).get("html_url") or ""
+    number = pr.get("number")
+    token = service_github_token()
+    if not (repo_url and number and token):
+        return {"ok": True, "skipped": "missing repo, PR number, or GITHUB_TOKEN"}
+    background.add_task(_run_webhook_review, repo_url, int(number), token)
+    return {"ok": True, "queued": {"pr": number}}
+
+
+@app.post("/api/cron/rescan", tags=["system"])
+async def cron_rescan(x_umbra_cron_key: str = Header(default="")) -> dict[str, object]:
+    """Scheduled rescan of every user's watched repos (Cloud Scheduler → here).
+    Guarded by a shared secret; runs cloud-scan mode only (no Codex spend)."""
+    key = cron_key()
+    if not key or not hmac.compare_digest(x_umbra_cron_key, key):
+        raise HTTPException(status_code=401, detail="Invalid or missing cron key.")
+    return await orchestrator.rescan_watched()
+
+
+# --- ChatGPT plugin / GPT Action surface ------------------------------------
+# The scan/investigate/ask endpoints are anonymous + JSON, so they work as a GPT
+# Action or a classic ChatGPT plugin with no auth. We serve BOTH the curated
+# OpenAPI (trimmed to the 3 public actions, server pinned) and a classic plugin
+# manifest. Registered BEFORE the static mount so the greedy "/" mount can't
+# shadow them, and it sidesteps StaticFiles' hidden-dotfile handling.
+_ACTIONS_OPENAPI = Path(__file__).resolve().parent.parent / "custom_gpt" / "openapi.yaml"
+
+
+def _public_base(request: Request) -> str:
+    """Absolute base URL for manifest links — pinned in prod via UMBRA_PUBLIC_URL,
+    else derived from the request (works in local dev)."""
+    return (os.getenv("UMBRA_PUBLIC_URL") or str(request.base_url)).rstrip("/")
+
+
+@app.get("/openapi-actions.yaml", include_in_schema=False)
+async def actions_openapi() -> Response:
+    try:
+        spec = _ACTIONS_OPENAPI.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="Action schema unavailable.") from exc
+    return Response(content=spec, media_type="application/yaml")
+
+
+@app.get("/.well-known/ai-plugin.json", include_in_schema=False)
+async def ai_plugin_manifest(request: Request) -> dict[str, object]:
+    base = _public_base(request)
+    return {
+        "schema_version": "v1",
+        "name_for_human": "Umbra Engineer",
+        "name_for_model": "umbra",
+        "description_for_human": "Scan any public GitHub repo for CVEs, investigate incidents to a root-cause commit, and ask grounded questions about a codebase.",
+        "description_for_model": "Umbra analyzes public GitHub repositories. Use scanRepo to find dependency CVEs and a 0-100 health score; investigateIncident to trace an error or stack trace to a root-cause commit; askUmbra to answer questions about a codebase grounded in real file/line references. Every result is grounded in real OSV/git data, is never fabricated, and carries a 'source' label describing what produced it.",
+        "auth": {"type": "none"},
+        "api": {"type": "openapi", "url": f"{base}/openapi-actions.yaml"},
+        "logo_url": f"{base}/icon.svg",
+        "contact_email": "binaydalai2024@gmail.com",
+        "legal_info_url": f"{base}/privacy",
+    }
 
 
 # --- Static dashboard (single-service deploy) -------------------------------

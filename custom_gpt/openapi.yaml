@@ -101,6 +101,12 @@ components:
       properties:
         repo_url: { type: string }
         umbra_score: { type: integer, description: "0-100 (higher is better)." }
+        source:
+          type: string
+          description: >
+            What produced the result — e.g. "live-watchman" (real OSV advisories),
+            "live" / "live-<agent>" (Codex-backed), or "demo-cache". Umbra labels
+            every result with its true source; it never fabricates findings.
         vulnerabilities:
           type: array
           items:
@@ -112,6 +118,15 @@ components:
               severity: { type: string, enum: [critical, high, medium, low] }
               owasp: { type: string }
               summary: { type: string }
+        dependencies:
+          type: array
+          description: Resolved dependencies, each flagged if a known advisory affects it.
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              version: { type: string }
+              vulnerable: { type: boolean }
         dead_code:
           type: array
           items:

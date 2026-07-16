@@ -86,3 +86,21 @@ def cookie_secure() -> bool:
 def auth_configured() -> bool:
     """True when at least one real OAuth provider is configured."""
     return github_oauth() is not None or google_oauth() is not None
+
+
+def cron_key() -> str | None:
+    """Shared secret guarding the scheduled-rescan endpoint (Cloud Scheduler sends
+    it in the ``X-Umbra-Cron-Key`` header). Unset ⇒ the endpoint is disabled."""
+    return os.getenv("UMBRA_CRON_KEY") or None
+
+
+def github_webhook_secret() -> str | None:
+    """HMAC secret for verifying inbound GitHub webhooks (``X-Hub-Signature-256``).
+    Unset ⇒ the webhook endpoint rejects everything."""
+    return os.getenv("UMBRA_GITHUB_WEBHOOK_SECRET") or None
+
+
+def service_github_token() -> str | None:
+    """Service PAT used to READ public PRs and POST review comments from the
+    webhook path. Distinct from per-user OAuth tokens; never handed to Codex."""
+    return os.getenv("GITHUB_TOKEN") or None

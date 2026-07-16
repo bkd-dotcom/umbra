@@ -193,6 +193,40 @@ export default function Landing() {
         </Reveal>
       </section>
 
+      {/* Use Umbra in ChatGPT */}
+      <section id="chatgpt" className="relative py-20">
+        <Reveal>
+          <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-cyan">In ChatGPT</p>
+          <h2 className="mt-3 max-w-[20ch] font-serif text-[clamp(28px,3.6vw,46px)] tracking-[-0.03em]">Talk to Umbra from ChatGPT.</h2>
+          <p className="mt-4 max-w-[60ch] text-[15px] leading-relaxed text-fog">
+            Umbra ships as a ChatGPT plugin / GPT Action. Ask it to scan a repo, investigate an
+            incident, or explain a codebase — grounded in real OSV and git data, never invented. No
+            sign-in required; the read-only actions are public.
+          </p>
+        </Reveal>
+        <RevealGroup className="mt-9 grid gap-4 md:grid-cols-3">
+          {[
+            { n: "scanRepo", body: "“Scan github.com/expressjs/express” → Umbra Score + live CVEs." },
+            { n: "investigateIncident", body: "Paste an error → the root-cause commit from real git history." },
+            { n: "askUmbra", body: "“How does routing work?” → an answer with real file:line references." },
+          ].map((a) => (
+            <Reveal key={a.n} variants={fadeUp}>
+              <GlowCard className="h-full p-6">
+                <b className="font-mono text-[12px] text-cyan">{a.n}</b>
+                <p className="mt-2.5 text-[13px] leading-relaxed text-fog">{a.body}</p>
+              </GlowCard>
+            </Reveal>
+          ))}
+        </RevealGroup>
+        <Reveal className="mt-6 flex flex-wrap items-center gap-4">
+          <a href="/openapi-actions.yaml" className="font-mono text-[12px] text-cyan hover:underline">OpenAPI schema ↗</a>
+          <span className="text-fog/40">·</span>
+          <a href="/.well-known/ai-plugin.json" className="font-mono text-[12px] text-cyan hover:underline">Plugin manifest ↗</a>
+          <span className="text-fog/40">·</span>
+          <a href="https://github.com/bkd-dotcom/umbra/tree/main/custom_gpt" target="_blank" rel="noreferrer" className="font-mono text-[12px] text-fog hover:text-cloud">Build the GPT ↗</a>
+        </Reveal>
+      </section>
+
       {/* Footer */}
       <footer className="mt-16 flex flex-wrap items-center justify-between gap-4 border-t border-line py-10">
         <div className="flex items-center gap-2 text-sm font-extrabold tracking-[0.35em]">

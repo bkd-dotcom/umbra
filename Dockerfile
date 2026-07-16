@@ -24,6 +24,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-cer
     && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md ./
 COPY backend ./backend
+# Curated OpenAPI for the ChatGPT plugin / GPT Action (served at /openapi-actions.yaml).
+COPY custom_gpt ./custom_gpt
 # [cloud] adds google-cloud-firestore for durable per-user storage.
 RUN pip install --no-cache-dir ".[cloud]"
 COPY --from=frontend /fe/out ./frontend/out

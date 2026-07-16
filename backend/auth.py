@@ -261,3 +261,24 @@ async def clear_my_scans(request: Request):
     user = get_current_user(request)
     get_store().clear_scans(_user_key(user))
     return {"ok": True}
+
+
+class WatchedReposBody(BaseModel):
+    repos: list[str] = Field(default_factory=list, max_length=100)
+
+
+@router.get("/api/my/watched")
+async def my_watched(request: Request):
+    """The signed-in user's watched repos (rescanned on the scheduled sweep)."""
+    user = get_current_user(request)
+    return get_store().list_watched_repos(_user_key(user))
+
+
+@router.put("/api/my/watched")
+async def set_my_watched(request: Request, body: WatchedReposBody):
+    """Replace the caller's watched-repo set (the toggle sends the full list).
+    Capped so the scheduled rescan stays bounded. Only touches the caller's data."""
+    user = get_current_user(request)
+    repos = [r.strip() for r in body.repos if r.strip()][:100]
+    get_store().put_watched_repos(_user_key(user), repos)
+    return {"ok": True, "watched": repos}

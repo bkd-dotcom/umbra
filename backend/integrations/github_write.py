@@ -52,3 +52,23 @@ def open_pull_request(
         return {"url": pull.html_url, "number": pull.number, "branch": branch, "base": base}
     except Exception as exc:  # noqa: BLE001 - scrub any token before it can surface
         raise RuntimeError(_scrub(str(exc))) from None
+
+
+def create_issue_comment(repo_full_name: str, token: str, issue_number: int, body: str) -> dict[str, object]:
+    """Post a single comment on a PR/issue — used by the webhook auto-review.
+
+    Comment-only: never approves, requests changes, merges, or edits code. The
+    token is used server-side here and is NEVER handed to the Codex child process;
+    any token substring is scrubbed from raised errors.
+    """
+    from github import Github
+
+    def _scrub(message: str) -> str:
+        return message.replace(token, "***") if token else message
+
+    try:
+        issue = Github(token).get_repo(repo_full_name).get_issue(number=issue_number)
+        comment = issue.create_comment(body)
+        return {"url": comment.html_url, "id": comment.id}
+    except Exception as exc:  # noqa: BLE001 - scrub any token before it can surface
+        raise RuntimeError(_scrub(str(exc))) from None

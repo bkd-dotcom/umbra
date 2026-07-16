@@ -46,6 +46,58 @@ def test_ask_stream_closes_with_done(monkeypatch):
     assert "event: done" in body
 
 
+def test_cron_rescan_requires_matching_key(monkeypatch):
+    monkeypatch.delenv("UMBRA_CRON_KEY", raising=False)
+    assert client.post("/api/cron/rescan").status_code == 401  # disabled when unset
+    monkeypatch.setenv("UMBRA_CRON_KEY", "s3cret")
+    assert client.post("/api/cron/rescan", headers={"X-Umbra-Cron-Key": "wrong"}).status_code == 401
+    ok = client.post("/api/cron/rescan", headers={"X-Umbra-Cron-Key": "s3cret"})
+    assert ok.status_code == 200 and ok.json()["ok"] is True
+
+
+def test_github_webhook_rejects_bad_signature(monkeypatch):
+    monkeypatch.setenv("UMBRA_GITHUB_WEBHOOK_SECRET", "hook-secret")
+    r = client.post("/api/webhooks/github", headers={"X-GitHub-Event": "pull_request", "X-Hub-Signature-256": "sha256=deadbeef"}, content=b"{}")
+    assert r.status_code == 401
+
+
+def test_github_webhook_accepts_valid_signature(monkeypatch):
+    import hashlib
+    import hmac as _hmac
+    monkeypatch.setenv("UMBRA_GITHUB_WEBHOOK_SECRET", "hook-secret")
+    body = b'{"zen":"hi"}'
+    sig = "sha256=" + _hmac.new(b"hook-secret", body, hashlib.sha256).hexdigest()
+    r = client.post("/api/webhooks/github", headers={"X-GitHub-Event": "ping", "X-Hub-Signature-256": sig}, content=body)
+    assert r.status_code == 200 and r.json().get("ignored_event") == "ping"
+
+
+def test_watched_repos_store_roundtrip():
+    from backend.store import _MemoryStore
+    s = _MemoryStore()
+    s.put_watched_repos("github:1", ["a/b", "a/b", "c/d"])  # dedup + sort
+    assert s.list_watched_repos("github:1") == ["a/b", "c/d"]
+    assert s.list_watched_repos("github:2") == []
+    assert "github:1" in set(s.all_user_keys())
+
+
+def test_ai_plugin_manifest_is_served():
+    """The classic ChatGPT plugin manifest must be served with no auth and point
+    at the served OpenAPI + privacy page."""
+    r = client.get("/.well-known/ai-plugin.json")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["schema_version"] == "v1"
+    assert body["auth"]["type"] == "none"
+    assert body["api"]["url"].endswith("/openapi-actions.yaml")
+    assert body["legal_info_url"].endswith("/privacy")
+
+
+def test_openapi_actions_schema_is_served():
+    r = client.get("/openapi-actions.yaml")
+    assert r.status_code == 200
+    assert "openapi" in r.text and "scanRepo" in r.text
+
+
 def test_static_ui_mount_never_shadows_api_routes():
     """The single-service deploy mounts the dashboard at '/'. That mount is
     greedy — if it is registered before any /api route, it silently swallows

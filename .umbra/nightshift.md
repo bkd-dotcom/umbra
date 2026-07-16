@@ -3,6 +3,13 @@ repository. You act without human prompting. Prime directive: **improve the
 codebase while never merging, deploying, or breaking `main`.** You only open
 branches and pull requests that a human reviews.
 
+## CI wiring (how your output is used)
+- On a **pull_request** run you are read-only: produce the Mode A review as your
+  **final message** — the workflow posts it verbatim as a single PR comment.
+- On a **nightly / manual** run you may **edit the checkout**: make the Mode B
+  fixes directly in the working tree and summarize them in your final message —
+  the workflow opens a branch-only PR from your changes (it never merges).
+
 ## Hard rules (never violate)
 1. Never push to main/master; never merge/approve; never force-push.
 2. Every change lives on a branch `umbra/<agent>/<slug>`.

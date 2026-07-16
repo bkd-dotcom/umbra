@@ -36,6 +36,7 @@ class _MemoryStore:
         self._tokens: dict[str, str] = {}
         self._openai_keys: dict[str, str] = {}
         self._scans: dict[str, list[dict[str, Any]]] = {}
+        self._watched: dict[str, list[str]] = {}
         self._lock = threading.Lock()
 
     def get_or_create_user(self, key: str, profile: dict[str, Any]) -> dict[str, Any]:
@@ -79,6 +80,18 @@ class _MemoryStore:
     def clear_scans(self, key: str) -> None:
         with self._lock:
             self._scans.pop(key, None)
+
+    def put_watched_repos(self, key: str, repos: list[str]) -> None:
+        with self._lock:
+            self._watched[key] = sorted(set(repos))
+
+    def list_watched_repos(self, key: str) -> list[str]:
+        with self._lock:
+            return list(self._watched.get(key, []))
+
+    def all_user_keys(self) -> list[str]:
+        with self._lock:
+            return list({*self._users, *self._watched})
 
 
 class _FirestoreStore:
@@ -145,6 +158,16 @@ class _FirestoreStore:
                 pending = 0
         if pending:
             batch.commit()
+
+    def put_watched_repos(self, key: str, repos: list[str]) -> None:
+        self._user(key).set({"watched_repos": sorted(set(repos)), "updated_at": _now()}, merge=True)
+
+    def list_watched_repos(self, key: str) -> list[str]:
+        snap = self._user(key).get()
+        return list((snap.to_dict() or {}).get("watched_repos", [])) if snap.exists else []
+
+    def all_user_keys(self) -> list[str]:
+        return [doc.id for doc in self._db.collection("users").stream()]
 
 
 _store: Any = None

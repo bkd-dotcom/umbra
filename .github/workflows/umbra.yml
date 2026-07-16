@@ -1,4 +1,7 @@
 name: Umbra Night Shift
+# Autonomous engineering in CI: review every PR, and run a nightly scan that
+# opens branch-only fix PRs. Codex does the engineering, GPT-5.6 the reasoning.
+# Drop this into any repo and add an OPENAI_API_KEY secret.
 on:
   pull_request:
   schedule:
@@ -12,14 +15,45 @@ jobs:
   umbra:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Run Umbra (Codex)
-        uses: openai/codex-action@v1        # TODO(verify) exact action name/version in Codex docs
+
+      # Mode A (pull_request) → read-only review. Mode B (nightly/manual) →
+      # Codex may edit the checkout; a later step opens the PR.
+      - name: Run Umbra (Codex · GPT-5.6)
+        id: umbra
+        uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           model: gpt-5.6-sol
           prompt-file: .umbra/nightshift.md
+          permission-profile: ${{ github.event_name == 'pull_request' && ':read-only' || ':workspace' }}
 
+      # Mode A: post Umbra's review as a single PR comment (never approves/blocks).
+      - name: Post PR review comment
+        if: ${{ github.event_name == 'pull_request' && steps.umbra.outputs['final-message'] != '' }}
+        uses: actions/github-script@v7
+        env:
+          UMBRA_REVIEW: ${{ steps.umbra.outputs['final-message'] }}
+        with:
+          script: |
+            const body = process.env.UMBRA_REVIEW || "";
+            if (!body.trim()) return;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+      # Mode B: if Umbra edited the workspace, open a branch-only PR (never merges).
+      - name: Open fix PR
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: umbra/nightly
+          delete-branch: true
+          title: "🌑 Umbra night shift — automated fixes"
+          body: ${{ steps.umbra.outputs['final-message'] }}
+          labels: umbra

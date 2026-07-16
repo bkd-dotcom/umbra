@@ -71,7 +71,10 @@ class Janitor:
 
     def _cached_result(self, note: str | None = None) -> AgentResult:
         findings = load_demo_cache()["dead_code"]
-        operation = self.codex.cached_fallback("Sweep for behavior-preserving cleanup.", note=note or "Cached Janitor replay; no live model or CLI call was made.") if note else self.codex.propose("Sweep for behavior-preserving cleanup.")
+        # No checkout exists here, so `propose()` only returns a stub in demo mode;
+        # on the live service (UMBRA_ENABLE_CODEX_CLI=true) it raises for lack of a
+        # repo, so fall back to the honest cached replay instead of crashing.
+        operation = self.codex.propose("Sweep for behavior-preserving cleanup.") if not note and os.getenv("UMBRA_DEMO_MODE", "false").lower() == "true" else self.codex.cached_fallback("Sweep for behavior-preserving cleanup.", note=note or "Cached Janitor replay; no live model or CLI call was made.")
         return AgentResult("janitor", "Cached Janitor replay.", findings, Replay("janitor", operation.prompt, operation.diff, operation.summary, note or "Demo reasoning replayed from cache; no model or Codex request was made.", {"codex_ms": 0, "reasoning_ms": 0}, {"engineering": "cache-fallback" if note else operation.provider, "reasoning": "demo-cache"}))
 
     @staticmethod

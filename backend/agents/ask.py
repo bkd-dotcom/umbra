@@ -264,7 +264,9 @@ class AskUmbra:
 
     def _cached_result(self, note: str | None = None) -> AgentResult:
         answer = load_demo_cache()["answer"]
-        operation = self.codex.cached_fallback("Answer a codebase question read-only.", note=note or "Cached Ask Umbra replay; no live model or CLI call was made.") if note else self.codex.propose("Answer a codebase question read-only.")
+        # No checkout here: `propose()` only returns a stub in demo mode; on the live
+        # service it would raise, so use the honest cached replay instead.
+        operation = self.codex.propose("Answer a codebase question read-only.") if not note and os.getenv("UMBRA_DEMO_MODE", "false").lower() == "true" else self.codex.cached_fallback("Answer a codebase question read-only.", note=note or "Cached Ask Umbra replay; no live model or CLI call was made.")
         return AgentResult("ask", answer["answer"], answer["references"], Replay("ask", operation.prompt, operation.diff, operation.summary, note or "Demo reasoning replayed from cache; no model or Codex request was made.", {"retrieval_ms": 0, "codex_ms": 0, "reasoning_ms": 0}, {"retrieval": "demo-cache", "reasoning": "demo-cache", "engineering": "cache-fallback" if note else operation.provider}))
 
     @staticmethod

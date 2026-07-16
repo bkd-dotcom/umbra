@@ -126,7 +126,9 @@ class Detective:
 
     def _cached_result(self, note: str | None = None) -> AgentResult:
         postmortem = load_demo_cache()["postmortem"].copy()
-        operation = self.codex.cached_fallback("Investigate an incident from local Git history.", note=note or "Cached Detective replay; no live model or CLI call was made.") if note else self.codex.propose("Investigate an incident from local Git history.")
+        # No checkout here: `propose()` only returns a stub in demo mode; on the live
+        # service it would raise, so use the honest cached replay instead.
+        operation = self.codex.propose("Investigate an incident from local Git history.") if not note and os.getenv("UMBRA_DEMO_MODE", "false").lower() == "true" else self.codex.cached_fallback("Investigate an incident from local Git history.", note=note or "Cached Detective replay; no live model or CLI call was made.")
         providers = {"history": "demo-cache", "reasoning": "demo-cache", "engineering": "cache-fallback" if note else operation.provider}
         return AgentResult("detective", "Cached Detective replay.", [postmortem], Replay("detective", operation.prompt, operation.diff, operation.summary, note or "Demo reasoning replayed from cache; no model or Codex request was made.", {"history_ms": 0, "codex_ms": 0, "reasoning_ms": 0}, providers))
 

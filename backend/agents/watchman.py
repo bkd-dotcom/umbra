@@ -130,10 +130,12 @@ class Watchman:
     def _cached_result(self, fallback_note: str | None = None) -> AgentResult:
         cached = load_demo_cache()
         findings = cached["vulnerabilities"]
+        # No checkout here: `propose()` only returns a stub in demo mode; on the live
+        # service it would raise, so use the honest cached replay instead.
         operation = (
-            self.codex.cached_fallback("Inspect dependency advisories and draft the smallest safe version bump.", ["package-lock.json"], fallback_note or "Demo mode")
-            if fallback_note
-            else self.codex.propose("Inspect dependency advisories and draft the smallest safe version bump.", ["package-lock.json"])
+            self.codex.propose("Inspect dependency advisories and draft the smallest safe version bump.", ["package-lock.json"])
+            if not fallback_note and os.getenv("UMBRA_DEMO_MODE", "false").lower() == "true"
+            else self.codex.cached_fallback("Inspect dependency advisories and draft the smallest safe version bump.", ["package-lock.json"], fallback_note or "Demo mode")
         )
         reason_note = "Demo reasoning is replayed from verified cache; no model or Codex request was made."
         if fallback_note:

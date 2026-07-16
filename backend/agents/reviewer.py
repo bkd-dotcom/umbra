@@ -84,7 +84,9 @@ class Reviewer:
 
     def _cached_result(self, note: str | None = None) -> AgentResult:
         cached = load_demo_cache()
-        operation = self.codex.cached_fallback("Review a pull request diff without editing.", note=note or "Cached Reviewer replay; no live PR, model, or CLI request was made.") if note else self.codex.propose("Review a pull request diff without editing.")
+        # No checkout here: `propose()` only returns a stub in demo mode; on the live
+        # service it would raise, so use the honest cached replay instead.
+        operation = self.codex.propose("Review a pull request diff without editing.") if not note and os.getenv("UMBRA_DEMO_MODE", "false").lower() == "true" else self.codex.cached_fallback("Review a pull request diff without editing.", note=note or "Cached Reviewer replay; no live PR, model, or CLI request was made.")
         providers = {"review": "cache-fallback" if note else operation.provider, "reasoning": "demo-cache", "risk": "deterministic"}
         finding = {"risk_score": 45, "severity": "medium", "blast_radius": "Cached replay only.", "missing_tests": "unknown", "recommendation": "human review required"}
         return AgentResult("reviewer", "Cached Reviewer replay.", [finding], Replay("reviewer", operation.prompt, operation.diff, operation.summary, "Demo reasoning replayed from cache; no model or Codex request was made." if not note else note, {"codex_ms": 0, "reasoning_ms": 0}, providers))

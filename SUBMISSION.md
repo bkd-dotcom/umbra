@@ -1,7 +1,7 @@
 # Umbra — OpenAI Build Week 2026 submission
 
-> Working checklist mapped to the Devpost "What to submit" rules. Fill the two
-> **`TODO`** markers (the `/feedback` session ID and the shared GPT link) before submitting.
+> Working checklist mapped to the Devpost "What to submit" rules. One **`TODO`** remains:
+> the **"Where Codex accelerated this build"** examples — fill with what Codex actually did.
 
 ## Category
 **Developer Tools / Agents.** Umbra is an autonomous multi-agent engineering
@@ -26,7 +26,8 @@ Surfaces:
 - **Web app** — [umbra.engineer](https://umbra.engineer) (Cloud Run, single service).
 - **ChatGPT plugin / GPT Action** — public read-only actions (`scanRepo`, `investigateIncident`,
   `askUmbra`).
-- **Autonomous** — GitHub Actions night-shift (per-repo) + scheduled "Watch" rescans (hosted).
+- **Autonomous** — GitHub Actions night-shift (per-repo) + per-user PR auto-review (hosted): each user
+  enables it on their own repo and reviews are posted with that user's own GitHub connection.
 
 ## How Codex + GPT-5.6 were used (technical implementation)
 - Live engineering: [`backend/codex_client.py`](backend/codex_client.py) — `codex exec --ephemeral -m <model>
@@ -36,10 +37,25 @@ Surfaces:
 - Streaming Ask/Detective: [`backend/agents/ask.py`](backend/agents/ask.py),
   [`backend/agents/detective.py`](backend/agents/detective.py) (first tokens in ~1–3s).
 
-**Where Codex accelerated this build:** <!-- TODO: 2–3 concrete examples, e.g. scaffolding the
-FastAPI routes + tests, the Aceternity UI components, the streaming SSE plumbing. -->
+**Where Codex accelerated this build:** Codex wasn't a side copilot — it was the *primary engineer*.
+Working from a single master build manual ([`UMBRA_MASTER_BUILD.md`](UMBRA_MASTER_BUILD.md)), Codex
+built essentially the whole platform from scratch, phase by phase, committing and running tests after
+each one to keep `main` runnable throughout:
+- **Phases 0–2 — backend from zero:** the FastAPI app + async orchestrator/SSE event bus, all five
+  agents ([`backend/agents/`](backend/agents/): watchman, reviewer, detective, janitor, ask), the
+  Umbra/Risk scoring math with offline tests ([`backend/tests/test_scoring.py`](backend/tests/test_scoring.py)),
+  the OSV + GitHub integrations, and the `demo_cache.json` never-fail fallback.
+- **Phases 3–4 — the "mission control" dashboard:** the Next.js/Tailwind UI — animated Umbra Score
+  dial, the Canvas [Threat Radar](frontend/components/Radar.tsx), the live SSE agent terminal, the
+  Reasoning-Replay modal, and the dependency-graph / threat-scatter visualizations.
+- **Phases 5–6 — judge surfaces + ship:** the Custom GPT [`openapi.yaml`](custom_gpt/openapi.yaml) +
+  [`instructions.md`](custom_gpt/instructions.md), the [`.umbra/nightshift.md`](.umbra/nightshift.md)
+  autonomy prompt + GitHub Actions workflow, then demo pre-caching, the Dockerfile, and deploy config.
 
-**Codex `/feedback` session ID:** `TODO — run /feedback in the Codex session where the core work was built and paste the ID here and on the Devpost form.`
+Human work *after* that first Codex build was refinement, not authorship: fixing broken integrations,
+UI polish, and broadening scope (the ChatGPT plugin surface, hosted autonomy, and multi-repo rollup).
+
+**Codex `/feedback` session ID:** `019f66b8-a2ce-7103-aaed-2f60900d1aab`
 
 ## Code repository
 <https://github.com/bkd-dotcom/umbra> — public, MIT licensed ([LICENSE](LICENSE)).
@@ -51,8 +67,10 @@ If kept private for judging, share with `testing@devpost.com` and `build-week-ev
 2. **ChatGPT plugin / GPT Action:**
    - Manifest: <https://umbra.engineer/.well-known/ai-plugin.json>
    - OpenAPI: <https://umbra.engineer/openapi-actions.yaml>
-   - Import the OpenAPI as an Action in a Custom GPT (auth: **None**), or open the shared GPT:
-     `TODO — paste the shared "Umbra Engineer" GPT link after creating it in ChatGPT.`
+   - In any paid ChatGPT (Plus/Team/Enterprise): **Create a GPT → Configure → Actions → Import from
+     URL** → `https://umbra.engineer/openapi-actions.yaml` → Authentication **None** → paste
+     [`custom_gpt/instructions.md`](custom_gpt/instructions.md) as the system prompt. The three actions
+     validate against the live API immediately — no rebuild and no shared link needed.
    - Ask: *“Scan github.com/expressjs/express”*, *“Why did this break: <stack trace>”*, *“How does
      routing work in this repo?”*
 3. **Autonomy:** add [`.github/workflows/umbra.yml`](.github/workflows/umbra.yml) to a repo with an

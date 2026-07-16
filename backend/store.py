@@ -36,7 +36,7 @@ class _MemoryStore:
         self._tokens: dict[str, str] = {}
         self._openai_keys: dict[str, str] = {}
         self._scans: dict[str, list[dict[str, Any]]] = {}
-        self._watched: dict[str, list[str]] = {}
+        self._hooks: dict[str, dict[str, Any]] = {}  # hook_token -> {user_key, repo, hook_id, secret(enc)}
         self._lock = threading.Lock()
 
     def get_or_create_user(self, key: str, profile: dict[str, Any]) -> dict[str, Any]:
@@ -81,17 +81,32 @@ class _MemoryStore:
         with self._lock:
             self._scans.pop(key, None)
 
-    def put_watched_repos(self, key: str, repos: list[str]) -> None:
+    # --- Per-repo auto-review webhooks (multi-tenant PR review) ---
+    def put_repo_hook(self, hook_token: str, user_key: str, repo: str, hook_id: int, secret: str) -> None:
         with self._lock:
-            self._watched[key] = sorted(set(repos))
+            self._hooks[hook_token] = {"user_key": user_key, "repo": repo, "hook_id": hook_id, "secret": encrypt(secret)}
 
-    def list_watched_repos(self, key: str) -> list[str]:
+    def get_repo_hook(self, hook_token: str) -> dict[str, Any] | None:
         with self._lock:
-            return list(self._watched.get(key, []))
+            rec = self._hooks.get(hook_token)
+            if not rec:
+                return None
+            return {**rec, "secret": _safe_decrypt(rec.get("secret"))}
 
-    def all_user_keys(self) -> list[str]:
+    def delete_repo_hook(self, hook_token: str) -> None:
         with self._lock:
-            return list({*self._users, *self._watched})
+            self._hooks.pop(hook_token, None)
+
+    def find_repo_hook(self, user_key: str, repo: str) -> dict[str, Any] | None:
+        with self._lock:
+            for token, rec in self._hooks.items():
+                if rec.get("user_key") == user_key and rec.get("repo") == repo:
+                    return {"hook_token": token, "hook_id": rec.get("hook_id")}
+            return None
+
+    def list_repo_hooks_for_user(self, user_key: str) -> list[str]:
+        with self._lock:
+            return sorted({rec["repo"] for rec in self._hooks.values() if rec.get("user_key") == user_key})
 
 
 class _FirestoreStore:
@@ -159,15 +174,32 @@ class _FirestoreStore:
         if pending:
             batch.commit()
 
-    def put_watched_repos(self, key: str, repos: list[str]) -> None:
-        self._user(key).set({"watched_repos": sorted(set(repos)), "updated_at": _now()}, merge=True)
+    # --- Per-repo auto-review webhooks (multi-tenant PR review) ---
+    def put_repo_hook(self, hook_token: str, user_key: str, repo: str, hook_id: int, secret: str) -> None:
+        self._db.collection("repo_hooks").document(hook_token).set(
+            {"user_key": user_key, "repo": repo, "hook_id": hook_id, "secret": encrypt(secret), "created_at": _now()}
+        )
 
-    def list_watched_repos(self, key: str) -> list[str]:
-        snap = self._user(key).get()
-        return list((snap.to_dict() or {}).get("watched_repos", [])) if snap.exists else []
+    def get_repo_hook(self, hook_token: str) -> dict[str, Any] | None:
+        snap = self._db.collection("repo_hooks").document(hook_token).get()
+        if not snap.exists:
+            return None
+        rec = snap.to_dict() or {}
+        return {"user_key": rec.get("user_key"), "repo": rec.get("repo"), "hook_id": rec.get("hook_id"), "secret": _safe_decrypt(rec.get("secret"))}
 
-    def all_user_keys(self) -> list[str]:
-        return [doc.id for doc in self._db.collection("users").stream()]
+    def delete_repo_hook(self, hook_token: str) -> None:
+        self._db.collection("repo_hooks").document(hook_token).delete()
+
+    def find_repo_hook(self, user_key: str, repo: str) -> dict[str, Any] | None:
+        query = self._db.collection("repo_hooks").where("user_key", "==", user_key).where("repo", "==", repo).limit(1)
+        for doc in query.stream():
+            rec = doc.to_dict() or {}
+            return {"hook_token": doc.id, "hook_id": rec.get("hook_id")}
+        return None
+
+    def list_repo_hooks_for_user(self, user_key: str) -> list[str]:
+        query = self._db.collection("repo_hooks").where("user_key", "==", user_key)
+        return sorted({(doc.to_dict() or {}).get("repo") for doc in query.stream() if (doc.to_dict() or {}).get("repo")})
 
 
 _store: Any = None

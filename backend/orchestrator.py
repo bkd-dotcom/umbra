@@ -157,28 +157,6 @@ class Orchestrator:
         await self.bus.emit({"agent": "REVIEWER", "message": f"Auto-reviewed PR #{pr_number} on {owner_repo}", "level": "analysis"})
         return {"reviewed": pr_number, "comment": posted, "finding": finding}
 
-    async def rescan_watched(self) -> dict[str, Any]:
-        """Scheduled rescan of every user's watched repos in cloud-scan mode (no
-        Codex spend). Saves each result so the dashboard rollup reflects fresh
-        state, and flags repos whose advisory count grew since the last scan."""
-        from backend.store import get_store
-
-        store = get_store()
-        rescanned, with_new = 0, 0
-        for key in store.all_user_keys():
-            for full_name in store.list_watched_repos(key):
-                try:
-                    prev = next((s for s in store.list_scans(key) if s.get("repo_full_name") == full_name), None)
-                    data = await self.scan(f"https://github.com/{full_name}", agents=["watchman"], allow_codex=False)
-                    count = len(data.get("vulnerabilities", []))
-                    store.save_scan(key, {"repo_full_name": full_name, "umbra_score": data.get("umbra_score"), "source": data.get("source", "cron-watch"), "vuln_count": count, "report": data})
-                    if prev is not None and count > (prev.get("vuln_count") or 0):
-                        with_new += 1
-                    rescanned += 1
-                except Exception:  # noqa: BLE001 - one repo failing must not abort the sweep
-                    continue
-        return {"ok": True, "rescanned": rescanned, "repos_with_new_advisories": with_new}
-
     async def open_fix_pr(self, repo_url: str, token: str, mode: str = "bump", package: str | None = None, version: str | None = None, cve: str | None = None, allow_codex: bool | None = None) -> dict[str, Any]:
         """Open a fix PR on the user's explicit request. Branch-only, never merges.
         The write ``token`` is used only here (and inside github_write) — never

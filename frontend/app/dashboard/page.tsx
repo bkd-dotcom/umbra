@@ -119,7 +119,9 @@ export default function Dashboard() {
   const [result, setResult] = useState<ScanResult | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   const [history, setHistory] = useState<Scan[]>([]);
-  const [watched, setWatched] = useState<string[]>([]);
+  const [autoReviews, setAutoReviews] = useState<string[]>([]);
+  const [autoReviewErr, setAutoReviewErr] = useState<string | null>(null);
+  const [autoReviewBusy, setAutoReviewBusy] = useState<string | null>(null);
   const [activeReplay, setActiveReplay] = useState<Replay | null>(null);
   const [prTarget, setPrTarget] = useState<{ mode: "bump" | "codex"; vuln?: Vuln } | null>(null);
   const [keyInput, setKeyInput] = useState("");
@@ -131,18 +133,31 @@ export default function Dashboard() {
     fetch(`${API}/api/my/scans`, creds).then((r) => (r.ok ? r.json() : [])).then((d: Scan[]) => Array.isArray(d) && setHistory(d)).catch(() => {});
   }, []);
 
-  const loadWatched = useCallback(() => {
-    fetch(`${API}/api/my/watched`, creds).then((r) => (r.ok ? r.json() : [])).then((d: string[]) => Array.isArray(d) && setWatched(d)).catch(() => {});
+  const loadAutoReviews = useCallback(() => {
+    fetch(`${API}/api/my/auto-reviews`, creds).then((r) => (r.ok ? r.json() : [])).then((d: string[]) => Array.isArray(d) && setAutoReviews(d)).catch(() => {});
   }, []);
 
-  const toggleWatch = useCallback(async (fullName: string) => {
-    if (!fullName) return;
-    const next = watched.includes(fullName) ? watched.filter((r) => r !== fullName) : [...watched, fullName];
-    setWatched(next); // optimistic — Umbra rescans watched repos on a schedule
+  // Auto-review registers/removes a REAL GitHub webhook on the user's repo, so
+  // (unlike watch) it can fail (needs repo-admin) — await, surface, and revert.
+  const toggleAutoReview = useCallback(async (fullName: string) => {
+    if (!fullName || autoReviewBusy) return;
+    const enabled = !autoReviews.includes(fullName);
+    setAutoReviewErr(null);
+    setAutoReviewBusy(fullName);
     try {
-      await fetch(`${API}/api/my/watched`, { method: "PUT", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repos: next }) });
-    } catch { loadWatched(); }
-  }, [watched, loadWatched]);
+      const res = await fetch(`${API}/api/my/auto-review`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo: fullName, enabled }) });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setAutoReviewErr(body?.detail || `Couldn't ${enabled ? "enable" : "disable"} auto-review (${res.status}).`);
+      } else {
+        setAutoReviews((prev) => (enabled ? [...new Set([...prev, fullName])] : prev.filter((r) => r !== fullName)));
+      }
+    } catch {
+      setAutoReviewErr("Network error — please try again.");
+    } finally {
+      setAutoReviewBusy(null);
+    }
+  }, [autoReviews, autoReviewBusy]);
 
   const loadRepos = useCallback(() => {
     setRepoError(null);
@@ -165,9 +180,8 @@ export default function Dashboard() {
       .then((r) => { if (!r.ok) throw new Error("unauthenticated"); return r.json(); })
       .then((me: User) => {
         setUser(me);
-        if (me.github_connected) loadRepos();
+        if (me.github_connected) { loadRepos(); loadAutoReviews(); }
         loadHistory();
-        loadWatched();
       })
       .catch(() => { setUser(null); window.location.replace("/"); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -298,8 +312,10 @@ export default function Dashboard() {
             setRepoUrl={setRepoUrl}
             scanning={scanning}
             onRun={() => launchScan()}
-            watched={watched}
-            onToggleWatch={toggleWatch}
+            autoReviews={autoReviews}
+            onToggleAutoReview={toggleAutoReview}
+            autoReviewBusy={autoReviewBusy}
+            autoReviewErr={autoReviewErr}
           />
           <ScanOptions model={model} setModel={setModel} effort={effort} setEffort={setEffort} crew={crew} setCrew={setCrew} />
         </div>
@@ -493,11 +509,11 @@ function AuthLoading() {
   );
 }
 
-function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery, repoUrl, setRepoUrl, scanning, onRun, watched, onToggleWatch }: {
+function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery, repoUrl, setRepoUrl, scanning, onRun, autoReviews, onToggleAutoReview, autoReviewBusy, autoReviewErr }: {
   user: User; repos: Repo[] | null; repoError: { status: number; msg: string } | null; onRetry: () => void;
   filtered: Repo[]; query: string; setQuery: (v: string) => void;
   repoUrl: string; setRepoUrl: (v: string) => void; scanning: boolean; onRun: () => void;
-  watched: string[]; onToggleWatch: (fullName: string) => void;
+  autoReviews: string[]; onToggleAutoReview: (fullName: string) => void; autoReviewBusy: string | null; autoReviewErr: string | null;
 }) {
   const hasGitHub = !!user.github_connected;
   const [mode, setMode] = useState<"mine" | "public">(hasGitHub ? "mine" : "public");
@@ -546,9 +562,10 @@ function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery
               className="min-w-[260px] flex-1 rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-3.5 py-2.5 font-mono text-[13px] outline-none focus:border-cyan/50"
             />
             <Magnetic><StatefulButton loading={scanning} onClick={onRun}>{scanning ? "Running" : "Run scan"}</StatefulButton></Magnetic>
-            <WatchToggle fullName={repoUrl ? repoFullName(repoUrl) : ""} watched={watched} onToggle={onToggleWatch} />
+            {hasGitHub && <AutoReviewToggle fullName={repoUrl ? repoFullName(repoUrl) : ""} autoReviews={autoReviews} busy={autoReviewBusy} onToggle={onToggleAutoReview} />}
           </div>
           <p className="text-[12px] text-fog">Scan any public GitHub repository — great for auditing a dependency or contributing a fix to open source.</p>
+          {autoReviewErr && <p className="font-mono text-[12px] text-rose-300">{autoReviewErr}</p>}
         </div>
       ) : !hasGitHub ? (
         <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -636,23 +653,26 @@ function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery
             </AnimatePresence>
           </div>
           <Magnetic><StatefulButton loading={scanning} onClick={onRun}>{scanning ? "Running" : "Run scan"}</StatefulButton></Magnetic>
-          <WatchToggle fullName={selected?.full_name ?? (repoUrl ? repoFullName(repoUrl) : "")} watched={watched} onToggle={onToggleWatch} />
+          <AutoReviewToggle fullName={selected?.full_name ?? (repoUrl ? repoFullName(repoUrl) : "")} autoReviews={autoReviews} busy={autoReviewBusy} onToggle={onToggleAutoReview} />
         </div>
       )}
+      {autoReviewErr && mode === "mine" && <p className="mt-3 font-mono text-[12px] text-rose-300">{autoReviewErr}</p>}
     </GlowCard>
   );
 }
 
-function WatchToggle({ fullName, watched, onToggle }: { fullName: string; watched: string[]; onToggle: (fullName: string) => void }) {
+function AutoReviewToggle({ fullName, autoReviews, busy, onToggle }: { fullName: string; autoReviews: string[]; busy: string | null; onToggle: (fullName: string) => void }) {
   if (!fullName) return null;
-  const on = watched.includes(fullName);
+  const on = autoReviews.includes(fullName);
+  const pending = busy === fullName;
   return (
     <button
       onClick={() => onToggle(fullName)}
-      title={on ? "Watching — Umbra rescans this repo on a schedule. Click to stop." : "Watch — Umbra rescans this repo on a schedule and flags new advisories."}
-      className={`shrink-0 rounded-xl border px-3.5 py-2.5 font-mono text-[11px] transition-colors ${on ? "border-cyan/50 bg-cyan/10 text-cyan" : "border-[color:var(--surface-border)] text-fog hover:border-cyan/40 hover:text-cloud"}`}
+      disabled={pending}
+      title={on ? "Auto-review is on — Umbra comments on every new PR using your GitHub connection. Click to remove the webhook." : "Auto-review PRs — Umbra registers a webhook on your repo and posts an advisory review on each new PR (never merges). Needs repo admin."}
+      className={`shrink-0 rounded-xl border px-3.5 py-2.5 font-mono text-[11px] transition-colors disabled:opacity-60 ${on ? "border-violet/50 bg-violet/10 text-violet" : "border-[color:var(--surface-border)] text-fog hover:border-violet/40 hover:text-cloud"}`}
     >
-      {on ? "★ Watching" : "☆ Watch"}
+      {pending ? "…" : on ? "⟳ Auto-review" : "○ Auto-review"}
     </button>
   );
 }

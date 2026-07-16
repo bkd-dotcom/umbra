@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import os
 from contextlib import asynccontextmanager
@@ -23,7 +22,7 @@ from backend.codex_client import CodexClient
 from backend.integrations.github import parse_public_repo
 from backend.integrations.repository import cloud_scan_enabled, live_repositories_enabled
 from backend.orchestrator import orchestrator
-from backend.settings import cookie_secure, cron_key, founder_ids, github_webhook_secret, service_github_token, session_secret
+from backend.settings import cookie_secure, founder_ids, session_secret
 from backend.store import get_store
 from backend.webhooks import REVIEWABLE_ACTIONS, verify_github_signature
 
@@ -235,7 +234,10 @@ async def event_stream() -> StreamingResponse:
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-# --- Autonomy: scheduled watch + PR auto-review webhook ---------------------
+# --- Autonomy: scheduled watch + per-user PR auto-review webhook -------------
+# Auto-review is fully multi-tenant: each user enables it on their own repos and
+# every review is posted with THAT user's own OAuth token (see auth.py). There is
+# no shared service PAT — a single-tenant global webhook was removed.
 async def _run_webhook_review(repo_url: str, pr_number: int, token: str) -> None:
     """Background PR review (clone + reason take longer than GitHub's 10s ack
     window, so we ack immediately and do the work here). Never raises."""
@@ -245,12 +247,16 @@ async def _run_webhook_review(repo_url: str, pr_number: int, token: str) -> None
         pass
 
 
-@app.post("/api/webhooks/github", tags=["webhooks"])
-async def github_webhook(request: Request, background: BackgroundTasks, x_github_event: str = Header(default=""), x_hub_signature_256: str = Header(default="")) -> dict[str, object]:
-    """GitHub PR webhook → auto-review. HMAC-verified; comment-only; never merges.
-    Acks fast and runs the review in the background so GitHub doesn't time out."""
+@app.post("/api/webhooks/github/{hook_token}", tags=["webhooks"])
+async def github_webhook_per_user(hook_token: str, request: Request, background: BackgroundTasks, x_github_event: str = Header(default=""), x_hub_signature_256: str = Header(default="")) -> dict[str, object]:
+    """Multi-tenant PR auto-review: each user-enabled repo has its own opaque
+    callback path + HMAC secret, and the review is posted with THAT user's own
+    GitHub token. Comment-only; never merges. Acks fast, reviews in background."""
+    rec = get_store().get_repo_hook(hook_token)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Unknown webhook.")
     body = await request.body()
-    if not verify_github_signature(github_webhook_secret(), body, x_hub_signature_256):
+    if not verify_github_signature(rec.get("secret"), body, x_hub_signature_256):
         raise HTTPException(status_code=401, detail="Invalid or missing webhook signature.")
     if x_github_event != "pull_request":
         return {"ok": True, "ignored_event": x_github_event or "unknown"}
@@ -260,21 +266,11 @@ async def github_webhook(request: Request, background: BackgroundTasks, x_github
     pr = payload.get("pull_request") or {}
     repo_url = (payload.get("repository") or {}).get("html_url") or ""
     number = pr.get("number")
-    token = service_github_token()
+    token = get_store().get_github_token(rec.get("user_key"))
     if not (repo_url and number and token):
-        return {"ok": True, "skipped": "missing repo, PR number, or GITHUB_TOKEN"}
-    background.add_task(_run_webhook_review, repo_url, int(number), token)
+        return {"ok": True, "skipped": "missing repo, PR number, or the owner's GitHub connection"}
+    background.add_task(_run_webhook_review, repo_url, int(number), str(token))
     return {"ok": True, "queued": {"pr": number}}
-
-
-@app.post("/api/cron/rescan", tags=["system"])
-async def cron_rescan(x_umbra_cron_key: str = Header(default="")) -> dict[str, object]:
-    """Scheduled rescan of every user's watched repos (Cloud Scheduler → here).
-    Guarded by a shared secret; runs cloud-scan mode only (no Codex spend)."""
-    key = cron_key()
-    if not key or not hmac.compare_digest(x_umbra_cron_key, key):
-        raise HTTPException(status_code=401, detail="Invalid or missing cron key.")
-    return await orchestrator.rescan_watched()
 
 
 # --- ChatGPT plugin / GPT Action surface ------------------------------------

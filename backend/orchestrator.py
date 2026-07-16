@@ -126,6 +126,22 @@ class Orchestrator:
         async for chunk in AskUmbra().stream(repo_url, question, github_token=github_token, openai_key=openai_key, allow_codex=allow_codex):
             yield chunk
 
+    async def ask_stream_events(self, repo_url: str, question: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> AsyncIterator[dict[str, Any]]:
+        """Fast Ask Umbra SSE: retrieval-only grounding + streamed answer, with a
+        leading references frame (no wasted codex.propose call)."""
+        from backend.agents import AskUmbra
+
+        async for event in AskUmbra().stream_events(repo_url, question, github_token=github_token, openai_key=openai_key, allow_codex=allow_codex):
+            yield event
+
+    async def investigate_stream(self, repo_url: str, error_log: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> AsyncIterator[dict[str, Any]]:
+        """Fast Detective SSE: verified history + streamed root-cause reasoning,
+        then a final structured postmortem frame."""
+        from backend.agents import Detective
+
+        async for event in Detective().stream_events(repo_url, error_log, github_token=github_token, openai_key=openai_key, allow_codex=allow_codex):
+            yield event
+
     async def open_fix_pr(self, repo_url: str, token: str, mode: str = "bump", package: str | None = None, version: str | None = None, cve: str | None = None, allow_codex: bool | None = None) -> dict[str, Any]:
         """Open a fix PR on the user's explicit request. Branch-only, never merges.
         The write ``token`` is used only here (and inside github_write) — never

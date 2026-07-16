@@ -185,8 +185,32 @@ async def ask_umbra_stream(repo_url: str, question: str, http: Request) -> Strea
     ctx = _user_context(http)
 
     async def generate():
-        async for chunk in orchestrator.ask_stream(repo_url, question, **ctx):
-            yield f"event: umbra\ndata: {json.dumps({'chunk': chunk})}\n\n"
+        async for event in orchestrator.ask_stream_events(repo_url, question, **ctx):
+            if event.get("type") == "references":
+                yield f"event: references\ndata: {json.dumps({'references': event.get('references', []), 'source': event.get('source')})}\n\n"
+            else:
+                yield f"event: umbra\ndata: {json.dumps({'chunk': event.get('chunk', '')})}\n\n"
+        yield "event: done\ndata: {}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/investigate/stream", tags=["streaming"])
+async def investigate_incident_stream(request: InvestigateRequest, http: Request) -> StreamingResponse:
+    """Streaming Detective (POST because the error log can be long): streams the
+    root-cause reasoning as it is produced, then a final structured postmortem."""
+    _validate_repo(request.repo_url)
+    ctx = _user_context(http)
+
+    async def generate():
+        async for event in orchestrator.investigate_stream(request.repo_url, request.error_log, **ctx):
+            etype = event.get("type")
+            if etype == "status":
+                yield f"event: status\ndata: {json.dumps({'message': event.get('message', '')})}\n\n"
+            elif etype == "result":
+                yield f"event: result\ndata: {json.dumps(event.get('result', {}))}\n\n"
+            else:
+                yield f"event: umbra\ndata: {json.dumps({'chunk': event.get('chunk', '')})}\n\n"
         yield "event: done\ndata: {}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

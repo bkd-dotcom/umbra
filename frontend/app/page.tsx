@@ -54,7 +54,7 @@ export default function Landing() {
       {/* Landing signature backdrop (bold): Aceternity Background Beams + Spotlight
           layered over the drifting Aurora and the shared base gradient. Fixed and
           behind content; every layer is reduced-motion aware. */}
-      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden" aria-hidden>
+      <div className="bg-bold pointer-events-none fixed inset-0 -z-10 overflow-hidden" aria-hidden>
         <Aurora intensity={0.62} />
         <BackgroundBeams className="opacity-70" />
         <Spotlight className="left-0 top-[-30%] md:left-[20%] md:top-[-20%]" fill="#22d3ee" />

@@ -66,5 +66,24 @@ def test_overview_grounds_broad_questions_without_keyword_matches(tmp_path: Path
     assert "Repository layout" in context
 
 
+def test_stream_events_emits_references_then_streamed_answer(monkeypatch, tmp_path: Path):
+    subprocess = __import__("subprocess")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "routes.py").write_text("def route_user():\n    return 'ok'\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    @contextmanager
+    def checkout(_, __=None): yield tmp_path
+    monkeypatch.setattr("backend.agents.ask.checkout_public_repo", checkout)
+    monkeypatch.setattr("backend.agents.ask.reason_stream", lambda *_: iter(["The route ", "is in routes.py."]))
+    agent = AskUmbra()
+    monkeypatch.setattr(agent, "_live_enabled", lambda: True)
+    events = asyncio.run(_collect(agent.stream_events("https://github.com/a/b", "Where is route user?")))
+    # First frame is the grounded references; the answer streams after.
+    assert events[0]["type"] == "references"
+    assert any(ref["file"] == "routes.py" for ref in events[0]["references"])
+    text = "".join(e.get("chunk", "") for e in events if e["type"] == "text")
+    assert "routes.py" in text
+
+
 async def _collect(stream):
     return [chunk async for chunk in stream]

@@ -27,6 +27,25 @@ def test_ask_stream_has_demo_sse_frame(monkeypatch):
     assert "event: done" in body
 
 
+def test_investigate_stream_emits_result_and_done(monkeypatch):
+    """The streaming Detective endpoint must emit a structured `result` frame and
+    close with `done`, even in demo mode (no network/model call)."""
+    monkeypatch.setenv("UMBRA_DEMO_MODE", "true")
+    with client.stream("POST", "/api/investigate/stream", json={"repo_url": "https://github.com/expressjs/express", "error_log": "TypeError: boom"}) as response:
+        body = "".join(response.iter_text())
+    assert response.status_code == 200
+    assert "event: result" in body
+    assert "event: done" in body
+
+
+def test_ask_stream_closes_with_done(monkeypatch):
+    monkeypatch.setenv("UMBRA_DEMO_MODE", "true")
+    with client.stream("GET", "/api/ask/stream", params={"repo_url": "https://github.com/expressjs/express", "question": "where is routing"}) as response:
+        body = "".join(response.iter_text())
+    assert response.status_code == 200
+    assert "event: done" in body
+
+
 def test_static_ui_mount_never_shadows_api_routes():
     """The single-service deploy mounts the dashboard at '/'. That mount is
     greedy — if it is registered before any /api route, it silently swallows

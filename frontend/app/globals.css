@@ -45,24 +45,38 @@
   color-scheme: dark;
 }
 
+/* Light theme = warm "vanilla" (Anthropic-style cream), not a stark cool white.
+   Warm ivory page + warm near-black text, faint warm ambient, and slightly
+   deeper accents so cyan/violet labels stay legible on cream. */
 :root[data-theme="light"] {
-  --color-ink: #f5f7fc;
-  --color-ink-2: #ffffff;
-  --color-line: #e3e7f0;
-  --color-fog: #59607a;
-  --color-cloud: #0d1220;
+  --color-ink: #f3f1ea;          /* warm vanilla page */
+  --color-ink-2: #fbfaf5;        /* warm off-white raised panels */
+  --color-line: #e5e1d5;         /* warm hairline */
+  --color-fog: #6b6656;          /* warm muted text */
+  --color-cloud: #1a1915;        /* warm near-black primary text */
 
-  --surface: rgba(13, 18, 32, 0.028);
-  --surface-2: rgba(13, 18, 32, 0.05);
-  --surface-border: rgba(13, 18, 32, 0.10);
-  --surface-border-hover: rgba(13, 18, 32, 0.22);
-  --input-bg: rgba(13, 18, 32, 0.04);
-  --fx-1: rgba(34, 211, 238, 0.16);
-  --fx-2: rgba(167, 139, 250, 0.18);
-  --fx-3: rgba(124, 58, 237, 0.10);
-  --shadow-card: 0 20px 50px -24px rgba(30, 40, 80, 0.30);
+  /* Deepened accents for legibility on cream (dark mode keeps the bright set). */
+  --color-cyan: #0e97b0;
+  --color-violet: #7c5cd6;
+  --color-pink: #d65a94;
+  --color-teal: #159f8a;
+  --color-amber: #b9822a;
+
+  --surface: rgba(30, 26, 16, 0.028);
+  --surface-2: rgba(30, 26, 16, 0.06);
+  --surface-border: rgba(30, 26, 16, 0.12);
+  --surface-border-hover: rgba(30, 26, 16, 0.24);
+  --input-bg: rgba(30, 26, 16, 0.04);
+  --fx-1: rgba(184, 150, 96, 0.07);   /* warm, faint ambient (no cyan/violet wash) */
+  --fx-2: rgba(160, 132, 100, 0.07);
+  --fx-3: rgba(120, 100, 68, 0.05);
+  --shadow-card: 0 20px 50px -24px rgba(70, 58, 34, 0.18);
   color-scheme: light;
 }
+
+/* In vanilla light mode the bold coloured backdrop (aurora + beams + spotlight)
+   is dialled right down so the page stays calm and plain; dark mode stays bold. */
+:root[data-theme="light"] .bg-bold { opacity: 0.4; }
 
 /* Translate-ONLY drift (no scale): a scaling transform re-rasterizes the huge
    120px blur every frame — one of the biggest scroll-jank costs. Pure translate

@@ -52,6 +52,32 @@ function providerTone(v: string): string {
   return "text-fog border-[color:var(--surface-border)] bg-white/5";
 }
 
+// Minimal SSE reader over fetch's ReadableStream — lets the Ask + Detective
+// panels render the first tokens in ~1–3s (streaming) instead of blocking on the
+// whole response. Parses `event:` / `data:` frames separated by blank lines.
+async function readSSE(res: Response, onEvent: (event: string, data: string) => void): Promise<void> {
+  if (!res.body) return;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const frames = buf.split("\n\n");
+    buf = frames.pop() ?? "";
+    for (const frame of frames) {
+      let ev = "message";
+      let data = "";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event:")) ev = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (data) onEvent(ev, data);
+    }
+  }
+}
+
 const SCAN_STEPS = ["Dispatching the night crew", "Cloning a disposable checkout", "Querying OSV advisories", "Assembling the report"];
 
 // --- Scan speed controls ----------------------------------------------------
@@ -213,7 +239,7 @@ export default function Dashboard() {
           a violet Spotlight layered over the slowly-drifting dot grid. Behind
           content, pointer-events-none, and reduced-motion aware; the glassy cards
           keep the data legible on top. */}
-      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden" aria-hidden>
+      <div className="bg-bold pointer-events-none fixed inset-0 -z-10 overflow-hidden" aria-hidden>
         <div className="absolute inset-0 dot-bg-drift opacity-[0.13]" />
         <BackgroundBeams className="opacity-50" />
         <Spotlight className="left-0 top-[-30%] md:left-[30%] md:top-[-25%]" fill="#a78bfa" />
@@ -617,6 +643,11 @@ function ScanOptions({ model, setModel, effort, setEffort, crew, setCrew }: {
           <SegmentedTabs layoutId="opt-crew" value={crew} onChange={setCrew} options={[{ value: "quick", label: "Quick · 1" }, { value: "full", label: "Full · 3" }]} />
         </OptionGroup>
       </div>
+      {/* Surface the concrete model + effort so "Fast / Balanced" isn't opaque —
+          the spec is real (these are the exact Codex model IDs the scan runs on). */}
+      <p className="font-mono text-[11px] text-fog">
+        Codex model <span className="text-cloud">{model}</span> · reasoning <span className="text-cloud">{effort}</span> · {crew === "quick" ? "1 agent" : "3 agents"}
+      </p>
       <p className={`font-mono text-[11px] ${eta.warn ? "text-amber" : "text-fog"}`}>
         {eta.warn ? "⚠ " : "◔ "}Estimated {eta.label} · approximate{eta.warn ? " — may approach the 15-min limit; try Fast / Low / Quick" : ""}
       </p>
@@ -741,11 +772,23 @@ function AskPanel({ repo }: { repo: string }) {
   const ask = useCallback(async () => {
     const question = q.trim();
     if (!question || busy) return;
-    setBusy(true); setErr(null); setAns(null);
+    // Stream the answer so the first grounded tokens appear in ~1–3s instead of
+    // waiting for the whole response. References arrive in a leading SSE frame.
+    setBusy(true); setErr(null); setAns({ answer: "", references: [] });
+    let answer = "";
+    let references: Reference[] = [];
+    let source: string | undefined;
     try {
-      const r = await fetch(`${API}/api/ask`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo_url: repo, question }) });
+      const r = await fetch(`${API}/api/ask/stream?repo_url=${encodeURIComponent(repo)}&question=${encodeURIComponent(question)}`, creds);
       if (!r.ok) throw new Error(`Ask Umbra returned ${r.status}`);
-      setAns(await r.json());
+      await readSSE(r, (event, data) => {
+        try {
+          const p = JSON.parse(data);
+          if (event === "references") { references = p.references ?? []; source = p.source; }
+          else if (event === "umbra") { answer += p.chunk ?? ""; }
+        } catch { /* ignore a malformed frame */ }
+        setAns({ answer, references, source });
+      });
     } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   }, [q, busy, repo]);
 
@@ -764,7 +807,7 @@ function AskPanel({ repo }: { repo: string }) {
       {err && <p className="mt-3 font-mono text-xs text-rose-300">{err}</p>}
       {ans && (
         <div className="mt-4 border-t border-[color:var(--surface-border)] pt-4">
-          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-cloud">{ans.answer}</p>
+          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-cloud">{ans.answer}{busy && <span className="ml-0.5 inline-block animate-pulse text-cyan">▍</span>}</p>
           {ans.references?.length > 0 && (
             <div className="mt-3 flex flex-col gap-1.5">
               <b className="font-mono text-[10px] uppercase tracking-[0.14em] text-fog">References</b>
@@ -789,11 +832,35 @@ function DetectivePanel({ repo }: { repo: string }) {
   const investigate = useCallback(async () => {
     const error_log = log.trim();
     if (!error_log || busy) return;
+    // Stream the root-cause reasoning live; the structured postmortem (root cause,
+    // timeline) arrives in a final `result` frame once reasoning completes.
     setBusy(true); setErr(null); setPm(null);
+    let explanation = "";
+    let status = "";
+    let base: Postmortem | null = null;
+    const paint = () => setPm({
+      incident: base?.incident ?? "",
+      root_cause_commit: base?.root_cause_commit ?? "unconfirmed",
+      confidence: base?.confidence ?? 0,
+      timeline: base?.timeline ?? [],
+      explanation: explanation || base?.explanation || status,
+      blast_radius: base?.blast_radius ?? "",
+      suggested_fix: base?.suggested_fix ?? "",
+      reasoning_chain: base?.reasoning_chain ?? [],
+      source: base?.source,
+    });
     try {
-      const r = await fetch(`${API}/api/investigate`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo_url: repo, error_log }) });
+      const r = await fetch(`${API}/api/investigate/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo_url: repo, error_log }) });
       if (!r.ok) throw new Error(`Detective returned ${r.status}`);
-      setPm(await r.json());
+      await readSSE(r, (event, data) => {
+        try {
+          const p = JSON.parse(data);
+          if (event === "status") status = p.message ?? "";
+          else if (event === "umbra") explanation += p.chunk ?? "";
+          else if (event === "result") base = p as Postmortem;
+        } catch { /* ignore a malformed frame */ }
+        paint();
+      });
     } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   }, [log, busy, repo]);
 
@@ -827,7 +894,7 @@ function DetectivePanel({ repo }: { repo: string }) {
               </ul>
             </div>
           )}
-          <p className="whitespace-pre-wrap leading-relaxed text-cloud">{pm.explanation}</p>
+          <p className="whitespace-pre-wrap leading-relaxed text-cloud">{pm.explanation}{busy && <span className="ml-0.5 inline-block animate-pulse text-pink">▍</span>}</p>
           {pm.source && <span className={`inline-block self-start rounded-full border px-2.5 py-1 font-mono text-[10px] ${providerTone(pm.source)}`}>{pm.source}</span>}
         </div>
       )}

@@ -83,6 +83,43 @@ class AskUmbra:
             text, _ = await asyncio.to_thread(codex_reasoning, self.codex, developer, user, exc)
             yield text
 
+    async def stream_events(self, repo_url: str, question: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None):
+        """Fast SSE path: retrieval-only grounding (git-grep + overview, sub-second),
+        then streamed reasoning. Unlike ``run``/``stream`` this deliberately does NOT
+        make a ``codex.propose`` survey call — that result is unused when streaming
+        and cost the whole first-token latency. Yields typed dicts:
+        ``{"type": "references", ...}`` once, then ``{"type": "text", "chunk": ...}``.
+        """
+        if not self._live_enabled():
+            yield {"type": "text", "chunk": "Demo Ask Umbra stream replayed from cache; no model or Codex request was made."}
+            return
+        try:
+            with checkout_public_repo(repo_url, github_token) as repo_path:
+                references, context = self._retrieve(repo_path, question)
+        except Exception as exc:  # noqa: BLE001 — never leak a stack trace to the stream
+            yield {"type": "text", "chunk": f"Ask Umbra live stream unavailable: {exc}"}
+            return
+        yield {"type": "references", "references": references, "source": "live-ask"}
+        developer, user = self._developer_prompt(), self._user_prompt(question, context)
+        iterator = reason_stream("work", developer, user, None, openai_key)
+        streamed = False
+        try:
+            while True:
+                done, chunk = await asyncio.to_thread(self._next, iterator)
+                if done:
+                    break
+                streamed = True
+                yield {"type": "text", "chunk": chunk}
+        except RuntimeError as exc:
+            if streamed:
+                yield {"type": "text", "chunk": f"\n[Ask Umbra stream interrupted: {exc}]"}
+                return
+            if allow_codex is False:
+                yield {"type": "text", "chunk": f"Grounded retrieval succeeded, but live reasoning is unavailable: {exc}. Add your own OpenAI key to unlock answers here."}
+                return
+            text, _ = await asyncio.to_thread(codex_reasoning, self.codex, developer, user, exc)
+            yield {"type": "text", "chunk": text}
+
     async def _prepare(self, repo_path, question: str, allow_codex: bool | None = None):
         retrieval_started = perf_counter()
         references, context = self._retrieve(repo_path, question)

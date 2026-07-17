@@ -95,7 +95,7 @@ and read-only (a zero-scope token just raises the public-read rate limit).
 ## ✅ Tests
 
 ```bash
-uv run pytest        # 86+ tests (backend/tests)
+uv run pytest        # 111 tests (backend/tests)
 ```
 
 Frontend: `cd frontend && npm run build` (must produce a clean static export to `out/`).

@@ -1,7 +1,6 @@
 # Umbra — OpenAI Build Week 2026 submission
 
-> Working checklist mapped to the Devpost "What to submit" rules. One **`TODO`** remains:
-> the **"Where Codex accelerated this build"** examples — fill with what Codex actually did.
+> Working checklist mapped to the Devpost "What to submit" rules.
 
 ## Category
 **Developer Tools / Agents.** Umbra is an autonomous multi-agent engineering
@@ -46,15 +45,28 @@ each one to keep `main` runnable throughout:
   agents ([`backend/agents/`](backend/agents/): watchman, reviewer, detective, janitor, ask), the
   Umbra/Risk scoring math with offline tests ([`backend/tests/test_scoring.py`](backend/tests/test_scoring.py)),
   the OSV + GitHub integrations, and the `demo_cache.json` never-fail fallback.
-- **Phases 3–4 — the "mission control" dashboard:** the Next.js/Tailwind UI — animated Umbra Score
-  dial, the Canvas [Threat Radar](frontend/components/Radar.tsx), the live SSE agent terminal, the
-  Reasoning-Replay modal, and the dependency-graph / threat-scatter visualizations.
+- **Phases 3–4 — the first "mission control" dashboard:** the Next.js/Tailwind UI — an animated Umbra
+  Score dial, 3D threat-scatter and dependency-graph visualizations, the live SSE agent terminal, and
+  the Reasoning-Replay modal. (This first visualization-heavy pass was later rebuilt — see refinement.)
 - **Phases 5–6 — judge surfaces + ship:** the Custom GPT [`openapi.yaml`](custom_gpt/openapi.yaml) +
   [`instructions.md`](custom_gpt/instructions.md), the [`.umbra/nightshift.md`](.umbra/nightshift.md)
   autonomy prompt + GitHub Actions workflow, then demo pre-caching, the Dockerfile, and deploy config.
 
 Human work *after* that first Codex build was refinement, not authorship: fixing broken integrations,
-UI polish, and broadening scope (the ChatGPT plugin surface, hosted autonomy, and multi-repo rollup).
+broadening scope (the ChatGPT plugin surface, hosted autonomy, multi-repo rollup), and **rebuilding the
+dashboard into the current "Mission Control" surface** — an editorial Umbra Score, a live Crew Status
+Board, the Ask terminal + Detective tracing timeline, and flat 2D Findings / Dependency / provider
+ledgers in place of the first pass's dial and 3D charts (what you see now on
+[umbra.engineer](https://umbra.engineer)).
+
+**Honesty in action — a caught bug, fixed properly.** An external reviewer bot requested changes on a
+bump PR Umbra had opened (`next 14.2.5 → 14.2.7`, "to remediate GHSA-h25m-26qc-wcjf"): `14.2.7` is still
+inside that advisory's vulnerable range (the real fix is `15.0.8`), and the lockfile was left unsynced.
+It was a genuine defect — `pick_fixed_version` picked the *global* smallest fix across every advisory,
+blind to the CVE it named. We traced it and made version selection **CVE-aware** (target the named
+advisory's actual fix, or clear every advisory when none is named) and taught the bump to **regenerate
+the lockfile**, with new tests grounded against live OSV data (`GHSA-h25m-26qc-wcjf → 15.0.8`). The fix
+embodies Umbra's core rule: never claim a remediation it can't stand behind.
 
 **Codex `/feedback` session ID:** `019f66b8-a2ce-7103-aaed-2f60900d1aab`
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { GlowCard } from "@/components/ui/glow-card";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
 import { StatefulButton } from "@/components/ui/stateful-button";
@@ -16,7 +16,7 @@ import { GitHubIcon, LockIcon } from "@/components/ui/icons";
 import { Reveal } from "@/components/ui/reveal";
 import { scrollToTop } from "@/components/ui/smooth-scroll";
 import { LocalWeather } from "@/components/ui/local-weather";
-import { EASE } from "@/lib/motion";
+import { EASE, fadeUp, stagger } from "@/lib/motion";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const creds: RequestInit = { credentials: "include" };
@@ -121,6 +121,16 @@ const CREW = [
   { key: "ask", letter: "A", name: "ASK UMBRA", role: "Codebase oracle", working: "ANSWERING", idle: "READY", doing: "grounded code answers", color: "#f472b6" },
 ] as const;
 
+// Short filed-action lines for the sample shift, so the guest preview reads like
+// the homepage dispatch (real per-agent work, not just a status dot).
+const DEMO_DETAIL: Record<string, string> = {
+  watchman: "1 advisory · patch prepared",
+  detective: "incident traced to a9c31f",
+  reviewer: "PR #128 · low blast-radius",
+  janitor: "4 dead exports swept",
+  ask: "3 answers · grounded",
+};
+
 // A labelled sample shift — shown in the logged-out preview and never passed off
 // as live. Same canonical incident as the homepage (express CVE-2024-29041 / a9c31f).
 const DEMO_RESULT: ScanResult = {
@@ -138,7 +148,11 @@ const DEMO_RESULT: ScanResult = {
     { name: "minimist", version: "1.2.8", vulnerable: false },
   ],
   agent_results: [
-    { agent: "watchman", summary: "1 advisory · patch prepared", findings: [], replay: { agent: "watchman", prompt: "", codex_diff: "", tests: "", reasoning: "", timings: {}, providers: { advisories: "osv.dev", engineering: "codex-cli", reasoning: "responses-api" } } },
+    { agent: "watchman", summary: "Flagged CVE-2024-29041 in express@4.17.1 — patch to express@4.19.2 prepared.", findings: [], replay: { agent: "watchman", prompt: "", codex_diff: "", tests: "", reasoning: "", timings: {}, providers: { advisories: "osv.dev", engineering: "codex-cli", reasoning: "responses-api" } } },
+    { agent: "detective", summary: "Traced the incident through git history to commit a9c31f.", findings: [], replay: { agent: "detective", prompt: "", codex_diff: "", tests: "", reasoning: "", timings: {}, providers: { reasoning: "responses-api", vulnerabilities: "osv.dev" } } },
+    { agent: "reviewer", summary: "Scored PR #128 — blast-radius low, safe to merge.", findings: [], replay: { agent: "reviewer", prompt: "", codex_diff: "", tests: "", reasoning: "", timings: {}, providers: { review: "codex-cli", reasoning: "responses-api" } } },
+    { agent: "janitor", summary: "Swept 4 dead exports from utils/legacy.ts — cleanup PR drafted.", findings: [], replay: { agent: "janitor", prompt: "", codex_diff: "", tests: "", reasoning: "", timings: {}, providers: { engineering: "codex-cli" } } },
+    { agent: "ask", summary: "Answered 3 questions, each grounded to a real reference — router.js:22.", findings: [], replay: { agent: "ask", prompt: "", codex_diff: "", tests: "", reasoning: "", timings: {}, providers: { reasoning: "responses-api-stream" } } },
   ],
 };
 
@@ -153,7 +167,9 @@ export default function Dashboard() {
   // Scan speed profile — defaults to the fastest usable combo for a snappy first run.
   const [model, setModel] = useState<ModelId>("gpt-5.6-luna");
   const [effort, setEffort] = useState<Effort>("low");
-  const [crew, setCrew] = useState<Crew>("quick");
+  // Default to the full crew (Watchman + Reviewer + Janitor) so a scan files the
+  // complete dispatch; Quick (Watchman only) stays selectable for a fast single-agent run.
+  const [crew, setCrew] = useState<Crew>("full");
   const [result, setResult] = useState<ScanResult | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   const [history, setHistory] = useState<Scan[]>([]);
@@ -163,6 +179,9 @@ export default function Dashboard() {
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
   const [activeReplay, setActiveReplay] = useState<Replay | null>(null);
   const [prTarget, setPrTarget] = useState<{ mode: "bump" | "codex"; vuln?: Vuln } | null>(null);
+  // A PR that was just opened — surfaced as a persistent toast so the "it's ready"
+  // signal survives after the dialog closes. Umbra never merges; this is advisory.
+  const [prOpened, setPrOpened] = useState<{ url: string; number: number; branch: string; base: string } | null>(null);
   const [keyInput, setKeyInput] = useState("");
   const [savingKey, setSavingKey] = useState(false);
   const [viewingSaved, setViewingSaved] = useState<string | null>(null);
@@ -420,12 +439,18 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Editorial score + crew status board — the shift at a glance */}
+        {/* Shift at a glance — a filed shift reads as the cinematic Shift Report
+            (hero score + filed dispatch); an idle dashboard keeps the compact
+            score + crew status while it waits for the next scan. */}
         {!scanning && (
-          <div className="mt-5 grid gap-5 lg:grid-cols-[1.35fr_1fr]">
-            <ScorePanel result={shift} demo={showingDemo} />
-            <CrewStatusBoard phase={phase} crew={crew} demo={showingDemo} />
-          </div>
+          phase === "done" && shift ? (
+            <ShiftReport result={shift} repo={shiftRepo} demo={showingDemo} />
+          ) : (
+            <div className="mt-5 grid gap-5 lg:grid-cols-[1.35fr_1fr]">
+              <ScorePanel result={shift} demo={showingDemo} />
+              <CrewStatusBoard phase={phase} crew={crew} result={shift} demo={showingDemo} />
+            </div>
+          )
         )}
       </section>
 
@@ -547,8 +572,41 @@ export default function Dashboard() {
       <ReplayModal replay={activeReplay} onClose={() => setActiveReplay(null)} />
 
       {/* Pull-request confirm dialog (explicit, branch-only, never merges) */}
-      {me && <PrDialog target={prTarget} repo={targetRepo} diff={watchmanDiff} model={model} effort={effort} onClose={() => setPrTarget(null)} />}
+      {me && <PrDialog target={prTarget} repo={targetRepo} diff={watchmanDiff} model={model} effort={effort} onClose={() => setPrTarget(null)} onOpened={setPrOpened} />}
+
+      {/* PR-ready toast — the shift produced something you can act on */}
+      <PrReadyToast pr={prOpened} onDismiss={() => setPrOpened(null)} />
     </main>
+  );
+}
+
+// Persistent, dismissible confirmation that a pull request is up and clean. It is
+// advisory only — Umbra opens PRs and never merges, so the human does the merge.
+function PrReadyToast({ pr, onDismiss }: { pr: { url: string; number: number; branch: string; base: string } | null; onDismiss: () => void }) {
+  return (
+    <AnimatePresence>
+      {pr && (
+        <motion.div
+          className="fixed inset-x-0 bottom-5 z-50 mx-auto w-[min(440px,calc(100%-2rem))]"
+          initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 24 }} transition={{ duration: 0.32, ease: EASE }}
+        >
+          <div className="relative overflow-hidden rounded-2xl border border-teal/40 bg-ink-2/95 p-4 shadow-[0_20px_60px_-24px_rgba(94,234,212,0.35)] backdrop-blur">
+            <span aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px" style={{ background: "linear-gradient(90deg, transparent, rgba(94,234,212,0.7), transparent)" }} />
+            <button onClick={onDismiss} className="absolute right-3 top-2.5 text-lg leading-none text-fog hover:text-cloud">×</button>
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full border border-teal/50 bg-teal/10 text-[13px] text-teal">✓</span>
+              <div className="min-w-0">
+                <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-teal">Pull request ready</p>
+                <p className="mt-1 text-[13px] leading-relaxed text-cloud">
+                  PR <b className="font-mono">#{pr.number}</b> is up on <span className="font-mono text-fog">{pr.branch}</span> → <span className="font-mono text-fog">{pr.base}</span>. Umbra opened it on a fresh branch and never merges — review &amp; merge it on GitHub.
+                </p>
+                <a href={pr.url} target="_blank" rel="noreferrer" className="mt-2 inline-block break-all font-mono text-[12px] text-cyan hover:underline">{pr.url} ↗</a>
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 
@@ -903,7 +961,7 @@ function ScorePanel({ result, demo }: { result: ScanResult | null; demo: boolean
         {has && verdict ? (
           <>
             <p className={`font-serif text-xl leading-tight ${verdict.tone}`}>{verdict.label}</p>
-            <p className="mt-2 max-w-[52ch] text-[13px] leading-relaxed text-cloud/75">{result?.reasoning_summary || verdict.note}</p>
+            <p className="mt-2.5 max-w-[52ch] font-sans text-[13.5px] leading-relaxed tracking-[0.005em] text-fog">{result?.reasoning_summary || verdict.note}</p>
           </>
         ) : (
           <>
@@ -916,7 +974,12 @@ function ScorePanel({ result, demo }: { result: ScanResult | null; demo: boolean
   );
 }
 
-function CrewStatusBoard({ phase, crew, demo }: { phase: Phase; crew: Crew; demo?: boolean }) {
+function CrewStatusBoard({ phase, crew, result, demo }: { phase: Phase; crew: Crew; result: ScanResult | null; demo?: boolean }) {
+  // Truth source for completion is the actual run: an agent reads DONE only if it
+  // filed a result this shift (result.agent_results) — never the crew toggle. During
+  // a live scan we light the agents that will participate. Detective + Ask are
+  // on-demand tools with their own flows, so they sit standby/ready, not in the scan.
+  const runs = new Map((result?.agent_results ?? []).map((r) => [r.agent, r] as const));
   return (
     <GlowCard className="p-5">
       <div className="mb-3 flex items-center justify-between">
@@ -926,15 +989,21 @@ function CrewStatusBoard({ phase, crew, demo }: { phase: Phase; crew: Crew; demo
       <div className="flex flex-col divide-y divide-[color:var(--surface-border)]">
         {CREW.map((a) => {
           const isAsk = a.key === "ask";
-          const participates = !isAsk && (a.key === "watchman" || crew === "full");
+          const run = runs.get(a.key);
+          // Watchman always scans; Reviewer + Janitor join a full crew. Detective is
+          // incident-triggered (Operations zone), never part of a dependency scan.
+          const scanCrew = a.key === "watchman" || (crew === "full" && (a.key === "reviewer" || a.key === "janitor"));
           let state: "idle" | "working" | "done" | "ready";
           let status: string;
           if (isAsk) { state = "ready"; status = a.idle; }
           // Sample preview: the whole crew filed the shift (matches sample findings).
           else if (demo) { state = "done"; status = "DONE"; }
-          else if (phase === "scanning" && participates) { state = "working"; status = a.working; }
-          else if (phase === "done" && participates) { state = "done"; status = "DONE"; }
+          // Filed this shift — the agent actually ran and returned a result.
+          else if (run) { state = "done"; status = "DONE"; }
+          else if (phase === "scanning" && scanCrew) { state = "working"; status = a.working; }
           else { state = "idle"; status = a.idle; }
+          // Prefer the agent's own filed summary (parity with the homepage dispatch).
+          const detail = run?.summary?.trim() || (demo ? DEMO_DETAIL[a.key] : "") || a.doing;
           const lit = state !== "idle";
           const color = lit ? a.color : "#8b90a6";
           return (
@@ -942,7 +1011,7 @@ function CrewStatusBoard({ phase, crew, demo }: { phase: Phase; crew: Crew; demo
               <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md border font-mono text-[11px] font-semibold" style={lit ? { color: a.color, borderColor: `${a.color}55`, background: `${a.color}12` } : { color: "#8b90a6", borderColor: "var(--surface-border)" }}>{a.letter}</span>
               <div className="min-w-0 flex-1">
                 <div className="font-mono text-[11px] font-semibold tracking-[0.08em] text-cloud">{a.name}</div>
-                <div className="truncate font-mono text-[10px] text-fog">{a.doing}</div>
+                <div className="truncate font-mono text-[10px] text-fog">{detail}</div>
               </div>
               <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em]" style={{ color }}>
                 {state === "working" ? (
@@ -959,6 +1028,123 @@ function CrewStatusBoard({ phase, crew, demo }: { phase: Phase; crew: Crew; demo
             </div>
           );
         })}
+      </div>
+    </GlowCard>
+  );
+}
+
+// Dawn palette — shared with the homepage Morning Report so a filed shift here
+// reads with the same cinematic conclusion, driven by the real scan.
+const DAWN = { risk: "#fb7185", amber: "#fbbf24", resolve: "#5eead4", fog: "#8b90a6" };
+
+// Highlight grounded references (CVE, short commit, pkg@ver, PR #) inside a filed
+// summary so the dispatch reads like the homepage's grounded signatures.
+function groundRefs(text: string): React.ReactNode {
+  const re = /(CVE-\d{4}-\d+|PR #\d+|\b[0-9a-f]{6,40}\b|[a-z0-9][a-z0-9/._-]*@[\d][\w.]*)/gi;
+  return text.split(re).map((p, i) => (i % 2 === 1 ? <span key={i} className="font-mono text-cloud">{p}</span> : <span key={i}>{p}</span>));
+}
+
+// Per-agent signature metadata for the filed dispatch (unit, state arc, colour).
+const DISPATCH_META: Record<string, { letter: string; unit: string; from: string; to: string; toColor: string }> = {
+  watchman: { letter: "W", unit: "Watchman", from: "scanned", to: "patch prepared", toColor: DAWN.resolve },
+  detective: { letter: "D", unit: "Detective", from: "traced", to: "root cause", toColor: DAWN.amber },
+  reviewer: { letter: "R", unit: "Reviewer", from: "reviewed", to: "assessed", toColor: DAWN.fog },
+  janitor: { letter: "J", unit: "Janitor", from: "swept", to: "drafted", toColor: DAWN.fog },
+  ask: { letter: "A", unit: "Ask Umbra", from: "asked", to: "answered", toColor: DAWN.fog },
+};
+
+// The emotional conclusion of a real shift — the homepage Morning Report's design
+// language (dawn light, hero score, filed signatures) driven entirely by the scan.
+// Motion is arrival only: the score rises, the dispatch assembles, then it holds.
+function ShiftReport({ result, repo, demo }: { result: ScanResult; repo: string; demo?: boolean }) {
+  const reduce = useReducedMotion();
+  const has = typeof result.umbra_score === "number";
+  const score = result.umbra_score ?? 0;
+  const verdict = has ? scoreVerdict(score) : null;
+  const vulns = result.vulnerabilities ?? [];
+  const runs = (result.agent_results ?? []).filter((r) => DISPATCH_META[r.agent]);
+  const counts = [
+    `${vulns.length} ${vulns.length === 1 ? "finding" : "findings"}`,
+    runs.length ? `${runs.length} ${runs.length === 1 ? "unit" : "units"} filed` : null,
+  ].filter(Boolean).join(" · ");
+
+  return (
+    <GlowCard glow="rgba(251,191,36,0.12)" className="relative mt-5 overflow-hidden">
+      {/* First light — dawn from the top edge, the eclipse resolving. */}
+      <motion.div
+        aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-44"
+        style={{ background: "radial-gradient(120% 100% at 50% 0%, rgba(251,191,36,0.11), rgba(251,191,36,0.03) 42%, transparent 72%)" }}
+        initial={reduce ? false : { opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 1.2, ease: EASE }}
+      />
+      <div className="relative p-7 sm:p-9">
+        {/* Header — the shift, filed. */}
+        <div className="flex items-center justify-between gap-3 font-mono text-[10.5px] uppercase tracking-[0.2em] text-fog">
+          <span className="flex items-center gap-2"><span className="h-1.5 w-1.5 rounded-full bg-teal shadow-[0_0_6px_#5eead4]" /> Shift filed</span>
+          <span className="flex items-center gap-2 text-fog/70">
+            <span className="normal-case tracking-normal">{repo}</span>
+            {demo ? (
+              <span className="rounded-full border border-[color:var(--surface-border)] px-2 py-0.5 text-[9px] tracking-[0.14em]">sample</span>
+            ) : result.source ? (
+              <span className={`rounded-full border px-2 py-0.5 text-[9px] ${providerTone(result.source)}`}>{result.source}</span>
+            ) : null}
+          </span>
+        </div>
+        <div className="mt-4 h-px w-full" style={{ background: "linear-gradient(90deg, rgba(251,191,36,0.35), transparent 60%)" }} />
+
+        {/* Hero — the Umbra Score as one enormous number. No dial, no chart. */}
+        <div className="mt-7 flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-fog">Umbra Score</div>
+            <div className="mt-1 flex items-end gap-3">
+              <span className="block overflow-hidden leading-[0.8]">
+                <motion.span
+                  className="block font-serif text-[clamp(80px,13vw,150px)] leading-[0.8] tracking-[-0.04em] text-cloud"
+                  initial={reduce ? false : { y: "112%" }} animate={{ y: 0 }} transition={{ duration: 0.9, ease: EASE }}
+                >
+                  {has ? score : "--"}
+                </motion.span>
+              </span>
+              <span className="mb-3 font-mono text-[13px] text-fog/60">/ 100</span>
+            </div>
+          </div>
+          <div className="max-w-[36ch] sm:pb-3 sm:text-right">
+            {verdict && <div className={`font-serif text-[clamp(20px,2.4vw,28px)] leading-tight ${verdict.tone}`}>{verdict.label}</div>}
+            <p className="mt-2.5 text-[13.5px] leading-relaxed text-fog">{result.reasoning_summary || verdict?.note}</p>
+            {counts && <div className="mt-3 font-mono text-[11px] tracking-[0.04em] text-fog/80 sm:ml-auto">{counts}</div>}
+          </div>
+        </div>
+
+        {/* The night's work — one filed signature per unit that actually ran. */}
+        {runs.length > 0 && (
+          <>
+            <div className="mt-8 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-fog/70">
+              <span className="h-px w-6" style={{ background: "var(--surface-border)" }} /> The night&rsquo;s work
+            </div>
+            <motion.div
+              className="mt-2 divide-y divide-[color:var(--surface-border)]"
+              initial={reduce ? false : "hidden"} animate="show" variants={stagger(0.12, 0.08)}
+            >
+              {runs.map((r) => {
+                const m = DISPATCH_META[r.agent];
+                return (
+                  <motion.div key={r.agent} variants={fadeUp} className="py-3.5">
+                    <div className="flex items-center gap-3">
+                      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-[color:var(--surface-border)] font-mono text-[11px] font-semibold text-fog">{m.letter}</span>
+                      <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.16em] text-cloud">{m.unit}</span>
+                      <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-fog">{m.from} <span style={{ color: m.toColor }}>&rarr; {m.to}</span></span>
+                    </div>
+                    <p className="mt-1.5 pl-10 font-mono text-[12px] leading-relaxed text-fog">{groundRefs(r.summary || "filed")}</p>
+                  </motion.div>
+                );
+              })}
+            </motion.div>
+          </>
+        )}
+
+        {/* Signature — honest provenance, the same line as the homepage. */}
+        <div className="mt-6 border-t border-[color:var(--surface-border)] pt-4 font-mono text-[10px] leading-relaxed text-fog/70">
+          Filed by the night crew · grounded in OSV + git history · never fabricated{demo ? " · sample shift" : ""}
+        </div>
       </div>
     </GlowCard>
   );
@@ -1086,7 +1272,7 @@ function AgentRunRow({ run, onOpen }: { run: AgentRun; onOpen: () => void }) {
   );
 }
 
-function PrDialog({ target, repo, diff, model, effort, onClose }: { target: { mode: "bump" | "codex"; vuln?: Vuln } | null; repo: string; diff: string; model: string; effort: string; onClose: () => void }) {
+function PrDialog({ target, repo, diff, model, effort, onClose, onOpened }: { target: { mode: "bump" | "codex"; vuln?: Vuln } | null; repo: string; diff: string; model: string; effort: string; onClose: () => void; onOpened: (pr: { url: string; number: number; branch: string; base: string }) => void }) {
   const [status, setStatus] = useState<"confirm" | "working" | "done" | "error">("confirm");
   const [result, setResult] = useState<{ url: string; number: number; branch: string; base: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -1111,8 +1297,9 @@ function PrDialog({ target, repo, diff, model, effort, onClose }: { target: { mo
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data?.detail || `Pull-request request failed (${r.status})`);
       setResult(data); setStatus("done");
+      if (data?.url && typeof data.number === "number") onOpened(data);
     } catch (e) { setErr((e as Error).message); setStatus("error"); }
-  }, [target, repo, reuseDiff, diff, model, effort]);
+  }, [target, repo, reuseDiff, diff, model, effort, onOpened]);
 
   return (
     <AnimatePresence>
@@ -1576,18 +1763,26 @@ function ReplayModal({ replay, onClose }: { replay: Replay | null; onClose: () =
               const reasoningDown = replay.providers?.reasoning === "unavailable";
               const codexProvider = replay.providers?.engineering;
               const codexDown = !replay.codex_diff && (codexProvider === "unavailable" || /unavailable|failed|disabled/i.test(replay.tests || ""));
+              // The Reviewer is read-only by design: it reads an existing PR's diff
+              // (shown in the prompt) and reports risk — it never writes code, so an
+              // empty diff here is expected, not a failed run.
+              const isReview = /review/i.test(replay.agent);
               return (
                 <>
-                  <Step n="01" label="PROMPT"><p>{replay.prompt}</p></Step>
-                  <Step n="02" label="CODEX DIFF">
-                    {replay.codex_diff
-                      ? <pre className="overflow-auto rounded-lg bg-black/50 p-3 font-mono text-[12px] text-cyan/90">{replay.codex_diff}</pre>
-                      : codexDown
-                        ? <Unavailable title="Codex didn’t complete on this run." raw={replay.tests} />
-                        : <p className="text-fog">No changes proposed on this run.</p>}
+                  <Step n="01" label={isReview ? "PR UNDER REVIEW" : "PROMPT"}><p>{replay.prompt}</p></Step>
+                  <Step n="02" label={isReview ? "REVIEW OUTCOME" : "CODEX DIFF"}>
+                    {isReview
+                      ? <p className="text-fog">Read-only review — Umbra inspected the diff above and modified <b className="text-cloud">no files</b>. The risk assessment is in the reasoning below.</p>
+                      : replay.codex_diff
+                        ? <pre className="overflow-auto rounded-lg bg-black/50 p-3 font-mono text-[12px] text-cyan/90">{replay.codex_diff}</pre>
+                        : codexDown
+                          ? <Unavailable title="Codex didn’t complete on this run." raw={replay.tests} />
+                          : <p className="text-fog">No changes proposed on this run.</p>}
                   </Step>
-                  <Step n="03" label="TESTS">
-                    {codexDown ? <p className="text-fog">Not reached — Codex didn’t run to completion.</p> : <p>{replay.tests}</p>}
+                  <Step n="03" label={isReview ? "METHOD" : "TESTS"}>
+                    {isReview
+                      ? <p className="text-fog">A review runs no tests — it reads the pull request diff and reports concrete regressions, security risks, and missing coverage.</p>
+                      : codexDown ? <p className="text-fog">Not reached — Codex didn’t run to completion.</p> : <p>{replay.tests}</p>}
                   </Step>
                   <Step n="04" label="REASONING">
                     {reasoningDown ? <Unavailable title="Live reasoning is unavailable on this run." raw={replay.reasoning} nudge /> : <p>{replay.reasoning}</p>}

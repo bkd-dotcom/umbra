@@ -332,6 +332,42 @@ export default function Landing() {
         </RevealGroup>
       </section>
 
+      {/* Where this goes next — the honest trajectory from "here's a draft, check it"
+          to "I tested it, ship it". Each card grounds what runs TODAY before naming
+          what's next, so the roadmap reads as confidence, not a wishlist. */}
+      <section id="next" className="relative py-24">
+        <Reveal>
+          <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
+            <span className="h-1.5 w-1.5 rounded-full bg-teal shadow-[0_0_8px_#5eead4]" /> Where this goes next
+          </p>
+          <h2 className="mt-3 max-w-[24ch] font-serif text-[clamp(30px,4.2vw,52px)] leading-[1.02] tracking-[-0.03em]">From a draft you check to a fix you ship.</h2>
+          <p className="mt-4 max-w-[64ch] text-[15px] leading-relaxed text-fog">
+            Umbra already works in a disposable checkout and verifies before it hands you anything. Here&rsquo;s what runs today — and the next step that turns each agent from a junior into a senior.
+          </p>
+        </Reveal>
+        <RevealGroup className="mt-9 grid gap-4 md:grid-cols-3">
+          {[
+            { title: "Sandbox validation", today: "Runs compile, dependency-resolution, and diff-integrity checks in the disposable clone.", next: "Full test-suite execution → a verified “tests passed” badge on every PR." },
+            { title: "Proactive incidents", today: "Paste an error and the Detective traces it to a root-cause commit.", next: "Sentry / Datadog webhooks trigger the investigation before you even notice." },
+            { title: "Grounded at scale", today: "Every answer cites a real file:line — never fabricated.", next: "AST / LSP-backed grounding for cross-file correctness across millions of lines." },
+          ].map((p) => (
+            <Reveal key={p.title} variants={fadeUp}>
+              <GlowCard className="h-full p-6">
+                <h3 className="font-serif text-xl">{p.title}</h3>
+                <p className="mt-3 flex items-start gap-2 text-[13px] leading-relaxed text-fog">
+                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-teal shadow-[0_0_6px_#5eead4]" />
+                  <span><span className="font-mono text-[10px] uppercase tracking-[0.14em] text-teal">Today</span><br />{p.today}</span>
+                </p>
+                <p className="mt-3 flex items-start gap-2 border-t border-[color:var(--surface-border)] pt-3 text-[13px] leading-relaxed text-fog">
+                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full border border-fog" />
+                  <span><span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fog/80">Next</span><br />{p.next}</span>
+                </p>
+              </GlowCard>
+            </Reveal>
+          ))}
+        </RevealGroup>
+      </section>
+
       {/* Umbra inside ChatGPT — proof it isn't trapped in a dashboard. Placed
           before the report so the OpenAI surface lands ahead of the payoff. */}
       <section id="chatgpt" className="relative py-24">

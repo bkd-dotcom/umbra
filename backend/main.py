@@ -193,12 +193,16 @@ async def ask_umbra_stream(repo_url: str, question: str, http: Request) -> Strea
     ctx = _user_context(http)
 
     async def generate():
+        reasoning = None
         async for event in orchestrator.ask_stream_events(repo_url, question, **ctx):
-            if event.get("type") == "references":
+            etype = event.get("type")
+            if etype == "references":
                 yield f"event: references\ndata: {json.dumps({'references': event.get('references', []), 'source': event.get('source')})}\n\n"
+            elif etype == "done":
+                reasoning = event.get("reasoning")  # true reasoning provider, surfaced in the final event
             else:
                 yield f"event: umbra\ndata: {json.dumps({'chunk': event.get('chunk', '')})}\n\n"
-        yield "event: done\ndata: {}\n\n"
+        yield f"event: done\ndata: {json.dumps({'reasoning': reasoning})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 

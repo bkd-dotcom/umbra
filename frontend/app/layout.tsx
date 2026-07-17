@@ -13,9 +13,28 @@ const sans = Inter({ subsets: ["latin"], variable: "--ff-sans", display: "swap" 
 const serif = Instrument_Serif({ subsets: ["latin"], weight: "400", style: ["normal", "italic"], variable: "--ff-serif", display: "swap" });
 const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--ff-mono", display: "swap" });
 
+const DESCRIPTION =
+  "Umbra is an autonomous AI engineering crew for your GitHub repo, built for OpenAI Build Week. Codex CLI proposes fix diffs inside a disposable clone (never auto-merged), GPT‑5.6 reasons over real repo evidence, and a provider ledger labels every output live / cache / unavailable — so the night crew hunts CVEs, traces incidents, and answers your codebase while you sleep.";
+
+// If an OG share image is added later, drop it at /public/og.png (1200×630) and
+// set `images: ["/og.png"]` on both openGraph and twitter below.
 export const metadata: Metadata = {
+  metadataBase: new URL("https://umbra.engineer"),
   title: "Umbra — the AI engineer that works the night shift",
-  description: "An autonomous AI engineering team for your GitHub repo. Sign in and watch the night crew hunt CVEs, trace incidents, and answer your codebase — while you sleep.",
+  description: DESCRIPTION,
+  openGraph: {
+    type: "website",
+    url: "https://umbra.engineer",
+    siteName: "Umbra",
+    title: "Umbra — the AI engineer that works the night shift",
+    description: DESCRIPTION,
+    locale: "en_US",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Umbra — the AI engineer that works the night shift",
+    description: DESCRIPTION,
+  },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

@@ -103,6 +103,9 @@ class AskUmbra:
         developer, user = self._developer_prompt(), self._user_prompt(question, context)
         iterator = reason_stream("work", developer, user, None, openai_key)
         streamed = False
+        # Reasoning half is the streaming Responses API unless it fails below. A final
+        # "done" event carries the true provider so the UI can label it honestly
+        # (additive event — existing consumers that only read text/references ignore it).
         try:
             while True:
                 done, chunk = await asyncio.to_thread(self._next, iterator)
@@ -113,12 +116,17 @@ class AskUmbra:
         except RuntimeError as exc:
             if streamed:
                 yield {"type": "text", "chunk": f"\n[Ask Umbra stream interrupted: {exc}]"}
+                yield {"type": "done", "reasoning": "responses-api-stream"}
                 return
             if allow_codex is False:
                 yield {"type": "text", "chunk": f"Grounded retrieval succeeded, but live reasoning is unavailable: {exc}. Add your own OpenAI key to unlock answers here."}
+                yield {"type": "done", "reasoning": "unavailable"}
                 return
             text, _ = await asyncio.to_thread(codex_reasoning, self.codex, developer, user, exc)
             yield {"type": "text", "chunk": text}
+            yield {"type": "done", "reasoning": "codex-cli"}
+            return
+        yield {"type": "done", "reasoning": "responses-api-stream"}
 
     async def _prepare(self, repo_path, question: str, allow_codex: bool | None = None):
         retrieval_started = perf_counter()

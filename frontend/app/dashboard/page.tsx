@@ -16,6 +16,7 @@ import { GitHubIcon, LockIcon } from "@/components/ui/icons";
 import { Reveal } from "@/components/ui/reveal";
 import { scrollToTop } from "@/components/ui/smooth-scroll";
 import { LocalWeather } from "@/components/ui/local-weather";
+import { PROOF_SCAN, PROOF_REPO, PROOF_CAPTURED_AT } from "@/lib/proof-scan";
 import { EASE, fadeUp, stagger } from "@/lib/motion";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -29,10 +30,10 @@ type AgentRun = { agent: string; summary: string; findings: unknown[]; replay: R
 type ScanResult = { umbra_score?: number; vulnerabilities?: Vuln[]; dependencies?: Dep[]; source?: string; live_agents?: string[]; agent_results?: AgentRun[]; reasoning_summary?: string; repo_url?: string };
 type Scan = { scan_id?: string; repo_full_name: string; umbra_score?: number; source?: string; vuln_count?: number; ran_at?: string; report?: ScanResult };
 type Reference = { file: string; lines?: string; note?: string };
-type AskAnswer = { answer: string; references: Reference[]; blast_radius?: string; source?: string };
+type AskAnswer = { answer: string; references: Reference[]; blast_radius?: string; source?: string; reasoning?: string };
 type Postmortem = { incident: string; root_cause_commit: string; confidence: number; timeline: string[]; explanation: string; blast_radius: string; suggested_fix: string; reasoning_chain: string[]; source?: string };
 
-const LIVE_PROVIDERS = new Set(["codex-cli", "osv.dev", "local-git", "local-git-grep", "responses-api", "responses-api-stream"]);
+const LIVE_PROVIDERS = new Set(["codex-cli", "osv.dev", "local-git", "local-git-grep", "repo-clone", "responses-api", "responses-api-stream"]);
 
 // Reduce any repo reference to its `owner/repo` slug (for display / labels).
 function repoFullName(url: string): string {
@@ -46,8 +47,24 @@ function normalizeRepoUrl(raw: string): string {
 }
 function providerTone(v: string): string {
   if (LIVE_PROVIDERS.has(v)) return "text-teal border-teal/40 bg-teal/10";
+  // founder-gated = hosted public preview blocks Codex spend — a specific state,
+  // not "live" and not a plain failure. Violet, matching the FOUNDER badge.
+  if (v === "founder-gated") return "text-violet border-violet/40 bg-violet/10";
   if (v.includes("cache")) return "text-amber border-amber/40 bg-amber/10";
   return "text-fog border-[color:var(--surface-border)] bg-white/5";
+}
+
+// Affirmative provenance pill for reports — LIVE vs SAMPLE (and cache/unavailable),
+// so a judge instantly knows whether a card reflects their scan or example data.
+function StatusPill({ kind }: { kind: "live" | "sample" | "cache" | "captured" | "unavailable" }) {
+  const map = {
+    live: { label: "LIVE SCAN RESULT", cls: "text-teal border-teal/40 bg-teal/10" },
+    sample: { label: "SAMPLE SHIFT", cls: "text-fog/80 border-[color:var(--surface-border)] bg-white/5" },
+    cache: { label: "CACHE", cls: "text-amber border-amber/40 bg-amber/10" },
+    captured: { label: "CAPTURED SCAN", cls: "text-amber border-amber/40 bg-amber/10" },
+    unavailable: { label: "UNAVAILABLE", cls: "text-fog border-[color:var(--surface-border)] bg-white/5" },
+  }[kind];
+  return <span className={`rounded-full border px-2.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] ${map.cls}`}>{map.label}</span>;
 }
 
 // Minimal SSE reader over fetch's ReadableStream — lets the Ask + Detective
@@ -158,6 +175,7 @@ const DEMO_RESULT: ScanResult = {
 
 export default function Dashboard() {
   const [user, setUser] = useState<User | null | "loading">("loading");
+  const [apiUp, setApiUp] = useState<boolean | null>(null); // backend reachability (null = probing)
   const [repos, setRepos] = useState<Repo[] | null>(null);
   const [repoError, setRepoError] = useState<{ status: number; msg: string } | null>(null);
   const [repoQuery, setRepoQuery] = useState("");
@@ -167,9 +185,10 @@ export default function Dashboard() {
   // Scan speed profile — defaults to the fastest usable combo for a snappy first run.
   const [model, setModel] = useState<ModelId>("gpt-5.6-luna");
   const [effort, setEffort] = useState<Effort>("low");
-  // Default to the full crew (Watchman + Reviewer + Janitor) so a scan files the
-  // complete dispatch; Quick (Watchman only) stays selectable for a fast single-agent run.
-  const [crew, setCrew] = useState<Crew>("full");
+  // Default to the fast single-agent path (Quick · 1) so a guest/judge's first scan
+  // is snappy; logged-in users are bumped to the full crew on load (see the /api/me
+  // effect below). Full · 3 stays explicitly selectable for everyone.
+  const [crew, setCrew] = useState<Crew>("quick");
   const [result, setResult] = useState<ScanResult | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   const [history, setHistory] = useState<Scan[]>([]);
@@ -185,6 +204,9 @@ export default function Dashboard() {
   const [keyInput, setKeyInput] = useState("");
   const [savingKey, setSavingKey] = useState(false);
   const [viewingSaved, setViewingSaved] = useState<string | null>(null);
+  // When set, the dashboard is showing the bundled real-but-captured proof scan
+  // (instant, no wait) rather than a live run — labelled CAPTURED SCAN, never live.
+  const [capturedAt, setCapturedAt] = useState<string | null>(null);
   const stepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadHistory = useCallback(() => {
@@ -220,6 +242,13 @@ export default function Dashboard() {
       .catch((e: Error & { status?: number }) => { setRepos([]); setRepoError({ status: e.status ?? 0, msg: e.message }); });
   }, [repoUrl]);
 
+  // Backend reachability probe — a rejected fetch (connection refused / CORS)
+  // means the API is down; any HTTP response (even 401) means it's reachable. Lets
+  // the dashboard tell a judge to start the API instead of silently failing scans.
+  useEffect(() => {
+    fetch(`${API}/api/health`).then(() => setApiUp(true)).catch(() => setApiUp(false));
+  }, []);
+
   // Auth gate — logged-out visitors are NOT redirected; they get the public
   // Mission Control preview (a labelled demo shift + a working public scan).
   useEffect(() => {
@@ -227,6 +256,7 @@ export default function Dashboard() {
       .then((r) => { if (!r.ok) throw new Error("unauthenticated"); return r.json(); })
       .then((me: User) => {
         setUser(me);
+        setCrew("full"); // logged-in users get the complete dispatch by default
         if (me.github_connected) { loadRepos(); }
         loadApp();
         loadHistory();
@@ -242,7 +272,7 @@ export default function Dashboard() {
     const url = normalizeRepoUrl(target ?? repoUrl);
     if (scanning || !url) return;
     if (target && target !== repoUrl) setRepoUrl(target);
-    setScanning(true); setScanError(null); setResult(null); setStep(0); setViewingSaved(null);
+    setScanning(true); setScanError(null); setResult(null); setStep(0); setViewingSaved(null); setCapturedAt(null);
     scrollToTop();
     stepTimer.current = setInterval(() => setStep((s) => Math.min(s + 1, SCAN_STEPS.length - 1)), 1400);
     try {
@@ -260,13 +290,30 @@ export default function Dashboard() {
     }
   }, [repoUrl, scanning, loadHistory, model, effort, crew]);
 
+  // Open the bundled captured proof scan instantly (no backend round-trip) so a
+  // judge sees a working scan without the ~90s live wait. The JSON is genuine scan
+  // output; `as const` narrows it to readonly, hence the structural cast.
+  const openCaptured = useCallback(() => {
+    if (scanning) return;
+    setScanError(null); setViewingSaved(null); setResult(PROOF_SCAN as unknown as ScanResult); setCapturedAt(PROOF_CAPTURED_AT);
+    setRepoUrl(`github.com/${PROOF_REPO}`); // align the scan input with the captured report
+    scrollToTop();
+  }, [scanning]);
+
   // Landing handoff: `/dashboard?repo=owner/name` pre-fills the target and kicks
   // off one public scan so a judge arriving from the hero sees a live result
   // immediately (falls back to the labelled demo if the scan can't run).
   const booted = useRef(false);
   useEffect(() => {
     if (booted.current) return;
-    const raw = new URLSearchParams(window.location.search).get("repo");
+    const params = new URLSearchParams(window.location.search);
+    // `/dashboard?proof=...` opens the captured proof scan instantly (landing CTA).
+    if (params.get("proof")) {
+      booted.current = true;
+      openCaptured();
+      return;
+    }
+    const raw = params.get("repo");
     if (!raw) return;
     booted.current = true;
     const url = normalizeRepoUrl(raw);
@@ -365,6 +412,7 @@ export default function Dashboard() {
   // logged-out visitor with no live result yet — a labelled sample shift.
   const shift = result ?? (guest ? DEMO_RESULT : null);
   const showingDemo = !result && guest;
+  const captured = !!capturedAt; // viewing the bundled real-but-captured proof scan
   const shiftVulns = shift?.vulnerabilities ?? [];
   const shiftDeps = shift?.dependencies ?? [];
   const shiftRepo = shift?.repo_url ? repoFullName(shift.repo_url) : repoUrl ? repoFullName(repoUrl) : "no target";
@@ -388,6 +436,8 @@ export default function Dashboard() {
       <section className="relative pt-6">
         <ZoneLabel n="01" title="Current shift" hint={guest ? "public preview" : undefined} />
 
+        <JudgePath onOpenCaptured={openCaptured} />
+
         {/* Command bar — issue the scan */}
         {me ? (
           <RepoPicker
@@ -408,6 +458,7 @@ export default function Dashboard() {
           <GuestScanBar repoUrl={repoUrl} setRepoUrl={setRepoUrl} scanning={scanning} onRun={() => launchScan()} />
         )}
         <ScanOptions model={model} setModel={setModel} effort={effort} setEffort={setEffort} crew={crew} setCrew={setCrew} />
+        <ApiStatus up={apiUp} />
         {me && <AutoReviewPanel appInfo={appInfo} installs={appInstalls} />}
         {scanError && <p className="mt-3 font-mono text-xs text-rose-300">Scan unavailable: {scanError}{guest ? " — showing the sample shift below." : ""}</p>}
 
@@ -439,15 +490,22 @@ export default function Dashboard() {
           </div>
         )}
 
+        {captured && (
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber/30 bg-amber/5 px-4 py-3 text-[13px]">
+            <span className="min-w-0 text-fog">Viewing a <span className="text-amber">real scan captured {capturedAt}</span> on <span className="break-all text-cloud">{PROOF_REPO}</span> — shown instantly, no wait. Every result below is genuine output from that run. <span className="text-fog/80">Captured snapshot: PR actions are disabled here — launch a live scan to open branch-only PRs.</span></span>
+            <button onClick={() => { setResult(null); setCapturedAt(null); }} className="shrink-0 font-mono text-[12px] text-cyan hover:underline">Back to scanning →</button>
+          </div>
+        )}
+
         {/* Shift at a glance — a filed shift reads as the cinematic Shift Report
             (hero score + filed dispatch); an idle dashboard keeps the compact
             score + crew status while it waits for the next scan. */}
         {!scanning && (
           phase === "done" && shift ? (
-            <ShiftReport result={shift} repo={shiftRepo} demo={showingDemo} />
+            <ShiftReport result={shift} repo={shiftRepo} demo={showingDemo} capturedAt={capturedAt} />
           ) : (
             <div className="mt-5 grid gap-5 lg:grid-cols-[1.35fr_1fr]">
-              <ScorePanel result={shift} demo={showingDemo} />
+              <ScorePanel result={shift} demo={showingDemo} capturedAt={capturedAt} />
               <CrewStatusBoard phase={phase} crew={crew} result={shift} demo={showingDemo} />
             </div>
           )
@@ -457,17 +515,18 @@ export default function Dashboard() {
       {/* ── Zone 02 · Findings ──────────────────────────────────────────────── */}
       {shift && !scanning && (
         <section className="relative mt-14">
-          <ZoneLabel n="02" title="Findings" hint={showingDemo ? "sample" : shift.source} />
+          <ZoneLabel n="02" title="Findings" hint={showingDemo ? "sample" : captured ? `captured ${capturedAt}` : shift.source} />
           <div className="grid gap-5 lg:grid-cols-[1.5fr_1fr]">
             <div className="flex flex-col gap-5">
-              <FindingsLedger vulns={shiftVulns} canPr={canPr && !showingDemo} onOpenPr={(v) => setPrTarget({ mode: "bump", vuln: v })} />
-              {me?.is_founder && canPr && !showingDemo && shiftVulns.length > 0 && (
+              <FindingsLedger vulns={shiftVulns} canPr={canPr && !showingDemo && !captured} demo={showingDemo} onOpenPr={(v) => setPrTarget({ mode: "bump", vuln: v })} />
+              {me?.is_founder && canPr && !showingDemo && !captured && shiftVulns.length > 0 && (
                 <button onClick={() => setPrTarget({ mode: "codex" })} className="self-start rounded-full border border-violet/40 bg-violet/10 px-3.5 py-1.5 font-mono text-[11px] text-violet transition-colors hover:bg-violet/20">Open a Codex fix PR →</button>
               )}
             </div>
             <div className="flex flex-col gap-5">
               <DependencyRiskMap deps={shiftDeps} />
-              <ProviderLedger result={shift} demo={showingDemo} />
+              <OpenAiStrip />
+              <ProviderLedger result={shift} demo={showingDemo} founder={!!me?.is_founder} capturedAt={capturedAt} />
             </div>
           </div>
           {/* Reasoning replays — keep the honest per-agent replay reachable */}
@@ -874,6 +933,105 @@ function ZoneLabel({ n, title, hint }: { n: string; title: string; hint?: string
   );
 }
 
+// Backend reachability indicator. When the API is unreachable a scan fails with a
+// bare "Failed to fetch"; this makes the fix explicit (and only shows the local
+// :8000 command when the client is actually pointed at localhost).
+function ApiStatus({ up }: { up: boolean | null }) {
+  if (up === null) return null; // still probing
+  if (up) {
+    return (
+      <p className="mt-2.5 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-teal/80">
+        <span className="h-1.5 w-1.5 rounded-full bg-teal shadow-[0_0_6px_#5eead4]" /> API connected
+      </p>
+    );
+  }
+  const local = API.includes("localhost");
+  return (
+    <div className="mt-3 rounded-xl border border-amber/40 bg-amber/10 px-4 py-3">
+      <p className="flex items-center gap-1.5 font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-amber">
+        <span className="h-1.5 w-1.5 rounded-full bg-amber" />
+        API unavailable{local ? " — start the backend on :8000" : " — the service isn't responding"}
+      </p>
+      {local && (
+        <>
+          <p className="mt-1.5 font-mono text-[11px] leading-relaxed text-fog">Scans, Ask, and Detective need the local API. In a second terminal:</p>
+          <pre className="mt-1.5 overflow-x-auto rounded-lg border border-[color:var(--surface-border)] bg-black/30 px-3 py-2 font-mono text-[10.5px] leading-relaxed text-cloud">uv run uvicorn backend.main:app --reload   # http://localhost:8000</pre>
+        </>
+      )}
+    </div>
+  );
+}
+
+// A short, guided path for a judge landing cold on the dashboard — orients them
+// on where the live proof is before they start clicking. Shown to everyone.
+function JudgePath({ onOpenCaptured }: { onOpenCaptured: () => void }) {
+  const steps = [
+    ["01", "Run a public repo scan", "Live, OSV-grounded findings from any open-source repo — or open a captured scan below for instant proof."],
+    ["02", "Read the Provider Ledger", "Every output labelled live / cache / unavailable — never fabricated."],
+    ["03", "Open a reasoning replay", "After a scan, open any agent below for its Codex CLI prompt + diff and GPT‑5.6 reasoning — shown when enabled."],
+  ] as const;
+  return (
+    <GlowCard className="mt-4 mb-5 p-5">
+      <div className="mb-3.5 flex flex-wrap items-center gap-2">
+        <span className="rounded-full border border-cyan/40 bg-cyan/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-cyan">For judges</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-fog">A 30-second path through the proof</span>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        {steps.map(([n, title, body]) => (
+          <div key={n} className="rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] p-3.5">
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[10px] tracking-[0.2em] text-cyan">{n}</span>
+              <span className="font-mono text-[11.5px] font-semibold text-cloud">{title}</span>
+            </div>
+            <p className="mt-1.5 text-[12px] leading-relaxed text-fog">{body}</p>
+          </div>
+        ))}
+      </div>
+      {/* Instant proof — a real captured scan, no ~90s live wait. */}
+      <div className="mt-3.5 flex flex-wrap items-center gap-3 border-t border-[color:var(--surface-border)] pt-3.5">
+        <button
+          type="button"
+          onClick={onOpenCaptured}
+          className="inline-flex items-center gap-2 rounded-full border border-teal/40 bg-teal/10 px-3.5 py-1.5 font-mono text-[11px] text-teal transition-colors hover:bg-teal/20"
+        >
+          ▶ Open a captured scan <span className="text-teal/70">· instant, no wait</span>
+        </button>
+        <span className="font-mono text-[10.5px] leading-snug text-fog/70">A real scan of {PROOF_REPO} — 26 live OSV advisories + Codex-proposed diffs, captured {PROOF_CAPTURED_AT}.</span>
+      </div>
+    </GlowCard>
+  );
+}
+
+// Mirrors the landing "How OpenAI is used" panel, compact, framing the Provider
+// Ledger it sits beside. Each tag is a real provider value the ledger can show.
+function OpenAiStrip() {
+  const items = [
+    { tag: "codex-cli", color: "#a78bfa", title: "Codex CLI", body: "Proposes diffs inside a disposable clone. Never auto-merges." },
+    { tag: "gpt‑5.6", color: "#fbbf24", title: "GPT‑5.6 reasoning", body: "Reasons over real repo evidence, when live reasoning is enabled." },
+    { tag: "responses-api-stream", color: "#22d3ee", title: "Responses streaming", body: "Powers Ask Umbra & Detective, token-by-token." },
+    { tag: "provider ledger", color: "#5eead4", title: "Provider ledger", body: "Labels every output live / cache / unavailable." },
+  ];
+  return (
+    <GlowCard className="p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-fog">How OpenAI is used</p>
+        <span className="font-mono text-[9.5px] text-fog/70">labelled, never faked</span>
+      </div>
+      <div className="flex flex-col gap-3">
+        {items.map((it) => (
+          <div key={it.title}>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full border px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em]" style={{ color: it.color, borderColor: `${it.color}44`, background: `${it.color}12` }}>{it.tag}</span>
+              <span className="font-mono text-[11.5px] text-cloud">{it.title}</span>
+            </div>
+            <p className="mt-1 text-[11.5px] leading-relaxed text-fog">{it.body}</p>
+          </div>
+        ))}
+      </div>
+    </GlowCard>
+  );
+}
+
 function CommandHeader({ me, repo, phase, onLogout }: { me: User | null; repo: string; phase: Phase; onLogout: () => void }) {
   const [clock, setClock] = useState("");
   useEffect(() => {
@@ -887,8 +1045,8 @@ function CommandHeader({ me, repo, phase, onLogout }: { me: User | null; repo: s
   return (
     <header className="sticky top-0 z-30 -mx-6 flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-[color:var(--surface-border)] bg-ink/85 px-6 py-3 backdrop-blur-md md:-mx-10 md:px-10">
       <span className="font-mono text-[13px] font-bold tracking-[0.18em] text-cloud"><span className="text-cyan">◐</span> UMBRA <span className="text-fog/40">//</span> <span className="text-fog">MISSION CONTROL</span></span>
-      <div className="order-3 flex w-full items-center gap-x-4 gap-y-1 font-mono text-[10.5px] uppercase tracking-[0.12em] text-fog md:order-none md:w-auto">
-        <span className="inline-flex items-center gap-1.5"><span className="text-fog/50">repo</span> <span className="truncate text-cloud">{repo}</span></span>
+      <div className="order-3 flex w-full min-w-0 items-center gap-x-4 gap-y-1 font-mono text-[10.5px] uppercase tracking-[0.12em] text-fog md:order-none md:w-auto">
+        <span className="inline-flex min-w-0 items-center gap-1.5"><span className="shrink-0 text-fog/50">repo</span> <span className="min-w-0 max-w-[52vw] truncate text-cloud md:max-w-[220px]">{repo}</span></span>
         <span className="text-fog/30">·</span>
         <span className="inline-flex shrink-0 items-center gap-1.5" style={{ color }}>
           <span className="h-1.5 w-1.5 rounded-full" style={{ background: color, boxShadow: `0 0 8px ${color}` }} />
@@ -939,7 +1097,7 @@ function GuestScanBar({ repoUrl, setRepoUrl, scanning, onRun }: { repoUrl: strin
   );
 }
 
-function ScorePanel({ result, demo }: { result: ScanResult | null; demo: boolean }) {
+function ScorePanel({ result, demo, capturedAt }: { result: ScanResult | null; demo: boolean; capturedAt?: string | null }) {
   const has = !!result && typeof result.umbra_score === "number";
   const score = result?.umbra_score ?? 0;
   const verdict = has ? scoreVerdict(score) : null;
@@ -948,9 +1106,17 @@ function ScorePanel({ result, demo }: { result: ScanResult | null; demo: boolean
       <div className="flex items-center justify-between">
         <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-fog">Umbra score</p>
         {demo ? (
-          <span className="rounded-full border border-[color:var(--surface-border)] px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-fog/80">Sample</span>
-        ) : result?.source ? (
-          <span className={`rounded-full border px-2.5 py-1 font-mono text-[10px] ${providerTone(result.source)}`}>{result.source}</span>
+          <StatusPill kind="sample" />
+        ) : capturedAt ? (
+          <span className="flex items-center gap-2">
+            <StatusPill kind="captured" />
+            <span className="font-mono text-[9px] text-fog/55">{capturedAt}</span>
+          </span>
+        ) : has ? (
+          <span className="flex items-center gap-2">
+            <StatusPill kind="live" />
+            {result?.source && <span className="font-mono text-[9px] text-fog/55">{result.source}</span>}
+          </span>
         ) : null}
       </div>
       <div className="mt-6 flex items-end gap-4">
@@ -1056,7 +1222,7 @@ const DISPATCH_META: Record<string, { letter: string; unit: string; from: string
 // The emotional conclusion of a real shift — the homepage Morning Report's design
 // language (dawn light, hero score, filed signatures) driven entirely by the scan.
 // Motion is arrival only: the score rises, the dispatch assembles, then it holds.
-function ShiftReport({ result, repo, demo }: { result: ScanResult; repo: string; demo?: boolean }) {
+function ShiftReport({ result, repo, demo, capturedAt }: { result: ScanResult; repo: string; demo?: boolean; capturedAt?: string | null }) {
   const reduce = useReducedMotion();
   const has = typeof result.umbra_score === "number";
   const score = result.umbra_score ?? 0;
@@ -1078,15 +1244,23 @@ function ShiftReport({ result, repo, demo }: { result: ScanResult; repo: string;
       />
       <div className="relative p-7 sm:p-9">
         {/* Header — the shift, filed. */}
-        <div className="flex items-center justify-between gap-3 font-mono text-[10.5px] uppercase tracking-[0.2em] text-fog">
-          <span className="flex items-center gap-2"><span className="h-1.5 w-1.5 rounded-full bg-teal shadow-[0_0_6px_#5eead4]" /> Shift filed</span>
-          <span className="flex items-center gap-2 text-fog/70">
-            <span className="normal-case tracking-normal">{repo}</span>
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 font-mono text-[10.5px] uppercase tracking-[0.2em] text-fog">
+          <span className="flex shrink-0 items-center gap-2"><span className="h-1.5 w-1.5 rounded-full bg-teal shadow-[0_0_6px_#5eead4]" /> Shift filed</span>
+          <span className="flex min-w-0 items-center gap-2 text-fog/70">
+            <span className="min-w-0 max-w-[45vw] truncate normal-case tracking-normal sm:max-w-none">{repo}</span>
             {demo ? (
-              <span className="rounded-full border border-[color:var(--surface-border)] px-2 py-0.5 text-[9px] tracking-[0.14em]">sample</span>
-            ) : result.source ? (
-              <span className={`rounded-full border px-2 py-0.5 text-[9px] ${providerTone(result.source)}`}>{result.source}</span>
-            ) : null}
+              <StatusPill kind="sample" />
+            ) : capturedAt ? (
+              <span className="flex items-center gap-2">
+                <StatusPill kind="captured" />
+                <span className="font-mono text-[9px] text-fog/55">{capturedAt}</span>
+              </span>
+            ) : (
+              <span className="flex items-center gap-2">
+                <StatusPill kind="live" />
+                {result.source && <span className="font-mono text-[9px] text-fog/55">{result.source}</span>}
+              </span>
+            )}
           </span>
         </div>
         <div className="mt-4 h-px w-full" style={{ background: "linear-gradient(90deg, rgba(251,191,36,0.35), transparent 60%)" }} />
@@ -1143,20 +1317,25 @@ function ShiftReport({ result, repo, demo }: { result: ScanResult; repo: string;
 
         {/* Signature — honest provenance, the same line as the homepage. */}
         <div className="mt-6 border-t border-[color:var(--surface-border)] pt-4 font-mono text-[10px] leading-relaxed text-fog/70">
-          Filed by the night crew · grounded in OSV + git history · never fabricated{demo ? " · sample shift" : ""}
+          Filed by the night crew · grounded in OSV + git history · never fabricated{demo ? " · sample shift" : capturedAt ? ` · captured ${capturedAt}` : ""}
         </div>
       </div>
     </GlowCard>
   );
 }
 
-function FindingsLedger({ vulns, canPr, onOpenPr }: { vulns: Vuln[]; canPr: boolean; onOpenPr: (v: Vuln) => void }) {
+function FindingsLedger({ vulns, canPr, demo, onOpenPr }: { vulns: Vuln[]; canPr: boolean; demo?: boolean; onOpenPr: (v: Vuln) => void }) {
   return (
     <GlowCard className="p-5">
       <div className="mb-3 flex items-center justify-between">
         <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-fog">Findings ledger</p>
         <span className="font-mono text-[10px] text-fog">{vulns.length} {vulns.length === 1 ? "advisory" : "advisories"}</span>
       </div>
+      {demo && vulns.length > 0 && (
+        <p className="mb-3 rounded-lg border border-[color:var(--surface-border)] bg-white/5 px-3 py-2 font-mono text-[10.5px] leading-snug text-fog/80">
+          Sample advisory — not from your repo. Run a scan for live findings.
+        </p>
+      )}
       {vulns.length === 0 ? (
         <div className="flex items-center gap-3 rounded-xl border border-teal/30 bg-teal/5 px-4 py-6">
           <span className="text-lg text-teal">✓</span>
@@ -1180,9 +1359,9 @@ function FindingRow({ v, canPr, onOpenPr }: { v: Vuln; canPr: boolean; onOpenPr:
     <div>
       <button onClick={() => setOpen((o) => !o)} className="flex w-full flex-wrap items-center gap-x-3 gap-y-1.5 py-3 text-left">
         <SeverityChip severity={v.severity} />
-        <span className="font-mono text-[13px] text-cloud">{v.package}<span className="text-fog">@{v.version}</span></span>
-        <span className="font-mono text-[11px] text-fog">{v.cve}</span>
-        <span className="ml-auto flex items-center gap-2 font-mono text-[10px] text-fog">
+        <span className="min-w-0 break-all font-mono text-[13px] text-cloud">{v.package}<span className="text-fog">@{v.version}</span></span>
+        <span className="min-w-0 break-all font-mono text-[11px] text-fog">{v.cve}</span>
+        <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-[10px] text-fog">
           <span className="text-cyan">◉ WATCHMAN</span>
           <span className="text-fog/40">· osv.dev</span>
           <span className="text-fog transition-transform" style={{ transform: open ? "rotate(90deg)" : "none" }}>›</span>
@@ -1192,7 +1371,7 @@ function FindingRow({ v, canPr, onOpenPr }: { v: Vuln; canPr: boolean; onOpenPr:
         {open && (
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
             <div className="pb-4 text-[13px] leading-relaxed text-fog">
-              <p>{v.summary || "No advisory summary supplied."}</p>
+              <p className="break-words">{v.summary || "No advisory summary supplied."}</p>
               <div className="mt-3 flex flex-wrap items-center gap-3">
                 {v.owasp && <span className="rounded-full border border-[color:var(--surface-border)] px-2.5 py-1 font-mono text-[10px] text-fog">{v.owasp}</span>}
                 <a href={`https://osv.dev/vulnerability/${encodeURIComponent(v.cve)}`} target="_blank" rel="noreferrer" className="font-mono text-[11px] text-cyan hover:underline">View advisory on OSV ↗</a>
@@ -1229,14 +1408,57 @@ function DependencyRiskMap({ deps }: { deps: Dep[] }) {
   );
 }
 
-function ProviderLedger({ result, demo }: { result: ScanResult | null; demo: boolean }) {
-  const providers = result?.agent_results?.[0]?.replay?.providers ?? {};
+// Fold every agent's provider map into one, preferring a live value over a
+// non-live one per key — so the ledger reflects the whole crew, not just the
+// first agent (Watchman sets vulnerabilities/reasoning/engineering; Detective
+// sets history; Ask sets retrieval).
+function mergeProviders(result: ScanResult | null): Record<string, string> {
+  const merged: Record<string, string> = {};
+  for (const run of result?.agent_results ?? []) {
+    for (const [k, v] of Object.entries(run.replay?.providers ?? {})) {
+      if (!(k in merged) || (!LIVE_PROVIDERS.has(merged[k]) && LIVE_PROVIDERS.has(v))) merged[k] = v;
+    }
+  }
+  return merged;
+}
+
+function ProviderLedger({ result, demo, founder, capturedAt }: { result: ScanResult | null; demo: boolean; founder: boolean; capturedAt?: string | null }) {
+  const providers = mergeProviders(result);
   const src = result?.source ?? "";
+
+  // Every value below maps to something that literally happened — never a
+  // generic "live" that implies a tool ran when it didn't (see honesty rules).
+  const osv = demo ? "demo"
+    : providers.vulnerabilities === "osv.dev" || src.includes("live-watchman") ? "osv.dev"
+    : src.includes("cache") ? "cache" : "cache";
+  const github = demo ? "demo"
+    : providers.history === "local-git" || providers.retrieval === "local-git-grep" ? "local-git"
+    : src.startsWith("live") ? "repo-clone" : "demo";
+  const eng = providers.engineering;
+  const codex = demo ? "demo"
+    : eng === "codex-cli" ? "codex-cli"
+    : !founder && eng === "unavailable" ? "founder-gated"
+    : eng || "unavailable";
+  const reasoning = demo ? "demo" : providers.reasoning || "unavailable";
+
+  // Honest per-row footnote for each Codex state — never implies Codex ran.
+  const codexNote = codex === "codex-cli"
+    ? "Codex CLI ran on this repo (proposes a diff when there's a fix)."
+    : codex === "founder-gated"
+    ? "founder-gated on hosted public preview"
+    : codex === "codex-cli-disabled"
+    ? "Codex CLI is disabled in this environment."
+    : codex === "unavailable"
+    ? "Codex did not produce a diff for this run."
+    : null;
+
+  // In demo mode every value is illustrative, so suppress the per-row "live" hints
+  // (they'd wrongly imply real repo evidence) and say so once in the footer.
   const rows = [
-    { label: "OSV", value: src.includes("cache") ? "cache" : demo ? "demo" : "osv.dev" },
-    { label: "GitHub", value: demo ? "demo" : "live" },
-    { label: "Codex", value: providers.engineering || (demo ? "demo" : "no diff") },
-    { label: "Reasoning", value: providers.reasoning || (demo ? "demo" : "unavailable") },
+    { label: "OSV", value: osv, hint: demo ? null : "osv.dev = live advisory scan ran" },
+    { label: "GitHub", value: github, hint: demo ? null : "repo evidence read from a local clone" },
+    { label: "Codex", value: codex, hint: demo ? null : codexNote },
+    { label: "Reasoning", value: reasoning, hint: demo ? null : reasoning.startsWith("responses-api") ? "GPT‑5.6 reasoning ran" : reasoning === "codex-cli" ? "reasoning via Codex" : null },
   ];
   return (
     <GlowCard className="p-5">
@@ -1244,15 +1466,24 @@ function ProviderLedger({ result, demo }: { result: ScanResult | null; demo: boo
         <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-fog">Provider ledger</p>
         <span className="font-mono text-[9.5px] text-fog/70">what produced each output</span>
       </div>
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2.5">
         {rows.map((r) => (
-          <div key={r.label} className="flex items-center justify-between gap-3">
-            <span className="font-mono text-[11px] text-fog">{r.label}</span>
-            <span className={`rounded-full border px-2.5 py-0.5 font-mono text-[10px] ${providerTone(r.value)}`}>{r.value}</span>
+          <div key={r.label} className="flex flex-col gap-0.5">
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-mono text-[11px] text-fog">{r.label}</span>
+              <span className={`rounded-full border px-2.5 py-0.5 font-mono text-[10px] ${providerTone(r.value)}`}>{r.value}</span>
+            </div>
+            {r.hint && <span className="font-mono text-[9px] leading-snug text-fog/55">{r.hint}</span>}
           </div>
         ))}
       </div>
-      <p className="mt-3 border-t border-[color:var(--surface-border)] pt-3 font-mono text-[9.5px] leading-relaxed text-fog/70">Every output is labelled live / cache / demo / unavailable — never fabricated.</p>
+      <p className="mt-3 border-t border-[color:var(--surface-border)] pt-3 font-mono text-[9.5px] leading-relaxed text-fog/70">
+        {demo
+          ? "Sample provider state — run a scan for live repo evidence."
+          : capturedAt
+          ? `These are the providers that actually ran, captured ${capturedAt} — never fabricated.`
+          : "Every output is labelled live / cache / founder-gated / unavailable — never fabricated."}
+      </p>
     </GlowCard>
   );
 }
@@ -1261,13 +1492,13 @@ function AgentRunRow({ run, onOpen }: { run: AgentRun; onOpen: () => void }) {
   const providers = run.replay?.providers ?? {};
   return (
     <button onClick={onOpen} className="flex items-center gap-3 rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-4 py-3 text-left transition-colors hover:border-[color:var(--surface-border-hover)]">
-      <b className="w-24 shrink-0 font-mono text-[11px] uppercase tracking-[0.08em] text-cloud">{run.agent}</b>
-      <div className="flex flex-wrap gap-1.5">
+      <b className="w-20 shrink-0 font-mono text-[11px] uppercase tracking-[0.08em] text-cloud sm:w-24">{run.agent}</b>
+      <div className="flex min-w-0 flex-wrap gap-1.5">
         {Object.entries(providers).map(([k, val]) => (
-          <span key={k} className={`rounded-full border px-2 py-0.5 font-mono text-[9px] ${providerTone(val)}`}>{k}:{val}</span>
+          <span key={k} className={`break-all rounded-full border px-2 py-0.5 font-mono text-[9px] ${providerTone(val)}`}>{k}:{val}</span>
         ))}
       </div>
-      <span className="ml-auto text-fog">↗</span>
+      <span className="ml-auto shrink-0 text-fog">↗</span>
     </button>
   );
 }
@@ -1360,6 +1591,7 @@ function AskPanel({ repo }: { repo: string }) {
     let answer = "";
     let references: Reference[] = [];
     let source: string | undefined;
+    let reasoning: string | undefined;
     try {
       const r = await fetch(`${API}/api/ask/stream?repo_url=${encodeURIComponent(repo)}&question=${encodeURIComponent(question)}`, creds);
       if (!r.ok) throw new Error(`Ask Umbra returned ${r.status}`);
@@ -1368,8 +1600,9 @@ function AskPanel({ repo }: { repo: string }) {
           const p = JSON.parse(data);
           if (event === "references") { references = p.references ?? []; source = p.source; }
           else if (event === "umbra") { answer += p.chunk ?? ""; }
+          else if (event === "done") { reasoning = p.reasoning ?? reasoning; } // true GPT-5.6 reasoning provider
         } catch { /* ignore a malformed frame */ }
-        setAns({ answer, references, source });
+        setAns({ answer, references, source, reasoning });
       });
     } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   }, [q, busy, repo]);
@@ -1404,7 +1637,12 @@ function AskPanel({ repo }: { repo: string }) {
                 ))}
               </div>
             )}
-            {ans.source && <span className={`mt-3 inline-block rounded-full border px-2.5 py-1 text-[10px] ${providerTone(ans.source)}`}>{ans.source}</span>}
+            {(ans.source || ans.reasoning) && (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                {ans.source && <span className={`rounded-full border px-2.5 py-1 text-[10px] ${providerTone(ans.source)}`}>{ans.source}</span>}
+                {ans.reasoning && <span className={`rounded-full border px-2.5 py-1 text-[10px] ${providerTone(ans.reasoning)}`}>reasoning: {ans.reasoning}</span>}
+              </div>
+            )}
           </div>
         )}
         {!ans && !err && <p className="mt-3 text-[11px] leading-relaxed text-fog">Grounded in real file:line references, never invented. Streams as GPT reasons — labelled with its source.</p>}

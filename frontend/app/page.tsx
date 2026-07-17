@@ -165,6 +165,8 @@ export default function Landing() {
               </Magnetic>
             </div>
             <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 font-mono text-[12px]">
+              <a href="/dashboard?proof=calhacks" className="flex items-center gap-1.5 text-teal transition-colors hover:text-cyan">▶ Open captured proof scan <span className="text-teal/60">· instant</span></a>
+              <span className="text-fog/30">·</span>
               <a href="#evidence" className="text-cloud transition-colors hover:text-cyan">View demo report ↓</a>
               <span className="text-fog/30">·</span>
               <a href="/openapi-actions.yaml" className="text-fog transition-colors hover:text-cloud">Open GPT Action schema ↗</a>
@@ -446,6 +448,8 @@ export default function Landing() {
             <Magnetic>
               <HoverBorderGradient href={scanHref} className="px-7 py-4 text-sm font-semibold">Try public repo scan <span className="text-cyan">→</span></HoverBorderGradient>
             </Magnetic>
+            <a href="/dashboard?proof=calhacks" className="font-mono text-[13px] text-teal transition-colors hover:text-cyan">▶ Open captured proof scan</a>
+            <span className="text-fog/30">·</span>
             <a href="/dashboard" className="font-mono text-[13px] text-cloud transition-colors hover:text-cyan">Open dashboard ↗</a>
             <span className="text-fog/30">·</span>
             <a href="/openapi-actions.yaml" className="font-mono text-[13px] text-fog transition-colors hover:text-cloud">GPT Action schema ↗</a>

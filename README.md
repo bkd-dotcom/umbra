@@ -56,6 +56,21 @@ uv run uvicorn backend.main:app --reload   # API at http://localhost:8000
 cd frontend && npm install && npm run dev  # dashboard at http://localhost:3000
 ```
 
+**Both servers must run together.** The dashboard calls the API at `NEXT_PUBLIC_API_URL`
+(default `http://localhost:8000`), and the API only accepts the origin set in
+`UMBRA_FRONTEND_ORIGIN` (default `http://localhost:3000`). If Next.js picks a different
+port because `:3000` is taken (e.g. `:3002`), pin them to match:
+
+```bash
+# terminal 1 — API, allowing the dashboard's actual origin
+UMBRA_FRONTEND_ORIGIN=http://localhost:3002 uv run uvicorn backend.main:app --reload
+# terminal 2 — dashboard on that same port
+cd frontend && npm run dev -- -p 3002
+```
+
+If the API isn't reachable, the dashboard shows an **"API unavailable — start the backend
+on :8000"** banner and falls back to the clearly-labelled sample shift.
+
 **Demo mode (zero setup, no keys, no network):**
 
 ```bash

@@ -12,8 +12,8 @@ import { Magnetic } from "@/components/ui/magnetic-button";
 import { GlowCard } from "@/components/ui/glow-card";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
 import { SignInDialog } from "@/components/ui/sign-in-dialog";
+import { FounderDialog } from "@/components/ui/founder-dialog";
 import { Reveal, RevealGroup } from "@/components/ui/reveal";
-import { GitHubIcon } from "@/components/ui/icons";
 import { LocalWeather } from "@/components/ui/local-weather";
 import { fadeUp, EASE, stagger } from "@/lib/motion";
 
@@ -29,6 +29,7 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export default function Landing() {
   const [signIn, setSignIn] = useState(false);
+  const [founderOpen, setFounderOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   // Above-the-fold "try it" target — judges scan a public repo with no sign-in.
   const [demoRepo, setDemoRepo] = useState("github.com/expressjs/express");
@@ -49,6 +50,7 @@ export default function Landing() {
         <Corona />
       </div>
       <SignInDialog open={signIn} onClose={() => setSignIn(false)} api={API} />
+      <FounderDialog open={founderOpen} onClose={() => setFounderOpen(false)} />
 
       {/* Nav */}
       <motion.nav
@@ -414,7 +416,7 @@ export default function Landing() {
             Built because software teams shouldn’t wake up to yesterday’s problems.
           </h2>
           <div className="mt-8">
-            <FounderCard />
+            <FounderCard onOpen={() => setFounderOpen(true)} />
           </div>
         </Reveal>
       </section>
@@ -466,40 +468,29 @@ export default function Landing() {
   );
 }
 
-/** The operator — a compact identity strip, not a team card. One human, a few
- *  links, no oxygen stolen from the report that follows. */
-function FounderCard() {
+/** The operator — a compact identity strip that opens the operator reveal. The
+ *  resting state shows the dithered avatar (the machine's view); clicking it
+ *  resolves to the real photo, motto, and story in a dialog. */
+function FounderCard({ onOpen }: { onOpen: () => void }) {
   return (
-    <div className="inline-flex flex-wrap items-center justify-center gap-x-4 gap-y-3 rounded-2xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-5 py-3.5">
-      <DitherImage src="/founder.jpg" rounded pixelSize={3} className="h-11 w-11 border border-[color:var(--surface-border)]" />
-      <div className="text-left">
-        <div className="font-serif text-[17px] leading-none">Binay Dalai</div>
-        <div className="mt-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-fog">Founder · one engineer</div>
-      </div>
-      <span className="hidden h-8 w-px bg-[color:var(--surface-border)] sm:block" />
-      <div className="flex items-center gap-2">
-        <FounderLink href="https://github.com/bkd-dotcom" label="GitHub"><GitHubIcon className="h-4 w-4" /></FounderLink>
-        <FounderLink href="https://www.linkedin.com/in/binay-dalai/" label="LinkedIn">
-          <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4" aria-hidden><path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.13 1.45-2.13 2.94v5.67H9.35V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.07 2.07 0 1 1 0-4.14 2.07 2.07 0 0 1 0 4.14zM7.12 20.45H3.55V9h3.57v11.45zM22.22 0H1.77C.8 0 0 .78 0 1.75v20.5C0 23.22.8 24 1.77 24h20.45c.98 0 1.78-.78 1.78-1.75V1.75C24 .78 23.2 0 22.22 0z" /></svg>
-        </FounderLink>
-        <FounderLink href="mailto:binaydalai2024@gmail.com" label="Email">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" /></svg>
-        </FounderLink>
-      </div>
-    </div>
-  );
-}
-
-function FounderLink({ href, label, children }: { href: string; label: string; children: React.ReactNode }) {
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      aria-label={label}
-      className="grid h-10 w-10 place-items-center rounded-full border border-[color:var(--surface-border)] bg-[color:var(--surface)] text-fog transition-all duration-300 hover:-translate-y-0.5 hover:border-cyan/50 hover:text-cloud"
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-haspopup="dialog"
+      className="group inline-flex flex-col items-center gap-3 rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-8 py-6 text-center transition-all duration-300 hover:-translate-y-0.5 hover:border-cyan/50 hover:shadow-[0_0_36px_-8px_rgba(34,211,238,0.4)]"
     >
-      {children}
-    </a>
+      <DitherImage
+        src="/founder.jpg"
+        pixelSize={2}
+        levels={6}
+        strength={0.32}
+        className="h-20 w-20 shrink-0 rounded-lg border border-[color:var(--surface-border)]"
+      />
+      <div className="font-serif text-[19px] leading-none">Binay Dalai</div>
+      <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-fog">Founder · solo builder</div>
+      <div className="mt-1 font-mono text-[11px] uppercase tracking-[0.14em] text-fog transition-colors group-hover:text-cyan">
+        Read my story <span className="inline-block transition-transform duration-300 group-hover:translate-x-0.5">→</span>
+      </div>
+    </button>
   );
 }

@@ -14,8 +14,8 @@ import { GlowCard } from "@/components/ui/glow-card";
    never passed off as live truth.
 
    Two disciplines keep it "mission control", not "AI startup":
-   1. Pacing — each beat holds for several seconds (varied), and the whole loop
-      runs ~30s. It reads as a shift progressing, not a loading animation.
+   1. Pacing — each beat holds ~2.5s (the same cadence as the crew roster), so the
+      loop reads as a shift progressing, not a loading animation.
    2. Colour = 10% signal, 90% neutral. Exactly ONE agent is lit at a time (its
       identity colour, or rose for risk); everyone else stays neutral/steady. Each
       specialist gets a single colour moment across the loop, so the crew stays
@@ -24,7 +24,7 @@ import { GlowCard } from "@/components/ui/glow-card";
 
 type Tone = "idle" | "busy" | "signal" | "risk" | "done";
 type Cell = { word: string; readout: string; tone: Tone };
-type Frame = { caption: string; hold: number; state: Record<string, Cell> };
+type Frame = { caption: string; state: Record<string, Cell> };
 
 const FOG = "#8b90a6";
 const RISK = "#fb7185";
@@ -42,11 +42,10 @@ const idle = (readout = "awaiting dispatch"): Cell => ({ word: "standby", readou
 const busy = (word: string, readout: string): Cell => ({ word, readout, tone: "busy" });
 
 // Six beats. One protagonist (signal/risk) per beat — colours appear one at a
-// time. Holds are varied and long enough to read as work, not a ride.
+// time. Every beat holds the shared HOLD_MS cadence, so it reads as work, not a ride.
 const FRAMES: Frame[] = [
   {
     caption: "02:00 — repository connected",
-    hold: 3200,
     state: {
       watchman: idle(),
       reviewer: idle(),
@@ -57,7 +56,6 @@ const FRAMES: Frame[] = [
   },
   {
     caption: "02:07 — Watchman flags a known CVE",
-    hold: 5600,
     state: {
       watchman: { word: "alert", readout: "CVE-2024-29041 · express@4.17.1 · HIGH", tone: "risk" },
       reviewer: busy("reviewing", "reading PR #128 diff"),
@@ -68,7 +66,6 @@ const FRAMES: Frame[] = [
   },
   {
     caption: "02:09 — Detective reasons to the root-cause commit",
-    hold: 6000,
     state: {
       watchman: busy("on watch", "patch prepared → 4.19.2"),
       reviewer: busy("reviewing", "assessing blast-radius"),
@@ -79,7 +76,6 @@ const FRAMES: Frame[] = [
   },
   {
     caption: "02:12 — Reviewer validates the fix",
-    hold: 5000,
     state: {
       watchman: busy("on watch", "patch ready for review"),
       reviewer: { word: "reviewing", readout: "risk · low · safe to merge", tone: "signal" },
@@ -90,7 +86,6 @@ const FRAMES: Frame[] = [
   },
   {
     caption: "04:30 — Ask Umbra answers, grounded in real refs",
-    hold: 4800,
     state: {
       watchman: busy("on watch", "monitoring dependencies"),
       reviewer: busy("queued", "1 PR reviewed"),
@@ -101,7 +96,6 @@ const FRAMES: Frame[] = [
   },
   {
     caption: "06:00 — morning report · Umbra Score 78 · 2 fixes proposed",
-    hold: 7000,
     state: {
       watchman: { word: "done", readout: "1 advisory · patch ready", tone: "done" },
       reviewer: { word: "done", readout: "PR #128 · reviewed safe", tone: "done" },
@@ -113,6 +107,7 @@ const FRAMES: Frame[] = [
 ];
 
 const FREEZE = 2; // reduced-motion: hold the Detective-reasoning beat (best screenshot).
+const HOLD_MS = 2500; // shared cadence with the crew roster (CrewDossier).
 
 export function OperationsBoard() {
   const reduce = useReducedMotion();
@@ -123,7 +118,7 @@ export function OperationsBoard() {
       setI(FREEZE);
       return;
     }
-    const t = setTimeout(() => setI((p) => (p + 1) % FRAMES.length), FRAMES[i].hold);
+    const t = setTimeout(() => setI((p) => (p + 1) % FRAMES.length), HOLD_MS);
     return () => clearTimeout(t);
   }, [i, reduce]);
 

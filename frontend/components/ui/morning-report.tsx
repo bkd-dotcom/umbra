@@ -98,8 +98,7 @@ export function MorningReport() {
                 <motion.span
                   className="block font-serif text-[clamp(96px,17vw,180px)] leading-[0.8] tracking-[-0.04em] text-cloud"
                   initial={reduce ? false : { y: "112%" }}
-                  whileInView={{ y: 0 }}
-                  viewport={{ once: true }}
+                  animate={{ y: 0 }}
                   transition={{ duration: 0.95, ease: EASE }}
                 >
                   78

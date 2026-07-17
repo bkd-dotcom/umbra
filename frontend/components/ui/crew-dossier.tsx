@@ -105,7 +105,7 @@ export function CrewDossier() {
 
   useEffect(() => {
     if (reduce || paused) return;
-    const t = setTimeout(() => setActive((p) => (p + 1) % AGENTS.length), 4600);
+    const t = setTimeout(() => setActive((p) => (p + 1) % AGENTS.length), 2500);
     return () => clearTimeout(t);
   }, [active, paused, reduce]);
 

@@ -215,16 +215,19 @@ class Orchestrator:
     @staticmethod
     def _bump_pr(repo_url: str, owner_repo: str, token: str, package: str | None, version: str | None, cve: str | None) -> dict[str, Any]:
         import os
+        import shutil
+        import subprocess
 
         import httpx
 
         from backend.integrations.dependencies import discover_dependencies
         from backend.integrations.github_write import open_pull_request
         from backend.integrations.repository import checkout_public_repo
-        from backend.remediation import bump_manifest, pick_fixed_version
+        from backend.remediation import _version_key, bump_manifest, pick_fixed_version
 
         if not package:
             raise ValueError("A package name is required for a dependency-bump PR.")
+        lock_note = ""
         with checkout_public_repo(repo_url, token) as repo_path:
             deps = discover_dependencies(repo_path)
             dep = next((d for d in deps if d["name"].lower() == package.lower() and (not version or d["version"] == version)), None) \
@@ -235,24 +238,56 @@ class Orchestrator:
             base = os.getenv("OSV_API_BASE", "https://api.osv.dev/v1").rstrip("/")
             response = httpx.post(f"{base}/query", json={"package": {"name": package, "ecosystem": ecosystem}, "version": current}, timeout=15)
             response.raise_for_status()
-            fixed = pick_fixed_version(response.json().get("vulns", []), current)
+            # Pick a version that TRULY escapes the advisory we name — not the global
+            # smallest fix (which can land inside the target CVE's range, e.g. next
+            # 14.2.7 leaving GHSA-h25m-26qc-wcjf, fixed only in 15.0.8, unremediated).
+            fixed = pick_fixed_version(response.json().get("vulns", []), current, cve)
             if not fixed:
-                raise ValueError(f"OSV lists no fixed version for {package} {current}, so no safe automatic bump is available.")
+                target = f" remediating {cve}" if cve else ""
+                raise ValueError(f"OSV lists no fixed version above {package} {current}{target}, so no safe automatic bump is available.")
             edit = bump_manifest(repo_path, package, ecosystem, fixed)
             if not edit:
                 raise ValueError(f"Could not locate {package} in the manifest to edit it.")
             manifest_path, new_content = edit
+            file_changes = {manifest_path: new_content}
+
+            # Sync the lockfile so a clean install (`npm ci`) resolves the fixed
+            # version rather than the old pin. Best-effort: write the edited manifest
+            # to disk, then regenerate the lockfile from registry metadata only.
+            # --ignore-scripts means the target repo's package code never executes
+            # here; --package-lock-only writes no node_modules. The write token is
+            # never handed to npm. If regeneration isn't possible we say so in the
+            # body rather than ship a manifest/lock mismatch silently.
+            if ecosystem == "npm":
+                lock_path = repo_path / "package-lock.json"
+                if lock_path.exists() and shutil.which("npm"):
+                    (repo_path / manifest_path).write_text(new_content)
+                    try:
+                        subprocess.run(
+                            ["npm", "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund", "--legacy-peer-deps"],
+                            cwd=repo_path, capture_output=True, timeout=120, check=True,
+                        )
+                        file_changes["package-lock.json"] = lock_path.read_text()
+                        lock_note = "- Regenerated `package-lock.json` so a clean install resolves the fixed version.\n"
+                    except (subprocess.SubprocessError, OSError):
+                        lock_note = "- ⚠️ Could not regenerate `package-lock.json` automatically — run `npm install` on this branch to sync the lockfile before merging.\n"
+                elif lock_path.exists():
+                    lock_note = "- ⚠️ `package-lock.json` was not regenerated (npm unavailable) — run `npm install` on this branch to sync the lockfile before merging.\n"
+
+        cross_major = _version_key(current)[:1] != _version_key(fixed)[:1]
         branch = f"umbra/fix-{re.sub(r'[^a-zA-Z0-9._-]+', '-', package.lower())}-{fixed}"
         title = f"Bump {package} to {fixed}"
         body = (
             f"### Umbra dependency fix\n\n"
             f"Bumps **{package}** from `{current}` to `{fixed}` in `{manifest_path}`"
-            + (f" to remediate **{cve}**" if cve else "")
-            + " (fixed version per [OSV](https://osv.dev)).\n\n"
+            + (f" — the [OSV](https://osv.dev)-listed fix for **{cve}**" if cve else " — clears every OSV advisory affecting this version")
+            + ".\n\n"
             "- Deterministic edit — no model or Codex involved.\n"
-            "- Opened on a new branch; **Umbra never merges** — review and merge yourself.\n"
+            + lock_note
+            + ("- ⚠️ Crosses a major version — review app compatibility before merging.\n" if cross_major else "")
+            + "- Opened on a new branch; **Umbra never merges** — review and merge yourself.\n"
         )
-        return open_pull_request(owner_repo, token, branch, title, body, {manifest_path: new_content})
+        return open_pull_request(owner_repo, token, branch, title, body, file_changes)
 
     @staticmethod
     def _apply_diff_pr(repo_url: str, owner_repo: str, token: str, diff: str) -> dict[str, Any]:

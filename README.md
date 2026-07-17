@@ -1,4 +1,4 @@
-# 🌑 Umbra — The AI engineer that works the night shift
+# Umbra — The AI engineer that works the night shift
 
 Umbra is an autonomous AI engineering team for your GitHub repo. Five agents run
 without prompting — hunting CVEs, reviewing PRs, tracing incidents, and killing
@@ -8,7 +8,7 @@ engineering; GPT-5.6 does the reasoning; you approve the merge.**
 Built for **OpenAI Build Week 2026**. Recommended submission category: **Developer
 Tools / Agents** (see [SUBMISSION.md](SUBMISSION.md)).
 
-## 🧑‍⚖️ Test it (no rebuild required)
+## Test it (no rebuild required)
 
 - **Live site:** [umbra.engineer](https://umbra.engineer) — hosted on Google Cloud Run. Sign in with
   **GitHub or Google**, then point the night crew at one of your own repos (public or private).
@@ -18,14 +18,14 @@ Tools / Agents** (see [SUBMISSION.md](SUBMISSION.md)).
   **Umbra Engineer** GPT, or wire it up yourself from the served schema:
   - Plugin manifest: <https://umbra.engineer/.well-known/ai-plugin.json>
   - OpenAPI (actions): <https://umbra.engineer/openapi-actions.yaml>
-  - Build instructions: [`custom_gpt/`](custom_gpt/instructions.md) → e.g. *“Scan github.com/expressjs/express”*
+  - Build instructions: [`custom_gpt/`](custom_gpt/instructions.md) — e.g. *"Scan github.com/expressjs/express"*
 - **Autonomous ("works while you sleep"):** drop [`.github/workflows/umbra.yml`](.github/workflows/umbra.yml)
   into any repo (add an `OPENAI_API_KEY` secret) — Umbra reviews every PR and runs a nightly scan
   that opens branch-only fix PRs. Or install the **Umbra GitHub App** once (any account/org, public or
   private repos, pick your repos in GitHub's UI) — every new PR gets an advisory review comment posted by
   the App (never merges). Setup: [docs/github-app.md](docs/github-app.md).
 
-## 🤖 How Codex + GPT-5.6 are used
+## How Codex + GPT-5.6 are used
 
 - **Codex** (`codex exec`, ChatGPT login) explores a **disposable checkout**, edits code, runs tests
   in a sandbox, and drafts the change — never pushes, commits, or merges. See
@@ -39,12 +39,12 @@ Tools / Agents** (see [SUBMISSION.md](SUBMISSION.md)).
   fabricated. See [docs/live-mode.md](docs/live-mode.md).
 - **Where Codex accelerated the build & the `/feedback` session ID:** see [SUBMISSION.md](SUBMISSION.md).
 
-## 💻 Supported platforms
+## Supported platforms
 
-macOS · Linux · Windows (Python 3.11+, Node 20+). Any public GitHub repository. The ChatGPT plugin /
+macOS, Linux, Windows (Python 3.11+, Node 20+). Any public GitHub repository. The ChatGPT plugin /
 GPT Action works anywhere ChatGPT Actions are supported.
 
-## 🔧 Run from source
+## Run from source
 
 The repo standardizes on [**uv**](https://docs.astral.sh/uv/):
 
@@ -76,14 +76,14 @@ UMBRA_ENABLE_LIVE_REPOS=true UMBRA_ENABLE_CODEX_CLI=true UMBRA_PREFLIGHT_REASONI
 Both the engineering and reasoning halves run through the Codex CLI. See
 [docs/live-mode.md](docs/live-mode.md) for the full guide and provider ledger.
 
-## ⚙️ Configuration
+## Configuration
 
 Copy the sample env files and fill what you need (everything is optional in demo mode):
 
 - Root: [`.env.example`](.env.example) — core toggles (`UMBRA_DEMO_MODE`, `UMBRA_ENABLE_LIVE_REPOS`,
   `UMBRA_ENABLE_CLOUD_SCAN`, `UMBRA_CLONE_DEPTH`, `UMBRA_FOUNDER_IDS`, `SESSION_SECRET`,
   `UMBRA_FERNET_KEY`, OAuth client IDs/secrets).
-- Backend: [`backend/.env.example`](backend/.env.example) · Frontend: [`frontend/.env.example`](frontend/.env.example) (`NEXT_PUBLIC_API_URL`).
+- Backend: [`backend/.env.example`](backend/.env.example). Frontend: [`frontend/.env.example`](frontend/.env.example) (`NEXT_PUBLIC_API_URL`).
 
 Autonomy / plugin extras (hosted): `UMBRA_PUBLIC_URL` (absolute base for the plugin manifest). PR
 auto-review is an **install-once GitHub App**: `GITHUB_APP_ID`, `GITHUB_APP_SLUG`,
@@ -92,7 +92,7 @@ Manager). Reviews are posted by the App via a short-lived installation token —
 no stored user token. Full setup in [docs/github-app.md](docs/github-app.md). `GITHUB_TOKEN` is optional
 and read-only (a zero-scope token just raises the public-read rate limit).
 
-## ✅ Tests
+## Tests
 
 ```bash
 uv run pytest        # 111 tests (backend/tests)
@@ -100,11 +100,11 @@ uv run pytest        # 111 tests (backend/tests)
 
 Frontend: `cd frontend && npm run build` (must produce a clean static export to `out/`).
 
-## 🚀 Deploy a public URL
+## Deploy a public URL
 
 Single service (FastAPI serves the built dashboard) on Google Cloud Run — one URL, no CORS.
 Step-by-step: [docs/deploy.md](docs/deploy.md).
 
-## 📄 License
+## License
 
 [MIT](LICENSE) © 2026 Binay Dalai.

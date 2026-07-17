@@ -1,0 +1,174 @@
+openapi: 3.1.0
+info:
+  title: Umbra Engineer API
+  description: >
+    Umbra is an autonomous AI engineering team. These actions scan a public
+    GitHub repository for vulnerabilities, dead code, and leaked secrets;
+    investigate a production incident to find its root-cause commit; and answer
+    natural-language questions about a codebase. Codex performs the code
+    operations; GPT-5.6 performs the reasoning.
+  version: "1.0.0"
+servers:
+  - url: https://umbra.engineer
+    description: Umbra backend (replace with your deployed host)
+paths:
+  /api/scan:
+    post:
+      operationId: scanRepo
+      summary: Scan a public GitHub repository for security and code-health issues.
+      description: >
+        Call this when the user pastes or names a GitHub repository and wants a
+        health/security scan. Returns an Umbra Score (0-100), known CVEs in
+        dependencies, dead code, leaked secrets, and a short risk forecast.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo_url]
+              properties:
+                repo_url:
+                  type: string
+                  description: Full URL of a public GitHub repository.
+                agents:
+                  type: array
+                  description: Optional subset of agents. Defaults to all core agents.
+                  items:
+                    type: string
+                    enum: [watchman, reviewer, janitor, detective]
+      responses:
+        "200":
+          description: Scan results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanResult"
+  /api/investigate:
+    post:
+      operationId: investigateIncident
+      summary: Investigate a production incident and find the root-cause commit.
+      description: >
+        Call this when the user provides an error message, stack trace, or
+        symptom for a given repository. Returns a structured root-cause analysis
+        with a suggested fix.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo_url, error_log]
+              properties:
+                repo_url: { type: string, description: Full URL of the public GitHub repository. }
+                error_log: { type: string, description: Error message, stack trace, or symptom. }
+      responses:
+        "200":
+          description: Root-cause analysis.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Postmortem"
+  /api/ask:
+    post:
+      operationId: askUmbra
+      summary: Ask a natural-language question about a codebase.
+      description: >
+        Call this when the user asks how a repository works, what would break if
+        they change something, or where a behavior lives. Returns an answer
+        grounded in specific file and line references.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo_url, question]
+              properties:
+                repo_url: { type: string, description: Full URL of a public GitHub repository. }
+                question: { type: string, description: The user's question about the codebase. }
+      responses:
+        "200":
+          description: Answer with code references.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Answer"
+components:
+  schemas:
+    ScanResult:
+      type: object
+      properties:
+        repo_url: { type: string }
+        umbra_score: { type: integer, description: "0-100 (higher is better)." }
+        source:
+          type: string
+          description: >
+            What produced the result — e.g. "live-watchman" (real OSV advisories),
+            "live" / "live-<agent>" (Codex-backed), or "demo-cache". Umbra labels
+            every result with its true source; it never fabricates findings.
+        vulnerabilities:
+          type: array
+          items:
+            type: object
+            properties:
+              package: { type: string }
+              version: { type: string }
+              cve: { type: string }
+              severity: { type: string, enum: [critical, high, medium, low] }
+              owasp: { type: string }
+              summary: { type: string }
+        dependencies:
+          type: array
+          description: Resolved dependencies, each flagged if a known advisory affects it.
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              version: { type: string }
+              vulnerable: { type: boolean }
+        dead_code:
+          type: array
+          items:
+            type: object
+            properties:
+              file: { type: string }
+              symbol: { type: string }
+              kind: { type: string, enum: [unused_function, unused_import, orphaned_env, dead_variable] }
+        secrets:
+          type: array
+          items:
+            type: object
+            properties:
+              file: { type: string }
+              line: { type: integer }
+              kind: { type: string }
+              confidence: { type: number }
+        missing_docs_count: { type: integer }
+        risk_forecast: { type: string }
+        reasoning_summary: { type: string }
+    Postmortem:
+      type: object
+      properties:
+        incident: { type: string }
+        root_cause_commit: { type: string }
+        confidence: { type: number }
+        timeline: { type: array, items: { type: string } }
+        explanation: { type: string }
+        blast_radius: { type: string }
+        suggested_fix: { type: string }
+        reasoning_chain: { type: array, items: { type: string } }
+    Answer:
+      type: object
+      properties:
+        answer: { type: string }
+        references:
+          type: array
+          items:
+            type: object
+            properties:
+              file: { type: string }
+              lines: { type: string }
+              note: { type: string }
+        blast_radius: { type: string }
+

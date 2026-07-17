@@ -1,0 +1,12 @@
+{
+  "schema_version": "v1",
+  "name_for_human": "Umbra Engineer",
+  "name_for_model": "umbra",
+  "description_for_human": "Scan any public GitHub repo for CVEs, investigate incidents to a root-cause commit, and ask grounded questions about a codebase.",
+  "description_for_model": "Umbra analyzes public GitHub repositories. Use scanRepo to find dependency CVEs and a 0-100 health score; investigateIncident to trace an error or stack trace to a root-cause commit; askUmbra to answer questions about a codebase grounded in real file/line references. Every result is grounded in real OSV/git data, is never fabricated, and carries a 'source' label describing what produced it.",
+  "auth": { "type": "none" },
+  "api": { "type": "openapi", "url": "https://umbra.engineer/openapi-actions.yaml" },
+  "logo_url": "https://umbra.engineer/icon.svg",
+  "contact_email": "binaydalai2024@gmail.com",
+  "legal_info_url": "https://umbra.engineer/privacy"
+}

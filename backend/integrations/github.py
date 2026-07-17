@@ -34,18 +34,24 @@ def recent_commits(repo_url: str, limit: int = 8) -> list[dict[str, str]]:
 def list_user_repos(token: str, limit: int = 100) -> list[dict[str, object]]:
     """List the authenticated user's repositories — public AND private.
 
-    Reuses the PyGithub pattern from ``recent_commits``. The token is used
-    read-only (never passed to Codex; the clone remote is stripped after
-    checkout). The ``private`` flag lets the UI show a lock badge.
+    The token is used read-only (never passed to Codex; the clone remote is
+    stripped after checkout). The ``private`` flag lets the UI show a lock badge.
 
-    Robust by design: some tokens/orgs reject the ``visibility``/``affiliation``
-    filters, so we fall back to the default listing; a single unreadable repo is
-    skipped rather than failing the whole list. A hard auth/scope failure still
-    raises (surfaced with a distinct status by ``/api/my/repos``).
+    Robust by design against GitHub's flaky ``/user/repos``: the broad
+    ``visibility=all``+``affiliation`` enumeration is the expensive query GitHub
+    intermittently answers with 503s, so on ANY failure we degrade to the cheap
+    owner-only listing (which almost never 503s). ``per_page=100`` fetches the
+    page in one round-trip, and a patient backoff absorbs a transient 5xx blip.
+    A single unreadable repo is skipped rather than failing the whole list; a
+    hard auth/scope failure still raises (surfaced distinctly by ``/api/my/repos``).
     """
-    from github import Github
+    from github import Github, GithubRetry
 
-    user = Github(token).get_user()
+    # Longer backoff window than PyGithub's default so a short 503 burst on the
+    # authenticated repo enumeration is ridden out instead of giving up fast.
+    # GithubRetry already retries all 5xx (+ rate-limited 403) by default.
+    retry = GithubRetry(total=4, backoff_factor=0.6, backoff_max=6)
+    user = Github(token, per_page=100, retry=retry).get_user()
 
     def _collect(paginated) -> list[dict[str, object]]:
         out: list[dict[str, object]] = []
@@ -64,10 +70,23 @@ def list_user_repos(token: str, limit: int = 100) -> list[dict[str, object]]:
                 break
         return out
 
-    try:
-        return _collect(user.get_repos(visibility="all", affiliation="owner,collaborator,organization_member", sort="pushed"))
-    except Exception:  # noqa: BLE001 - retry without filters some tokens/orgs reject
-        return _collect(user.get_repos(sort="pushed"))
+    # Cheapest-last: try the full affiliation set, but fall back to owner-only
+    # (and then the bare default) if GitHub 503s on the expensive query.
+    attempts = (
+        {"visibility": "all", "affiliation": "owner,collaborator,organization_member", "sort": "pushed"},
+        {"affiliation": "owner", "sort": "pushed"},
+        {"sort": "pushed"},
+    )
+    last_exc: Exception | None = None
+    for kwargs in attempts:
+        try:
+            return _collect(user.get_repos(**kwargs))
+        except Exception as exc:  # noqa: BLE001 - degrade to a cheaper query on failure
+            last_exc = exc
+            continue
+    if last_exc is not None:
+        raise last_exc
+    return []
 
 
 def parse_pull_diff(diff: str, limit: int = 200_000) -> list[dict[str, object]]:

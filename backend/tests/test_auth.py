@@ -91,7 +91,7 @@ def test_list_user_repos_includes_private_with_flag(monkeypatch):
             return [FakeRepo("public-one", False), FakeRepo("secret", True)]
 
     class FakeGithub:
-        def __init__(self, _token):
+        def __init__(self, _token, **_kwargs):  # tolerate per_page/retry kwargs
             pass
 
         def get_user(self):
@@ -123,7 +123,7 @@ def test_list_user_repos_retries_without_filters(monkeypatch):
             return [FakeRepo("only-one")]
 
     class FakeGithub:
-        def __init__(self, _token):
+        def __init__(self, _token, **_kwargs):  # tolerate per_page/retry kwargs
             pass
 
         def get_user(self):
@@ -131,6 +131,36 @@ def test_list_user_repos_retries_without_filters(monkeypatch):
 
     monkeypatch.setattr(pygithub, "Github", FakeGithub)
     assert [r["name"] for r in gh.list_user_repos("tok")] == ["only-one"]
+
+
+def test_list_user_repos_degrades_to_owner_only_on_503(monkeypatch):
+    # The expensive visibility=all+affiliation enumeration is what GitHub 503s on;
+    # a failure there must degrade to the cheap owner-only query, not error out.
+    class FakeRepo:
+        def __init__(self, name):
+            self.name = name
+            self.full_name = f"u/{name}"
+            self.html_url = f"https://github.com/u/{name}"
+            self.private = False
+            self.stargazers_count = 0
+
+    class FakeUser:
+        def get_repos(self, **kw):
+            if kw.get("visibility") == "all":  # the broad query GitHub 503s on
+                raise Exception("Max retries exceeded (too many 503 error responses)")
+            if kw.get("affiliation") == "owner":
+                return [FakeRepo("my-repo")]
+            raise AssertionError("should have succeeded on the owner-only query")
+
+    class FakeGithub:
+        def __init__(self, _token, **_kwargs):
+            pass
+
+        def get_user(self):
+            return FakeUser()
+
+    monkeypatch.setattr(pygithub, "Github", FakeGithub)
+    assert [r["name"] for r in gh.list_user_repos("tok")] == ["my-repo"]
 
 
 def test_memory_store_roundtrip():

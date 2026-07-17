@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import threading
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -36,6 +37,7 @@ class _MemoryStore:
         self._tokens: dict[str, str] = {}
         self._openai_keys: dict[str, str] = {}
         self._scans: dict[str, list[dict[str, Any]]] = {}
+        self._dismissed: dict[str, set[str]] = {}  # user_key -> set of dismissed remediation keys
         self._installations: dict[str, dict[str, Any]] = {}  # installation_id -> {account_login, account_type, repos, user_key}
         self._lock = threading.Lock()
 
@@ -70,7 +72,8 @@ class _MemoryStore:
 
     def save_scan(self, key: str, summary: dict[str, Any]) -> None:
         with self._lock:
-            self._scans.setdefault(key, []).insert(0, {**summary, "ran_at": _now()})
+            # A stable id lets the UI delete individual scans (not just clear-all).
+            self._scans.setdefault(key, []).insert(0, {**summary, "scan_id": uuid.uuid4().hex, "ran_at": _now()})
             self._scans[key] = self._scans[key][:50]
 
     def list_scans(self, key: str, limit: int = 20) -> list[dict[str, Any]]:
@@ -80,6 +83,30 @@ class _MemoryStore:
     def clear_scans(self, key: str) -> None:
         with self._lock:
             self._scans.pop(key, None)
+
+    def delete_scans(self, key: str, scan_ids: list[str]) -> None:
+        """Delete only the named scans (selective clear); unknown ids are ignored."""
+        ids = set(scan_ids)
+        with self._lock:
+            if key in self._scans:
+                self._scans[key] = [s for s in self._scans[key] if s.get("scan_id") not in ids]
+
+    # --- Remediation-queue dismissals ---
+    # A per-user set of dismissed advisory keys (repo:package@version:cve). The
+    # queue itself is derived client-side from saved scans; this lets a user hide
+    # individual items without deleting the underlying scan.
+    def dismiss_remediations(self, key: str, item_keys: list[str]) -> None:
+        with self._lock:
+            self._dismissed.setdefault(key, set()).update(item_keys)
+
+    def restore_remediations(self, key: str, item_keys: list[str]) -> None:
+        with self._lock:
+            if key in self._dismissed:
+                self._dismissed[key].difference_update(item_keys)
+
+    def list_dismissed_remediations(self, key: str) -> list[str]:
+        with self._lock:
+            return sorted(self._dismissed.get(key, set()))
 
     # --- GitHub App installations (install-once PR auto-review) ---
     # Keyed by installation_id (str). No secrets stored here — the App webhook
@@ -173,7 +200,8 @@ class _FirestoreStore:
             .order_by("ran_at", direction=Query.DESCENDING)
             .limit(limit)
         )
-        return [doc.to_dict() for doc in query.stream()]
+        # Surface the Firestore doc id as scan_id so the UI can delete individual scans.
+        return [{**(doc.to_dict() or {}), "scan_id": doc.id} for doc in query.stream()]
 
     def clear_scans(self, key: str) -> None:
         # Firestore has no subcollection-level delete; remove each doc. Batched to
@@ -190,6 +218,37 @@ class _FirestoreStore:
                 pending = 0
         if pending:
             batch.commit()
+
+    def delete_scans(self, key: str, scan_ids: list[str]) -> None:
+        """Delete only the named scans by their Firestore doc id (selective clear)."""
+        collection = self._user(key).collection("scans")
+        batch = self._db.batch()
+        pending = 0
+        for sid in scan_ids:
+            batch.delete(collection.document(sid))
+            pending += 1
+            if pending == 400:
+                batch.commit()
+                batch = self._db.batch()
+                pending = 0
+        if pending:
+            batch.commit()
+
+    # --- Remediation-queue dismissals ---
+    # Stored as an array field on the user doc (no secrets, small, per-user).
+    def dismiss_remediations(self, key: str, item_keys: list[str]) -> None:
+        from google.cloud.firestore import ArrayUnion
+
+        self._user(key).set({"dismissed_remediations": ArrayUnion(list(item_keys)), "updated_at": _now()}, merge=True)
+
+    def restore_remediations(self, key: str, item_keys: list[str]) -> None:
+        from google.cloud.firestore import ArrayRemove
+
+        self._user(key).set({"dismissed_remediations": ArrayRemove(list(item_keys)), "updated_at": _now()}, merge=True)
+
+    def list_dismissed_remediations(self, key: str) -> list[str]:
+        snap = self._user(key).get()
+        return list((snap.to_dict() or {}).get("dismissed_remediations", [])) if snap.exists else []
 
     # --- GitHub App installations (install-once PR auto-review) ---
     # Top-level collection keyed by installation_id; no secrets stored (the App

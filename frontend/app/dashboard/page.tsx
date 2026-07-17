@@ -36,7 +36,7 @@ type Vuln = { package: string; version: string; cve: string; severity: string; o
 type Replay = { agent: string; prompt: string; codex_diff: string; tests: string; reasoning: string; timings: Record<string, number>; providers?: Record<string, string> };
 type AgentRun = { agent: string; summary: string; findings: unknown[]; replay: Replay };
 type ScanResult = { umbra_score?: number; vulnerabilities?: Vuln[]; dependencies?: Dep[]; source?: string; live_agents?: string[]; agent_results?: AgentRun[]; reasoning_summary?: string; repo_url?: string };
-type Scan = { repo_full_name: string; umbra_score?: number; source?: string; vuln_count?: number; ran_at?: string; report?: ScanResult };
+type Scan = { scan_id?: string; repo_full_name: string; umbra_score?: number; source?: string; vuln_count?: number; ran_at?: string; report?: ScanResult };
 type Reference = { file: string; lines?: string; note?: string };
 type AskAnswer = { answer: string; references: Reference[]; blast_radius?: string; source?: string };
 type Postmortem = { incident: string; root_cause_commit: string; confidence: number; timeline: string[]; explanation: string; blast_radius: string; suggested_fix: string; reasoning_chain: string[]; source?: string };
@@ -104,6 +104,14 @@ function estimateEta(model: ModelId, effort: Effort, crew: Crew): { label: strin
   return { label, warn: secs > 600 };
 }
 
+// A short, formal verdict derived from the score itself (not model prose), used
+// as the headline above the analyst summary on the score card.
+function scoreVerdict(score: number): { label: string; tone: string } {
+  if (score >= 80) return { label: "Low risk", tone: "text-teal" };
+  if (score >= 60) return { label: "Needs attention", tone: "text-amber" };
+  return { label: "Elevated risk", tone: "text-rose-300" };
+}
+
 export default function Dashboard() {
   const [user, setUser] = useState<User | null | "loading">("loading");
   const [repos, setRepos] = useState<Repo[] | null>(null);
@@ -121,6 +129,8 @@ export default function Dashboard() {
   const [history, setHistory] = useState<Scan[]>([]);
   const [appInfo, setAppInfo] = useState<{ configured: boolean; install_url: string | null } | null>(null);
   const [appInstalls, setAppInstalls] = useState<{ installation_id: number; account_login: string; repos: string[] }[]>([]);
+  const [selectedScans, setSelectedScans] = useState<Set<string>>(new Set());
+  const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
   const [activeReplay, setActiveReplay] = useState<Replay | null>(null);
   const [prTarget, setPrTarget] = useState<{ mode: "bump" | "codex"; vuln?: Vuln } | null>(null);
   const [keyInput, setKeyInput] = useState("");
@@ -138,6 +148,12 @@ export default function Dashboard() {
   const loadApp = useCallback(() => {
     fetch(`${API}/api/github/app`, creds).then((r) => (r.ok ? r.json() : null)).then((d) => d && setAppInfo(d)).catch(() => {});
     fetch(`${API}/api/my/app-installations`, creds).then((r) => (r.ok ? r.json() : [])).then((d) => Array.isArray(d) && setAppInstalls(d)).catch(() => {});
+  }, []);
+
+  // Persisted per-user remediation-queue dismissals, so hidden advisories stay
+  // hidden across reloads (the queue itself is derived from saved scans).
+  const loadDismissals = useCallback(() => {
+    fetch(`${API}/api/my/remediation-dismissals`, creds).then((r) => (r.ok ? r.json() : { keys: [] })).then((d) => setDismissedKeys(new Set(d?.keys ?? []))).catch(() => {});
   }, []);
 
   const loadRepos = useCallback(() => {
@@ -164,6 +180,7 @@ export default function Dashboard() {
         if (me.github_connected) { loadRepos(); }
         loadApp();
         loadHistory();
+        loadDismissals();
       })
       .catch(() => { setUser(null); window.location.replace("/"); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -227,15 +244,41 @@ export default function Dashboard() {
     setClearingHistory(true);
     try {
       await fetch(`${API}/api/my/scans`, { method: "DELETE", credentials: "include" });
-      setHistory([]);
+      setHistory([]); setSelectedScans(new Set());
       if (viewingSaved) { setViewingSaved(null); setResult(null); }
     } finally { setClearingHistory(false); }
   }, [viewingSaved]);
+
+  const toggleScan = useCallback((id: string) => {
+    setSelectedScans((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  }, []);
+  const clearSelectedScans = useCallback(async () => {
+    const ids = [...selectedScans].filter(Boolean);
+    if (ids.length === 0) return;
+    await fetch(`${API}/api/my/scans/delete`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ scan_ids: ids }) }).catch(() => {});
+    const dropped = new Set(ids);
+    setHistory((h) => h.filter((s) => !dropped.has(s.scan_id ?? "")));
+    setSelectedScans(new Set());
+  }, [selectedScans]);
+
+  const dismissRemediation = useCallback(async (key: string) => {
+    setDismissedKeys((prev) => new Set(prev).add(key));
+    await fetch(`${API}/api/my/remediation-dismissals`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ keys: [key] }) }).catch(() => {});
+  }, []);
+  const restoreRemediation = useCallback(async (key: string) => {
+    setDismissedKeys((prev) => { const next = new Set(prev); next.delete(key); return next; });
+    await fetch(`${API}/api/my/remediation-dismissals/restore`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ keys: [key] }) }).catch(() => {});
+  }, []);
 
   const vulns = result?.vulnerabilities ?? [];
   const deps = result?.dependencies ?? [];
   const targetRepo = (result?.repo_url || repoUrl || "").trim();
   const filteredRepos = useMemo(() => (repos ?? []).filter((r) => r.full_name.toLowerCase().includes(repoQuery.toLowerCase())), [repos, repoQuery]);
+  // Repos currently covered by an installed Umbra App (auto-PR-review on).
+  const coveredRepos = useMemo(() => new Set(appInstalls.flatMap((i) => i.repos)), [appInstalls]);
+  // Watchman's proposed patch from the current scan — reused to open a PR in
+  // seconds (no second Codex run) instead of re-deriving the fix from scratch.
+  const watchmanDiff = useMemo(() => result?.agent_results?.find((a) => a.agent === "watchman")?.replay?.codex_diff ?? "", [result]);
 
   if (user === "loading") return <AuthLoading />;
   if (user === null) return <main className="grid min-h-screen place-items-center text-fog">Redirecting…</main>;
@@ -294,6 +337,7 @@ export default function Dashboard() {
             setRepoUrl={setRepoUrl}
             scanning={scanning}
             onRun={() => launchScan()}
+            coveredRepos={coveredRepos}
           />
           <ScanOptions model={model} setModel={setModel} effort={effort} setEffort={setEffort} crew={crew} setCrew={setCrew} />
           <AutoReviewPanel appInfo={appInfo} installs={appInstalls} />
@@ -339,7 +383,14 @@ export default function Dashboard() {
                 <span className={`rounded-full border px-2.5 py-1 font-mono text-[10px] ${providerTone(result.source ?? "")}`}>{result.source}</span>
               </div>
               <div className="mt-5"><ScoreDial value={result.umbra_score ?? 0} /></div>
-              <p className="mt-5 text-[13px] leading-relaxed text-fog">{result.reasoning_summary || "Scan complete."}</p>
+              <div className="mt-6 border-t border-[color:var(--surface-border)] pt-4">
+                <p className={`font-serif text-lg leading-tight ${scoreVerdict(result.umbra_score ?? 0).tone}`}>{scoreVerdict(result.umbra_score ?? 0).label}</p>
+                {result.reasoning_summary ? (
+                  <p className="mt-2 max-w-[54ch] text-[13px] leading-relaxed text-cloud/75">{result.reasoning_summary}</p>
+                ) : (
+                  <p className="mt-2 text-[13px] leading-relaxed text-fog">Scan complete — no analyst summary was produced on this run.</p>
+                )}
+              </div>
             </GlowCard></Reveal>
 
             <Reveal delay={0.05}>
@@ -427,51 +478,85 @@ export default function Dashboard() {
       {history.length > 0 && (
         <section className="mt-10 grid gap-6">
           <RepoRollup history={history} onView={viewSaved} />
-          <RemediationQueue history={history} canPr={canPr} />
+          <RemediationQueue history={history} canPr={canPr} dismissed={dismissedKeys} onDismiss={dismissRemediation} onRestore={restoreRemediation} />
         </section>
       )}
 
       {/* History */}
-      {history.length > 0 && (
+      {history.length > 0 && (() => {
+        const selectableIds = history.map((s) => s.scan_id).filter((id): id is string => !!id);
+        const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedScans.has(id));
+        return (
         <section className="mt-10">
           <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-serif text-2xl">Your scan history</h2>
-            <button
-              onClick={clearHistory}
-              disabled={clearingHistory}
-              className="rounded-xl border border-[color:var(--surface-border)] px-3.5 py-2 font-mono text-[11px] text-fog transition-colors hover:border-rose-400/50 hover:text-rose-300 disabled:opacity-50"
-            >
-              {clearingHistory ? "Clearing…" : "Clear history"}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              {selectableIds.length > 0 && (
+                <button
+                  onClick={() => setSelectedScans(allSelected ? new Set() : new Set(selectableIds))}
+                  className="rounded-xl border border-[color:var(--surface-border)] px-3.5 py-2 font-mono text-[11px] text-fog transition-colors hover:border-cyan/50 hover:text-cloud"
+                >
+                  {allSelected ? "Deselect all" : "Select all"}
+                </button>
+              )}
+              {selectedScans.size > 0 && (
+                <button
+                  onClick={clearSelectedScans}
+                  className="rounded-xl border border-rose-400/40 px-3.5 py-2 font-mono text-[11px] text-rose-300 transition-colors hover:bg-rose-400/10"
+                >
+                  Clear selected ({selectedScans.size})
+                </button>
+              )}
+              <button
+                onClick={clearHistory}
+                disabled={clearingHistory}
+                className="rounded-xl border border-[color:var(--surface-border)] px-3.5 py-2 font-mono text-[11px] text-fog transition-colors hover:border-rose-400/50 hover:text-rose-300 disabled:opacity-50"
+              >
+                {clearingHistory ? "Clearing…" : "Clear all"}
+              </button>
+            </div>
           </div>
-          <p className="mb-4 text-[13px] text-fog">Every report is saved — click one to re-open the full findings without re-scanning. Clearing removes them permanently from Umbra.</p>
+          <p className="mb-4 text-[13px] text-fog">Every report is saved — click one to re-open the full findings without re-scanning. Tick rows to remove just those, or clear everything. Clearing removes them permanently from Umbra.</p>
           <div className="flex flex-col gap-2.5">
             {history.map((s, i) => {
               const openable = !!s.report;
+              const id = s.scan_id ?? "";
+              const checked = !!id && selectedScans.has(id);
               return (
-                <button
-                  key={i}
-                  onClick={() => viewSaved(s)}
-                  className="group flex items-center justify-between gap-3 rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-4 py-3 text-left text-sm transition-colors hover:border-cyan/40"
+                <div
+                  key={id || i}
+                  className={`group flex items-center gap-3 rounded-xl border bg-[color:var(--surface)] pl-3 pr-4 transition-colors ${checked ? "border-cyan/50" : "border-[color:var(--surface-border)] hover:border-cyan/40"}`}
                 >
-                  <b className="font-mono text-[13px] text-cyan/90">{s.repo_full_name}</b>
-                  <span className="text-[12px] text-fog">score {s.umbra_score ?? "—"} · {s.vuln_count ?? 0} advisories · {s.source}</span>
-                  <span className="flex items-center gap-3">
-                    <time className="font-mono text-[10px] text-fog">{s.ran_at ? new Date(s.ran_at).toLocaleString() : ""}</time>
-                    <span className="font-mono text-[11px] text-cyan">{openable ? "View report →" : "Re-scan →"}</span>
-                  </span>
-                </button>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => id && toggleScan(id)}
+                    disabled={!id}
+                    aria-label={`Select scan of ${s.repo_full_name}`}
+                    title={id ? "Select for removal" : "Older scan — removable only via Clear all"}
+                    className="h-4 w-4 shrink-0 cursor-pointer accent-cyan disabled:cursor-not-allowed disabled:opacity-30"
+                  />
+                  <button onClick={() => viewSaved(s)} className="flex flex-1 items-center justify-between gap-3 py-3 text-left text-sm">
+                    <b className="font-mono text-[13px] text-cyan/90">{s.repo_full_name}</b>
+                    <span className="text-[12px] text-fog">score {s.umbra_score ?? "—"} · {s.vuln_count ?? 0} advisories · {s.source}</span>
+                    <span className="flex items-center gap-3">
+                      <time className="font-mono text-[10px] text-fog">{s.ran_at ? new Date(s.ran_at).toLocaleString() : ""}</time>
+                      <span className="font-mono text-[11px] text-cyan">{openable ? "View report →" : "Re-scan →"}</span>
+                    </span>
+                  </button>
+                </div>
               );
             })}
           </div>
         </section>
-      )}
+        );
+      })()}
 
       {/* Replay modal */}
       <ReplayModal replay={activeReplay} onClose={() => setActiveReplay(null)} />
 
       {/* Pull-request confirm dialog (explicit, branch-only, never merges) */}
-      <PrDialog target={prTarget} repo={targetRepo} onClose={() => setPrTarget(null)} />
+      <PrDialog target={prTarget} repo={targetRepo} diff={watchmanDiff} model={model} effort={effort} onClose={() => setPrTarget(null)} />
     </main>
   );
 }
@@ -488,10 +573,11 @@ function AuthLoading() {
   );
 }
 
-function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery, repoUrl, setRepoUrl, scanning, onRun }: {
+function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery, repoUrl, setRepoUrl, scanning, onRun, coveredRepos }: {
   user: User; repos: Repo[] | null; repoError: { status: number; msg: string } | null; onRetry: () => void;
   filtered: Repo[]; query: string; setQuery: (v: string) => void;
   repoUrl: string; setRepoUrl: (v: string) => void; scanning: boolean; onRun: () => void;
+  coveredRepos: Set<string>;
 }) {
   const hasGitHub = !!user.github_connected;
   const [mode, setMode] = useState<"mine" | "public">(hasGitHub ? "mine" : "public");
@@ -619,7 +705,10 @@ function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery
                             {r.private && <LockIcon className="h-3 w-3 shrink-0 text-amber" />}
                             <span className="truncate">{r.full_name}</span>
                           </span>
-                          {r.stars > 0 && <span className="shrink-0 text-[11px] text-fog">★ {r.stars}</span>}
+                          <span className="flex shrink-0 items-center gap-2">
+                            {coveredRepos.has(r.full_name) && <span className="rounded-full border border-violet/40 bg-violet/10 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-violet" title="Umbra auto-reviews new PRs on this repo">Auto-PR</span>}
+                            {r.stars > 0 && <span className="text-[11px] text-fog">★ {r.stars}</span>}
+                          </span>
                         </button>
                       ))
                     )}
@@ -641,31 +730,35 @@ function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery
 function AutoReviewPanel({ appInfo, installs }: { appInfo: { configured: boolean; install_url: string | null } | null; installs: { installation_id: number; account_login: string; repos: string[] }[] }) {
   if (!appInfo) return null;
   const covered = installs.flatMap((i) => i.repos);
+  const installed = covered.length > 0;
   return (
     <div className="mt-4 rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] p-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-sm font-semibold text-cloud">Autonomous PR auto-review</p>
           <p className="mt-0.5 text-[12px] text-fog">
-            Install the Umbra GitHub App once, pick your repos, and Umbra posts an advisory review on every new PR — public or private, never merges.
+            {installed
+              ? <>Umbra auto-reviews new PRs on the repos you selected. Repos you didn&apos;t pick stay off — add or remove them anytime in GitHub.</>
+              : <>Install the Umbra GitHub App once, pick your repos, and Umbra posts an advisory review on every new PR — public or private, never merges.</>}
           </p>
         </div>
         {appInfo.configured && appInfo.install_url ? (
-          <a
-            href={appInfo.install_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="shrink-0 rounded-xl border border-violet/50 bg-violet/10 px-3.5 py-2.5 text-center font-mono text-[12px] text-violet transition-colors hover:bg-violet/20"
-          >
-            {covered.length ? "Manage installation" : "Install GitHub App"}
-          </a>
+          installed ? (
+            <a href={appInfo.install_url} target="_blank" rel="noopener noreferrer" className="shrink-0 font-mono text-[12px] text-violet transition-colors hover:text-violet/80">
+              Manage / add repos →
+            </a>
+          ) : (
+            <a href={appInfo.install_url} target="_blank" rel="noopener noreferrer" className="shrink-0 rounded-xl border border-violet/50 bg-violet/10 px-3.5 py-2.5 text-center font-mono text-[12px] text-violet transition-colors hover:bg-violet/20">
+              Install GitHub App
+            </a>
+          )
         ) : (
           <span className="shrink-0 rounded-xl border border-[color:var(--surface-border)] px-3.5 py-2.5 font-mono text-[11px] text-fog">Coming soon</span>
         )}
       </div>
-      {covered.length > 0 && (
+      {installed && (
         <div className="mt-3 border-t border-[color:var(--surface-border)] pt-3">
-          <p className="font-mono text-[11px] text-fog">Auto-reviewing {covered.length} repo{covered.length === 1 ? "" : "s"}:</p>
+          <p className="font-mono text-[11px] text-fog">Auto-reviewing {covered.length} repo{covered.length === 1 ? "" : "s"} — look for the <span className="text-violet">Auto-PR</span> badge in your repo list:</p>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {covered.map((r) => (
               <span key={r} className="rounded-md border border-violet/30 bg-violet/5 px-2 py-1 font-mono text-[11px] text-violet">{r}</span>
@@ -762,12 +855,17 @@ function AgentRunRow({ run, onOpen }: { run: AgentRun; onOpen: () => void }) {
   );
 }
 
-function PrDialog({ target, repo, onClose }: { target: { mode: "bump" | "codex"; vuln?: Vuln } | null; repo: string; onClose: () => void }) {
+function PrDialog({ target, repo, diff, model, effort, onClose }: { target: { mode: "bump" | "codex"; vuln?: Vuln } | null; repo: string; diff: string; model: string; effort: string; onClose: () => void }) {
   const [status, setStatus] = useState<"confirm" | "working" | "done" | "error">("confirm");
   const [result, setResult] = useState<{ url: string; number: number; branch: string; base: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => { if (target) { setStatus("confirm"); setResult(null); setErr(null); } }, [target]);
+
+  // For a Codex fix, reuse the patch Watchman already produced in the scan (the
+  // diff on screen): applying it opens a PR in seconds with no second Codex run.
+  // Only fall back to a fresh Codex run when there is no diff to reuse.
+  const reuseDiff = target?.mode === "codex" && !!diff.trim();
 
   const submit = useCallback(async () => {
     if (!target) return;
@@ -775,13 +873,15 @@ function PrDialog({ target, repo, onClose }: { target: { mode: "bump" | "codex";
     try {
       const body = target.mode === "bump"
         ? { repo_url: repo, mode: "bump", package: target.vuln?.package, version: target.vuln?.version, cve: target.vuln?.cve }
-        : { repo_url: repo, mode: "codex" };
+        : reuseDiff
+          ? { repo_url: repo, mode: "apply_diff", diff }
+          : { repo_url: repo, mode: "codex", model, reasoning_effort: effort };
       const r = await fetch(`${API}/api/my/pr`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(body) });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data?.detail || `Pull-request request failed (${r.status})`);
       setResult(data); setStatus("done");
     } catch (e) { setErr((e as Error).message); setStatus("error"); }
-  }, [target, repo]);
+  }, [target, repo, reuseDiff, diff, model, effort]);
 
   return (
     <AnimatePresence>
@@ -807,13 +907,15 @@ function PrDialog({ target, repo, onClose }: { target: { mode: "bump" | "codex";
                 <div className="rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] p-4 text-[13px] leading-relaxed">
                   {target.mode === "bump" ? (
                     <p className="text-fog">Bump <b className="font-mono text-cloud">{target.vuln?.package}@{target.vuln?.version}</b> to its OSV-patched version in <b className="font-mono text-cloud">{repoFullName(repo)}</b>{target.vuln?.cve ? <> — remediating <span className="font-mono">{target.vuln.cve}</span></> : null}. Deterministic edit; no Codex credits used.</p>
+                  ) : reuseDiff ? (
+                    <p className="text-fog">Open a PR from the patch Umbra <b className="text-cloud">already proposed</b> during the scan (the diff you reviewed) for <b className="font-mono text-cloud">{repoFullName(repo)}</b> — applied on a new branch in seconds. No new Codex run, no credits used.</p>
                   ) : (
                     <p className="text-fog">Let Codex propose the smallest safe fix for <b className="font-mono text-cloud">{repoFullName(repo)}</b> in a disposable checkout, then open it as a PR on a new branch. Uses founder Codex credits.</p>
                   )}
                 </div>
                 {err && <p className="font-mono text-xs text-rose-300">{err}</p>}
                 <div className="flex items-center gap-2">
-                  <StatefulButton loading={status === "working"} onClick={submit}>{target.mode === "bump" ? "Open bump PR" : "Run Codex & open PR"}</StatefulButton>
+                  <StatefulButton loading={status === "working"} onClick={submit}>{target.mode === "bump" ? "Open bump PR" : reuseDiff ? "Open patch PR" : "Run Codex & open PR"}</StatefulButton>
                   <button onClick={onClose} className="rounded-xl border border-[color:var(--surface-border)] px-4 py-2.5 text-xs text-fog transition-colors hover:text-cloud">Cancel</button>
                 </div>
               </div>
@@ -1042,43 +1144,62 @@ function Stat({ label, value, tone = "ok" }: { label: string; value: string; ton
   );
 }
 
-function RemediationQueue({ history, canPr }: { history: Scan[]; canPr: boolean }) {
+function RemediationQueue({ history, canPr, dismissed, onDismiss, onRestore }: { history: Scan[]; canPr: boolean; dismissed: Set<string>; onDismiss: (key: string) => void; onRestore: (key: string) => void }) {
   const items = useMemo(() => {
-    const out: { repo: string; v: Vuln }[] = [];
+    const out: { repo: string; v: Vuln; key: string }[] = [];
     const seenKey = new Set<string>();
     for (const s of latestPerRepo(history)) {
       for (const v of s.report?.vulnerabilities ?? []) {
         const key = `${s.repo_full_name}:${v.package}@${v.version}:${v.cve}`;
         if (seenKey.has(key)) continue;
         seenKey.add(key);
-        out.push({ repo: s.repo_full_name, v });
+        out.push({ repo: s.repo_full_name, v, key });
       }
     }
     // Worst first.
     return out.sort((a, b) => SEV_ORDER.indexOf(a.v.severity as typeof SEV_ORDER[number]) - SEV_ORDER.indexOf(b.v.severity as typeof SEV_ORDER[number])).slice(0, 25);
   }, [history]);
+  const [showHidden, setShowHidden] = useState(false);
   if (items.length === 0) return null;
+  const active = items.filter((it) => !dismissed.has(it.key));
+  const hidden = items.filter((it) => dismissed.has(it.key));
 
   return (
     <Reveal>
       <GlowCard glow="rgba(94,234,212,0.2)" className="p-7">
         <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
           <h2 className="font-serif text-2xl">Remediation queue</h2>
-          <span className="font-mono text-[11px] text-fog">{items.length} fixable {items.length === 1 ? "advisory" : "advisories"}</span>
+          <span className="font-mono text-[11px] text-fog">{active.length} open{hidden.length ? ` · ${hidden.length} dismissed` : ""}</span>
         </div>
         <p className="mb-4 text-[13px] text-fog">
-          One click opens a <b className="text-cloud">branch-only</b> dependency-bump PR (deterministic, no Codex credits) — Umbra never merges.
+          One click opens a <b className="text-cloud">branch-only</b> dependency-bump PR (deterministic, no Codex credits) — Umbra never merges. Dismiss anything you&apos;ve handled or won&apos;t fix.
           {!canPr && <> Connect GitHub with repo access to enable this.</>}
         </p>
         <div className="flex flex-col gap-2.5">
-          {items.map((it) => <RemediationRow key={`${it.repo}:${it.v.package}:${it.v.cve}`} repo={it.repo} v={it.v} canPr={canPr} />)}
+          {active.length === 0 ? (
+            <p className="text-[13px] text-fog">Nothing open — every advisory here has been dismissed.</p>
+          ) : (
+            active.map((it) => <RemediationRow key={it.key} repo={it.repo} v={it.v} canPr={canPr} onDismiss={() => onDismiss(it.key)} />)
+          )}
         </div>
+        {hidden.length > 0 && (
+          <div className="mt-4 border-t border-[color:var(--surface-border)] pt-3">
+            <button onClick={() => setShowHidden((s) => !s)} className="font-mono text-[11px] text-fog transition-colors hover:text-cloud">
+              {showHidden ? "Hide dismissed" : `Show ${hidden.length} dismissed`}
+            </button>
+            {showHidden && (
+              <div className="mt-2.5 flex flex-col gap-2.5">
+                {hidden.map((it) => <RemediationRow key={it.key} repo={it.repo} v={it.v} canPr={canPr} dismissed onRestore={() => onRestore(it.key)} />)}
+              </div>
+            )}
+          </div>
+        )}
       </GlowCard>
     </Reveal>
   );
 }
 
-function RemediationRow({ repo, v, canPr }: { repo: string; v: Vuln; canPr: boolean }) {
+function RemediationRow({ repo, v, canPr, dismissed, onDismiss, onRestore }: { repo: string; v: Vuln; canPr: boolean; dismissed?: boolean; onDismiss?: () => void; onRestore?: () => void }) {
   const [status, setStatus] = useState<"idle" | "working" | "done" | "error">("idle");
   const [pr, setPr] = useState<{ url: string; number: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -1094,22 +1215,29 @@ function RemediationRow({ repo, v, canPr }: { repo: string; v: Vuln; canPr: bool
   }, [repo, v]);
 
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-4 py-3">
+    <div className={`flex flex-wrap items-center gap-3 rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-4 py-3 ${dismissed ? "opacity-60" : ""}`}>
       <SeverityChip severity={v.severity} />
       <span className="font-mono text-[13px] text-cloud">{v.package}<span className="text-fog">@{v.version}</span></span>
       <span className="font-mono text-[11px] text-fog">{v.cve}</span>
       <span className="ml-auto truncate font-mono text-[11px] text-fog/70">{repo}</span>
-      {status === "done" && pr ? (
+      {dismissed ? (
+        <button onClick={onRestore} className="rounded-full border border-[color:var(--surface-border)] px-3 py-1 font-mono text-[10px] text-fog transition-colors hover:border-cyan/50 hover:text-cloud">Restore</button>
+      ) : status === "done" && pr ? (
         <a href={pr.url} target="_blank" rel="noreferrer" className="font-mono text-[11px] text-teal hover:underline">✓ PR #{pr.number} ↗</a>
       ) : (
-        <button
-          onClick={openPr}
-          disabled={!canPr || status === "working"}
-          title={canPr ? "Open a dependency-bump PR" : "Connect GitHub to open PRs"}
-          className="rounded-full border border-cyan/40 bg-cyan/10 px-3 py-1 font-mono text-[10px] text-cyan transition-colors hover:bg-cyan/20 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {status === "working" ? "Opening…" : "Open bump PR →"}
-        </button>
+        <>
+          <button
+            onClick={openPr}
+            disabled={!canPr || status === "working"}
+            title={canPr ? "Open a dependency-bump PR" : "Connect GitHub to open PRs"}
+            className="rounded-full border border-cyan/40 bg-cyan/10 px-3 py-1 font-mono text-[10px] text-cyan transition-colors hover:bg-cyan/20 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {status === "working" ? "Opening…" : "Open bump PR →"}
+          </button>
+          {onDismiss && (
+            <button onClick={onDismiss} title="Dismiss from the queue" className="rounded-full border border-[color:var(--surface-border)] px-2.5 py-1 font-mono text-[10px] text-fog transition-colors hover:border-rose-400/50 hover:text-rose-300">Dismiss</button>
+          )}
+        </>
       )}
       {err && <span className="w-full font-mono text-[10px] text-rose-300">{err}</span>}
     </div>

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from collections import deque
 from typing import Any, AsyncIterator
@@ -46,6 +47,7 @@ class Orchestrator:
         # Cache is intentionally the availability boundary: a demo never depends on third parties.
         from backend.agents import Janitor, Reviewer, Watchman
         from backend.codex_client import CodexClient
+        from backend.integrations.repository import checkout_public_repo, live_repositories_enabled, reset_checkout
 
         payload = load_demo_cache()
         payload["repo_url"] = repo_url
@@ -53,13 +55,43 @@ class Orchestrator:
         # One Codex client for the whole scan carries the caller's speed choice
         # (lighter model / lower reasoning effort) to every agent it runs.
         codex = CodexClient(model=model, reasoning_effort=reasoning_effort)
+
+        # Clone ONCE and share the checkout across agents. They run one at a time,
+        # so peak memory stays at a single checkout (safe within the 4Gi /
+        # concurrency-2 pin), while dropping a Full scan from 3 network clones to
+        # 1. The clone runs in a thread so it never blocks the event loop / SSE,
+        # and the tree is reset to its pristine cloned state before each agent so a
+        # mutating agent (Watchman/Janitor) never sees another's edits in its diff.
+        shared_cm = None
+        repo_path = None
+        if live_repositories_enabled() and os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true":
+            try:
+                shared_cm = checkout_public_repo(repo_url, github_token)
+                repo_path = await asyncio.to_thread(shared_cm.__enter__)
+            except Exception:  # noqa: BLE001 - no shared checkout → agents fall back exactly as before
+                shared_cm = repo_path = None
+
         agent_runs = []
-        if "watchman" in requested:
-            agent_runs.append(await Watchman(codex=codex).run(repo_url, github_token=github_token, openai_key=openai_key, allow_codex=allow_codex))
-        if "reviewer" in requested:
-            agent_runs.append(await Reviewer(codex=codex).run(repo_url, pr_number=pr_number, github_token=github_token, openai_key=openai_key, allow_codex=allow_codex))
-        if "janitor" in requested:
-            agent_runs.append(await Janitor(codex=codex).run(repo_url, github_token=github_token, openai_key=openai_key, allow_codex=allow_codex))
+        try:
+            used_shared = False
+
+            async def _run(agent: Any, **kwargs: Any) -> Any:
+                nonlocal used_shared
+                if repo_path is not None:
+                    if used_shared:
+                        await asyncio.to_thread(reset_checkout, repo_path)
+                    used_shared = True
+                return await agent.run(repo_url, repo_path=repo_path, **kwargs)
+
+            if "watchman" in requested:
+                agent_runs.append(await _run(Watchman(codex=codex), github_token=github_token, openai_key=openai_key, allow_codex=allow_codex))
+            if "reviewer" in requested:
+                agent_runs.append(await _run(Reviewer(codex=codex), pr_number=pr_number, github_token=github_token, openai_key=openai_key, allow_codex=allow_codex))
+            if "janitor" in requested:
+                agent_runs.append(await _run(Janitor(codex=codex), github_token=github_token, openai_key=openai_key, allow_codex=allow_codex))
+        finally:
+            if shared_cm is not None:
+                await asyncio.to_thread(shared_cm.__exit__, None, None, None)
         self.replays = [result.replay.__dict__ for result in agent_runs] or self.replays
         await self.replay_demo_events()
         response = {key: value for key, value in payload.items() if key not in {"events", "postmortem", "answer", "replays"}}
@@ -160,15 +192,24 @@ class Orchestrator:
         await self.bus.emit({"agent": "REVIEWER", "message": f"Auto-reviewed PR #{pr_number} on {owner_repo}", "level": "analysis"})
         return {"reviewed": pr_number, "comment": posted, "finding": finding}
 
-    async def open_fix_pr(self, repo_url: str, token: str, mode: str = "bump", package: str | None = None, version: str | None = None, cve: str | None = None, allow_codex: bool | None = None) -> dict[str, Any]:
+    async def open_fix_pr(self, repo_url: str, token: str, mode: str = "bump", package: str | None = None, version: str | None = None, cve: str | None = None, allow_codex: bool | None = None, diff: str | None = None, model: str | None = None, reasoning_effort: str | None = None) -> dict[str, Any]:
         """Open a fix PR on the user's explicit request. Branch-only, never merges.
         The write ``token`` is used only here (and inside github_write) — never
-        passed to the Codex child process."""
+        passed to the Codex child process.
+
+        ``apply_diff`` opens a PR from a diff Umbra already produced and the user
+        reviewed on screen (Watchman's scan) — no second Codex run, so it is fast
+        and spends no Codex credits. ``codex`` re-derives a fix from scratch on the
+        caller's chosen model/effort. ``bump`` is the deterministic dependency bump."""
         from backend.integrations.github import parse_public_repo
 
         owner_repo = parse_public_repo(repo_url)
+        if mode == "apply_diff":
+            if not (diff or "").strip():
+                raise ValueError("No proposed diff was provided to open a PR from.")
+            return await asyncio.to_thread(self._apply_diff_pr, repo_url, owner_repo, token, diff)
         if mode == "codex":
-            return await asyncio.to_thread(self._codex_pr, repo_url, owner_repo, token, allow_codex)
+            return await asyncio.to_thread(self._codex_pr, repo_url, owner_repo, token, allow_codex, model, reasoning_effort)
         return await asyncio.to_thread(self._bump_pr, repo_url, owner_repo, token, package, version, cve)
 
     @staticmethod
@@ -214,7 +255,58 @@ class Orchestrator:
         return open_pull_request(owner_repo, token, branch, title, body, {manifest_path: new_content})
 
     @staticmethod
-    def _codex_pr(repo_url: str, owner_repo: str, token: str, allow_codex: bool | None) -> dict[str, Any]:
+    def _apply_diff_pr(repo_url: str, owner_repo: str, token: str, diff: str) -> dict[str, Any]:
+        """Open a PR by applying a diff Umbra already produced and the user reviewed.
+
+        No Codex run happens here: the diff (Watchman's proposed patch, shown on
+        screen) is applied to a fresh disposable checkout with ``git apply``, and
+        the resulting file contents become the PR. This is the fast path for the
+        'auto-patch PR' action and spends no Codex credits. Branch-only; Umbra
+        never merges."""
+        import subprocess
+        import tempfile
+        from datetime import UTC, datetime
+        from pathlib import Path
+
+        from backend.integrations.github_write import open_pull_request
+        from backend.integrations.repository import checkout_public_repo
+
+        with checkout_public_repo(repo_url, token) as repo_path:
+            with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False) as handle:
+                handle.write(diff if diff.endswith("\n") else diff + "\n")
+                patch_file = handle.name
+            try:
+                applied = subprocess.run(
+                    ["git", "apply", "--whitespace=nowarn", patch_file],
+                    cwd=repo_path, text=True, capture_output=True, check=False,
+                )
+            finally:
+                Path(patch_file).unlink(missing_ok=True)
+            if applied.returncode != 0:
+                raise ValueError(
+                    "The proposed diff no longer applies cleanly to the latest repo state — "
+                    "re-run the scan to refresh it, or use a Codex fix PR."
+                )
+            changed = [line for line in subprocess.run(["git", "diff", "--name-only"], cwd=repo_path, text=True, capture_output=True, check=False).stdout.splitlines() if line]
+            file_changes: dict[str, str] = {}
+            for rel in changed:
+                path = repo_path / rel
+                if path.is_file():
+                    file_changes[rel] = path.read_text(errors="replace")
+            if not file_changes:
+                raise ValueError("Applying the proposed diff produced no file changes to open a PR for.")
+        branch = f"umbra/patch-{datetime.now(UTC).strftime('%Y%m%d%H%M')}"
+        body = (
+            "### Umbra proposed patch\n\n"
+            "Applies the fix Umbra proposed during the scan (the diff you reviewed) — "
+            "no new model run was performed to open this PR.\n\n"
+            "- Applied with `git apply` in a disposable checkout (origin stripped; nothing is pushed by the agent).\n"
+            "- Opened on a new branch; **Umbra never merges** — review and merge yourself.\n"
+        )
+        return open_pull_request(owner_repo, token, branch, "Umbra: proposed patch", body, file_changes)
+
+    @staticmethod
+    def _codex_pr(repo_url: str, owner_repo: str, token: str, allow_codex: bool | None, model: str | None = None, reasoning_effort: str | None = None) -> dict[str, Any]:
         from datetime import UTC, datetime
 
         from backend.codex_client import CodexClient
@@ -223,7 +315,7 @@ class Orchestrator:
 
         if allow_codex is False:
             raise PermissionError("Codex-authored PRs are founder-only on the hosted demo.")
-        codex = CodexClient()
+        codex = CodexClient(model=model, reasoning_effort=reasoning_effort)
         with checkout_public_repo(repo_url, token) as repo_path:
             operation = codex.propose(
                 "Find and fix the single highest-value, behavior-preserving issue you can (a security fix, a clear bug, or dead-code removal). Make the smallest safe change and run relevant tests. Do not push, commit, or merge.",

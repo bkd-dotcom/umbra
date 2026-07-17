@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from contextlib import nullcontext
+from pathlib import Path
 from time import perf_counter
 from typing import Any
 
@@ -21,10 +23,10 @@ class Watchman:
         self.codex = codex or CodexClient()
         self.osv = osv or OSVClient()
 
-    async def run(self, repo_url: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> AgentResult:
+    async def run(self, repo_url: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None, repo_path: Path | None = None) -> AgentResult:
         if self._live_enabled():
             try:
-                return await self._run_live(repo_url, github_token, openai_key, allow_codex)
+                return await self._run_live(repo_url, github_token, openai_key, allow_codex, repo_path)
             except Exception as exc:
                 # Availability must not masquerade as a successful live scan.
                 return self._cached_result(f"Live Watchman unavailable: {exc}")
@@ -41,9 +43,12 @@ class Watchman:
             and (CodexClient.enabled() or cloud_scan_enabled())
         )
 
-    async def _run_live(self, repo_url: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> AgentResult:
+    async def _run_live(self, repo_url: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None, repo_path: Path | None = None) -> AgentResult:
         started = perf_counter()
-        with checkout_public_repo(repo_url, github_token) as repo_path:
+        # A shared checkout supplied by the orchestrator is reused as-is; otherwise
+        # (direct callers / tests) fall back to opening our own disposable clone.
+        checkout = nullcontext(repo_path) if repo_path is not None else checkout_public_repo(repo_url, github_token)
+        with checkout as repo_path:
             dependencies = discover_dependencies(repo_path)
             advisory_lists = await asyncio.gather(
                 *(self.osv.query(item["name"], item["version"], item["ecosystem"]) for item in dependencies),
@@ -53,12 +58,14 @@ class Watchman:
             scan_ms = int((perf_counter() - started) * 1000)
             # Engineering pass first, so on the keyless fast path its own
             # explanation can double as the reasoning (one Codex call, not two).
+            # The blocking CLI runs in a thread so it never freezes the event loop.
             codex_started = perf_counter()
             if allow_codex is False:
                 operation = self._unavailable_codex_operation(CODEX_HOST_NOTE)
             else:
                 try:
-                    operation = self.codex.propose(
+                    operation = await asyncio.to_thread(
+                        self.codex.propose,
                         "Inspect confirmed OSV advisories. If a compatible patched version exists, make the smallest dependency-only fix, run focused tests, and leave the working tree reviewable.",
                         repo_path=repo_path,
                     )

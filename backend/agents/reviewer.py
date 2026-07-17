@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import nullcontext
+from pathlib import Path
 from time import perf_counter
 from typing import Any
 
@@ -19,13 +21,13 @@ class Reviewer:
     def __init__(self, codex: CodexClient | None = None) -> None:
         self.codex = codex or CodexClient()
 
-    async def run(self, repo_url: str, diff: str = "", pr_number: int | None = None, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> AgentResult:
+    async def run(self, repo_url: str, diff: str = "", pr_number: int | None = None, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None, repo_path: Path | None = None) -> AgentResult:
         if self._live_enabled():
             try:
                 number = pr_number or await asyncio.to_thread(latest_open_pull_request, repo_url, github_token)
                 if number is None:
                     return self._cached_result("No open pull request was available for live review.")
-                return await self._run_live(repo_url, number, github_token, openai_key, allow_codex)
+                return await self._run_live(repo_url, number, github_token, openai_key, allow_codex, repo_path)
             except Exception as exc:
                 return self._cached_result(f"Live Reviewer unavailable: {exc}")
         return self._cached_result()
@@ -35,7 +37,7 @@ class Reviewer:
         # Codex CLI (ChatGPT login) supplies both review and reasoning; no API key required.
         return os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true" and live_repositories_enabled() and (CodexClient.enabled() or cloud_scan_enabled())
 
-    async def _run_live(self, repo_url: str, pr_number: int, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> AgentResult:
+    async def _run_live(self, repo_url: str, pr_number: int, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None, repo_path: Path | None = None) -> AgentResult:
         started = perf_counter()
         pull = await asyncio.to_thread(fetch_pull_request, repo_url, pr_number, github_token)
         changed_files: list[dict[str, Any]] = pull["changed_files"]
@@ -49,13 +51,16 @@ class Reviewer:
         )
         score = risk_score(inputs)
         fetch_ms = int((perf_counter() - started) * 1000)
-        with checkout_public_repo(repo_url, github_token) as repo_path:
+        # Reuse the orchestrator's shared checkout when supplied; else clone our own.
+        checkout = nullcontext(repo_path) if repo_path is not None else checkout_public_repo(repo_url, github_token)
+        with checkout as repo_path:
             codex_started = perf_counter()
             if allow_codex is False:
                 operation = self._unavailable_operation(CODEX_HOST_NOTE)
             else:
                 try:
-                    operation = self.codex.propose(
+                    operation = await asyncio.to_thread(
+                        self.codex.propose,
                         f"Review PR #{pr_number} ({pull['title']}). Read this diff and identify concrete regressions, security risks, and missing tests. Do not edit any files.\n\n{diff}",
                         repo_path=repo_path, read_only=True,
                     )

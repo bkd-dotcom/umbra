@@ -140,17 +140,22 @@ async def scan_repo(request: ScanRequest, http: Request) -> dict[str, object]:
 
 class PullRequestRequest(BaseModel):
     repo_url: str
-    mode: str = Field(default="bump", description="'bump' (deterministic dependency bump) or 'codex' (Codex-authored)")
+    mode: str = Field(default="bump", description="'bump' (deterministic dependency bump), 'apply_diff' (open a PR from a diff Umbra already produced), or 'codex' (Codex-authored)")
     package: str | None = None
     version: str | None = None
     cve: str | None = None
+    diff: str | None = Field(default=None, max_length=200_000, description="For mode='apply_diff': the reviewed diff to apply and open a PR from")
+    model: str | None = Field(default=None, description="For mode='codex': Codex model; invalid values fall back to the default")
+    reasoning_effort: str | None = Field(default=None, description="For mode='codex': reasoning effort; invalid values fall back to the default")
 
 
 @app.post("/api/my/pr", tags=["agents"])
 async def open_fix_pr(request: PullRequestRequest, http: Request) -> dict[str, object]:
     """Open a fix PR on explicit user request. Requires a signed-in user with a
     GitHub token (write); branch-only, never merges. Codex-authored PRs are
-    founder-gated on the hosted deploy so visitors can't spend Codex credits."""
+    founder-gated on the hosted deploy so visitors can't spend Codex credits;
+    'apply_diff' just opens a PR from a diff Umbra already produced (no Codex run,
+    no credit spend), so it is not gated."""
     _validate_repo(request.repo_url)
     if not http.session.get("user"):
         raise HTTPException(status_code=401, detail="Sign in to open a pull request.")
@@ -161,7 +166,7 @@ async def open_fix_pr(request: PullRequestRequest, http: Request) -> dict[str, o
     if request.mode == "codex" and ctx["allow_codex"] is False:
         raise HTTPException(status_code=403, detail="Codex-authored PRs are founder-only on the hosted demo — try a dependency-bump PR, or run Umbra locally.")
     try:
-        return await orchestrator.open_fix_pr(request.repo_url, str(token), request.mode, request.package, request.version, request.cve, allow_codex=ctx["allow_codex"])
+        return await orchestrator.open_fix_pr(request.repo_url, str(token), request.mode, request.package, request.version, request.cve, allow_codex=ctx["allow_codex"], diff=request.diff, model=request.model, reasoning_effort=request.reasoning_effort)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import nullcontext
+from pathlib import Path
 from time import perf_counter
 
 from backend.agents.base import AgentResult, Replay, codex_reasoning, reasoning_from_operation
@@ -16,7 +18,7 @@ class Janitor:
     def __init__(self, codex: CodexClient | None = None) -> None:
         self.codex = codex or CodexClient()
 
-    async def run(self, repo_url: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> AgentResult:
+    async def run(self, repo_url: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None, repo_path: Path | None = None) -> AgentResult:
         # Janitor's only real work is a Codex edit, so when Codex is not permitted
         # for this request (non-founder on the hosted deploy) it stays on the clean
         # cached replay rather than spending the founder's credits.
@@ -24,7 +26,7 @@ class Janitor:
             return self._cached_result()
         if self._live_enabled():
             try:
-                return await self._run_live(repo_url, github_token, openai_key)
+                return await self._run_live(repo_url, github_token, openai_key, repo_path)
             except Exception as exc:
                 return self._cached_result(f"Live Janitor unavailable: {exc}")
         return self._cached_result()
@@ -34,11 +36,13 @@ class Janitor:
         # Codex CLI (ChatGPT login) supplies both the cleanup and reasoning; no API key required.
         return os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true" and live_repositories_enabled() and CodexClient.enabled()
 
-    async def _run_live(self, repo_url: str, github_token: str | None = None, openai_key: str | None = None) -> AgentResult:
-        with checkout_public_repo(repo_url, github_token) as repo_path:
+    async def _run_live(self, repo_url: str, github_token: str | None = None, openai_key: str | None = None, repo_path: Path | None = None) -> AgentResult:
+        # Reuse the orchestrator's shared checkout when supplied; else clone our own.
+        checkout = nullcontext(repo_path) if repo_path is not None else checkout_public_repo(repo_url, github_token)
+        with checkout as repo_path:
             codex_started = perf_counter()
             try:
-                operation = self.codex.propose("Find behavior-preserving dead code, unused imports, and orphaned environment variables. Make one smallest focused cleanup change, run relevant tests, and do not push, commit, or merge.", repo_path=repo_path)
+                operation = await asyncio.to_thread(self.codex.propose, "Find behavior-preserving dead code, unused imports, and orphaned environment variables. Make one smallest focused cleanup change, run relevant tests, and do not push, commit, or merge.", repo_path=repo_path)
             except RuntimeError as exc:
                 operation = self._unavailable_operation(str(exc))
             codex_ms = int((perf_counter() - codex_started) * 1000)

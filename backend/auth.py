@@ -264,6 +264,46 @@ async def clear_my_scans(request: Request):
     return {"ok": True}
 
 
+class ScanDeleteBody(BaseModel):
+    scan_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
+@router.post("/api/my/scans/delete")
+async def delete_my_scans(request: Request, body: ScanDeleteBody):
+    """Delete only the selected scans (selective clear). Scoped to the caller."""
+    user = get_current_user(request)
+    get_store().delete_scans(_user_key(user), body.scan_ids)
+    return {"ok": True, "deleted": len(body.scan_ids)}
+
+
+class RemediationKeysBody(BaseModel):
+    keys: list[str] = Field(default_factory=list, max_length=500)
+
+
+@router.get("/api/my/remediation-dismissals")
+async def my_remediation_dismissals(request: Request):
+    """The advisory keys the signed-in user has dismissed from their remediation
+    queue. Only ever the caller's own records."""
+    user = get_current_user(request)
+    return {"keys": get_store().list_dismissed_remediations(_user_key(user))}
+
+
+@router.post("/api/my/remediation-dismissals")
+async def dismiss_remediations(request: Request, body: RemediationKeysBody):
+    """Hide advisory items from the remediation queue without deleting the scan."""
+    user = get_current_user(request)
+    get_store().dismiss_remediations(_user_key(user), body.keys)
+    return {"ok": True}
+
+
+@router.post("/api/my/remediation-dismissals/restore")
+async def restore_remediations(request: Request, body: RemediationKeysBody):
+    """Bring previously dismissed advisory items back into the remediation queue."""
+    user = get_current_user(request)
+    get_store().restore_remediations(_user_key(user), body.keys)
+    return {"ok": True}
+
+
 @router.get("/api/github/app")
 async def github_app_info():
     """Public: whether the Umbra GitHub App is configured on this server and where

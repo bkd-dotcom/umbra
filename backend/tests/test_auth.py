@@ -171,6 +171,36 @@ def test_memory_store_roundtrip():
     store.save_scan("github:1", {"repo_full_name": "u/r", "umbra_score": 80})
     scans = store.list_scans("github:1")
     assert scans and scans[0]["repo_full_name"] == "u/r" and "ran_at" in scans[0]
+    # Every saved scan gets a stable id so the UI can delete individual scans.
+    assert scans[0].get("scan_id")
+
+
+def test_delete_scans_removes_only_selected():
+    store = _MemoryStore()
+    store.save_scan("github:1", {"repo_full_name": "u/a"})
+    store.save_scan("github:1", {"repo_full_name": "u/b"})
+    scans = store.list_scans("github:1")
+    target = scans[0]["scan_id"]
+    store.delete_scans("github:1", [target])
+    remaining = store.list_scans("github:1")
+    assert len(remaining) == 1 and remaining[0]["scan_id"] != target
+
+
+def test_remediation_dismissals_roundtrip():
+    store = _MemoryStore()
+    store.dismiss_remediations("github:1", ["u/a:lodash@1:CVE-1", "u/a:x@2:CVE-2"])
+    assert set(store.list_dismissed_remediations("github:1")) == {"u/a:lodash@1:CVE-1", "u/a:x@2:CVE-2"}
+    store.restore_remediations("github:1", ["u/a:x@2:CVE-2"])
+    assert store.list_dismissed_remediations("github:1") == ["u/a:lodash@1:CVE-1"]
+    # Scoped strictly to the caller — another user sees nothing.
+    assert store.list_dismissed_remediations("github:2") == []
+
+
+def test_selective_clear_and_dismissal_endpoints_require_auth():
+    assert client.post("/api/my/scans/delete", json={"scan_ids": ["x"]}).status_code == 401
+    assert client.get("/api/my/remediation-dismissals").status_code == 401
+    assert client.post("/api/my/remediation-dismissals", json={"keys": ["x"]}).status_code == 401
+    assert client.post("/api/my/remediation-dismissals/restore", json={"keys": ["x"]}).status_code == 401
 
 
 # --- v2: encryption, BYO key, founder gate, private-repo token handling -------

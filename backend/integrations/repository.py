@@ -28,6 +28,16 @@ def _scrub(text: str, token: str | None) -> str:
     return text.replace(token, "***") if (token and text) else text
 
 
+def reset_checkout(path: Path) -> None:
+    """Restore a shared checkout to its pristine cloned state.
+
+    Used between sequential scan agents so a mutating agent (Watchman/Janitor)
+    never sees another's edits in its own git diff. Best-effort and local (the
+    checkout has no origin remote): a failure just leaves the tree as-is."""
+    subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=path, text=True, capture_output=True, check=False)
+    subprocess.run(["git", "clean", "-ffdx"], cwd=path, text=True, capture_output=True, check=False)
+
+
 @contextmanager
 def checkout_public_repo(repo_url: str, token: str | None = None) -> Iterator[Path]:
     """Clone a repo to a temp dir with no credentialed remote left behind.

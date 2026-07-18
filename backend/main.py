@@ -92,6 +92,7 @@ class ScanRequest(BaseModel):
     pr_number: int | None = Field(default=None, ge=1, description="Optional pull request number for Reviewer")
     model: str | None = Field(default=None, description="Codex model (gpt-5.6-luna=fast, gpt-5.6-terra=balanced); invalid values fall back to the default")
     reasoning_effort: str | None = Field(default=None, description="Codex reasoning effort: minimal/low/medium/high; invalid values fall back to the default")
+    autonomy_level: int = Field(default=1, ge=0, le=3, description="0=report only (no Codex propose), 1=prepare diff (default), 2=branch PR via /api/my/pr, 3=request review. Never auto-merges.")
 
 
 class InvestigateRequest(BaseModel):
@@ -135,7 +136,22 @@ def _user_context(request: Request) -> dict[str, object]:
 @app.post("/api/scan", tags=["agents"])
 async def scan_repo(request: ScanRequest, http: Request) -> dict[str, object]:
     _validate_repo(request.repo_url)
-    return await orchestrator.scan(request.repo_url, request.agents, request.pr_number, model=request.model, reasoning_effort=request.reasoning_effort, **_user_context(http))
+    return await orchestrator.scan(request.repo_url, request.agents, request.pr_number, model=request.model, reasoning_effort=request.reasoning_effort, autonomy_level=request.autonomy_level, **_user_context(http))
+
+
+class EvidencePackRequest(BaseModel):
+    result: dict = Field(description="A scan result to certify into an Evidence Pack")
+    mode: str = Field(default="live", description="Run type label: 'live', 'captured', or 'demo'")
+
+
+@app.post("/api/evidence-pack", tags=["agents"])
+async def evidence_pack(request: EvidencePackRequest) -> dict[str, object]:
+    """Render a scan result into a portable, hashable Evidence Pack (Markdown +
+    sha256). No auth — public/captured results are meant to be shared. The pack
+    sanitizes every temp path and restates that Umbra never auto-merges."""
+    from backend.evidence import build_evidence_pack
+
+    return build_evidence_pack(request.result, request.mode)
 
 
 class PullRequestRequest(BaseModel):

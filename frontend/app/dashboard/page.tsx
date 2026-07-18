@@ -27,7 +27,9 @@ type Repo = { name: string; full_name: string; url: string; private: boolean; st
 type Vuln = { package: string; version: string; cve: string; severity: string; owasp?: string; summary?: string };
 type Replay = { agent: string; prompt: string; codex_diff: string; tests: string; reasoning: string; timings: Record<string, number>; providers?: Record<string, string> };
 type AgentRun = { agent: string; summary: string; findings: unknown[]; replay: Replay };
-type ScanResult = { umbra_score?: number; vulnerabilities?: Vuln[]; dependencies?: Dep[]; source?: string; live_agents?: string[]; agent_results?: AgentRun[]; reasoning_summary?: string; repo_url?: string };
+type Autonomy = { level: number; label: string; auto_merge: boolean; human_review_required: boolean };
+type Policy = { loaded: boolean; path?: string; summary: string };
+type ScanResult = { umbra_score?: number; vulnerabilities?: Vuln[]; dependencies?: Dep[]; source?: string; live_agents?: string[]; agent_results?: AgentRun[]; reasoning_summary?: string; repo_url?: string; run_id?: string; evidence_hash?: string; autonomy?: Autonomy; policy?: Policy };
 type Scan = { scan_id?: string; repo_full_name: string; umbra_score?: number; source?: string; vuln_count?: number; ran_at?: string; report?: ScanResult };
 type Reference = { file: string; lines?: string; note?: string };
 type AskAnswer = { answer: string; references: Reference[]; blast_radius?: string; source?: string; reasoning?: string };
@@ -171,6 +173,8 @@ const DEMO_RESULT: ScanResult = {
     { agent: "janitor", summary: "Swept 4 dead exports from utils/legacy.ts — cleanup PR drafted.", findings: [], replay: { agent: "janitor", prompt: "", codex_diff: "", tests: "", reasoning: "", timings: {}, providers: { engineering: "codex-cli" } } },
     { agent: "ask", summary: "Answered 3 questions, each grounded to a real reference — router.js:22.", findings: [], replay: { agent: "ask", prompt: "", codex_diff: "", tests: "", reasoning: "", timings: {}, providers: { reasoning: "responses-api-stream" } } },
   ],
+  autonomy: { level: 1, label: "Prepare diff", auto_merge: false, human_review_required: true },
+  policy: { loaded: false, summary: "Default Umbra policy applied: prepare reviewable work, never auto-merge." },
 };
 
 export default function Dashboard() {
@@ -527,6 +531,9 @@ export default function Dashboard() {
               <DependencyRiskMap deps={shiftDeps} />
               <OpenAiStrip />
               <ProviderLedger result={shift} demo={showingDemo} founder={!!me?.is_founder} capturedAt={capturedAt} />
+              <AutonomyCard autonomy={shift.autonomy} />
+              <PolicyCard policy={shift.policy} />
+              <EvidencePackButton result={shift} mode={showingDemo ? "demo" : captured ? "captured" : "live"} />
             </div>
           </div>
           {/* Reasoning replays — keep the honest per-agent replay reachable */}
@@ -1485,6 +1492,186 @@ function ProviderLedger({ result, demo, founder, capturedAt }: { result: ScanRes
           : "Every output is labelled live / cache / founder-gated / unavailable — never fabricated."}
       </p>
     </GlowCard>
+  );
+}
+
+// ── Auditable product layer ─────────────────────────────────────────────────
+// Autonomy ladder, repository policy, and a one-click Evidence Pack export turn
+// the honesty system into a portable artifact a reviewer can audit. All three
+// read fields the scan result already returns; none change any provider label.
+
+const AUTONOMY_LADDER = [
+  { level: 0, label: "Report only", note: "surface findings, no Codex propose" },
+  { level: 1, label: "Prepare diff", note: "Codex proposes a reviewable patch" },
+  { level: 2, label: "Open branch PR", note: "only via your explicit request" },
+  { level: 3, label: "Request review", note: "advisory PR review, comment-only" },
+] as const;
+
+function AutonomyCard({ autonomy }: { autonomy?: Autonomy }) {
+  const level = autonomy?.level ?? 1;
+  return (
+    <GlowCard className="p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-fog">Autonomy level</p>
+        <span className="rounded-full border border-teal/40 bg-teal/10 px-2.5 py-0.5 font-mono text-[10px] text-teal">L{level} · {autonomy?.label ?? AUTONOMY_LADDER[level]?.label ?? "Prepare diff"}</span>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {AUTONOMY_LADDER.map((rung) => {
+          const active = rung.level === level;
+          return (
+            <div key={rung.level} className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 ${active ? "border-teal/45 bg-teal/10" : "border-[color:var(--surface-border)] bg-[color:var(--surface)]"}`}>
+              <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-md border font-mono text-[10px] ${active ? "border-teal/50 text-teal" : "border-[color:var(--surface-border)] text-fog"}`}>{rung.level}</span>
+              <div className="min-w-0">
+                <span className={`font-mono text-[11.5px] ${active ? "text-cloud" : "text-fog"}`}>{rung.label}</span>
+                <span className="ml-1.5 font-mono text-[10px] text-fog/60">· {rung.note}</span>
+              </div>
+              {active && <span className="ml-auto font-mono text-[9px] uppercase tracking-[0.14em] text-teal">current</span>}
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-3 flex items-center gap-2 border-t border-[color:var(--surface-border)] pt-3 font-mono text-[9.5px] leading-relaxed text-fog/70">
+        <span className="rounded-full border border-rose-400/40 bg-rose-400/10 px-2 py-0.5 text-rose-300">never auto-merges</span>
+        Human review is always required — Umbra opens branch-only PRs.
+      </p>
+    </GlowCard>
+  );
+}
+
+function PolicyCard({ policy }: { policy?: Policy }) {
+  const loaded = !!policy?.loaded;
+  return (
+    <GlowCard className="p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-fog">Repository policy</p>
+        <span className={`rounded-full border px-2.5 py-0.5 font-mono text-[10px] ${loaded ? "text-teal border-teal/40 bg-teal/10" : "text-fog border-[color:var(--surface-border)] bg-white/5"}`}>{loaded ? "loaded" : "default"}</span>
+      </div>
+      <p className="font-mono text-[12px] text-cloud">
+        {loaded ? <>Policy loaded: <span className="text-teal">{policy?.path ?? ".umbra/nightshift.md"}</span></> : "Default Umbra safety policy applied"}
+      </p>
+      {policy?.summary && <p className="mt-2 text-[12px] leading-relaxed text-fog">{policy.summary}</p>}
+      <p className="mt-3 border-t border-[color:var(--surface-border)] pt-3 font-mono text-[9.5px] leading-relaxed text-fog/70">
+        {loaded
+          ? "Umbra reads .umbra/nightshift.md for repo-specific guardrails. Never auto-merges."
+          : "Add a .umbra/nightshift.md to set repo-specific guardrails. Never auto-merges."}
+      </p>
+    </GlowCard>
+  );
+}
+
+// Build a local Evidence Pack from the result when the backend is unreachable —
+// so the export always works offline. Sanitizes any stray temp path client-side.
+function localEvidenceMarkdown(result: ScanResult, mode: string): string {
+  const scrub = (t: string) => (t ?? "")
+    .replace(/(?:\/private)?\/(?:var\/folders\/[^\s")']*?|tmp)\/umbra-[A-Za-z0-9_-]+(?:\/repo)?\/?/g, "")
+    .replace(/\/?umbra-(?:repo|reason|codex)-[A-Za-z0-9_-]+(?:\/repo)?\/?/g, "");
+  const repo = result.repo_url ? repoFullName(result.repo_url) : "unknown-repo";
+  const providers = mergeProviders(result);
+  const ledger = Object.entries(providers).sort().map(([k, v]) => `- \`${k}\` → **${v}**`);
+  const inline = [...new Set(Object.values(providers))].sort().join(" · ") || "none recorded";
+  const vulns = result.vulnerabilities ?? [];
+  const files = new Set<string>();
+  const diffLines: string[] = [];
+  for (const run of result.agent_results ?? []) {
+    const diff = run.replay?.codex_diff ?? "";
+    if (!diff.trim()) continue;
+    const runFiles = [...diff.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((m) => scrub(m[1].trim())).filter(Boolean);
+    runFiles.forEach((f) => files.add(f));
+    diffLines.push(`- **${run.agent}** — ${diff.length} chars across ${runFiles.length} file(s): ${runFiles.join(", ") || "n/a"}`);
+  }
+  const a = result.autonomy ?? { level: 1, label: "Prepare diff", auto_merge: false, human_review_required: true };
+  const p = result.policy ?? { loaded: false, summary: "Default Umbra policy applied: prepare reviewable work, never auto-merge." };
+  const md = [
+    "# Umbra Evidence Pack",
+    "",
+    `**Repository:** ${repo}  `,
+    `**Run ID:** \`${result.run_id ?? "n/a"}\`  `,
+    `**Run type:** ${mode}  `,
+    `**Source:** \`${result.source ?? "—"}\`  `,
+    result.evidence_hash ? `**Evidence hash:** \`${result.evidence_hash}\`  ` : "**Evidence hash:** computed server-side  ",
+    "",
+    "## Summary",
+    "",
+    `- **Umbra score:** ${result.umbra_score ?? "—"} / 100`,
+    `- **Findings:** ${vulns.length} OSV ${vulns.length === 1 ? "advisory" : "advisories"}`,
+    `- **Providers that ran:** ${inline}`,
+    "",
+    "## Provider ledger",
+    "",
+    ...(ledger.length ? ledger : ["- (no provider metadata recorded on this run)"]),
+    "",
+    "## Codex diff summary",
+    "",
+    ...(diffLines.length ? diffLines : ["- No Codex-authored diff on this run."]),
+    "",
+    "## Changed files",
+    "",
+    ...(files.size ? [...files].map((f) => `- \`${f}\``) : ["- none"]),
+    "",
+    "## Verification notes",
+    "",
+    scrub(result.reasoning_summary ?? "").trim() || "_No reasoning summary recorded for this run._",
+    "",
+    "## Autonomy",
+    "",
+    `- **Level ${a.level}** — ${a.label}`,
+    `- Auto-merge: **no**`,
+    `- Human review required: **yes**`,
+    "",
+    "## Policy",
+    "",
+    p.loaded ? `- Policy loaded from \`${p.path ?? ".umbra/nightshift.md"}\`` : "- Default Umbra safety policy applied",
+    `- ${scrub(p.summary ?? "")}`,
+    "",
+    "---",
+    "",
+    "**Umbra never auto-merges. Human review required.**",
+    "",
+  ].join("\n");
+  return scrub(md);
+}
+
+function EvidencePackButton({ result, mode }: { result: ScanResult; mode: "live" | "captured" | "demo" }) {
+  const [state, setState] = useState<"idle" | "working" | "copied" | "error">("idle");
+
+  const exportPack = useCallback(async () => {
+    setState("working");
+    let markdown = "";
+    try {
+      const r = await fetch(`${API}/api/evidence-pack`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ result, mode }) });
+      if (r.ok) markdown = (await r.json())?.markdown ?? "";
+    } catch { /* fall through to local */ }
+    if (!markdown) markdown = localEvidenceMarkdown(result, mode); // offline / backend-down fallback
+    try {
+      await navigator.clipboard.writeText(markdown);
+      setState("copied");
+    } catch {
+      setState("error");
+    }
+    setTimeout(() => setState("idle"), 2600);
+  }, [result, mode]);
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={exportPack}
+        disabled={state === "working"}
+        className="inline-flex items-center justify-center gap-2 rounded-xl border border-cyan/40 bg-cyan/10 px-4 py-2.5 font-mono text-[11.5px] text-cyan transition-colors hover:bg-cyan/20 disabled:opacity-60"
+      >
+        {state === "working" ? "Building…" : state === "copied" ? "✓ Evidence pack copied." : state === "error" ? "Copy failed — try again" : "⬇ Export Evidence Pack"}
+      </button>
+      <p className="font-mono text-[9.5px] leading-snug text-fog/60">A hashable Markdown record — providers, Codex diff, autonomy, policy. Copied to your clipboard.</p>
+      {/* Run receipt — the hard proof lives on the dashboard: a stable run id and a
+          reproducible sha256 over the canonical result (computed on export when not
+          yet present, e.g. the captured shift). */}
+      {(result.run_id || result.evidence_hash) && (
+        <div className="mt-1 flex flex-col gap-0.5 border-t border-[color:var(--surface-border)] pt-2 font-mono text-[9px] leading-snug text-fog/55">
+          {result.run_id && <span className="break-all"><span className="text-fog/70">run</span> · {result.run_id}</span>}
+          <span className="break-all"><span className="text-fog/70">sha</span> · {result.evidence_hash ?? "computed on export"}</span>
+        </div>
+      )}
+    </div>
   );
 }
 

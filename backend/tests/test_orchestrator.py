@@ -11,6 +11,24 @@ def test_demo_scan_works_without_network():
     assert result["vulnerabilities"]
 
 
+def test_scan_result_carries_auditable_metadata():
+    result = asyncio.run(Orchestrator().scan("https://github.com/acme/demo"))
+    # Autonomy defaults to level 1 (prepare diff) and never auto-merges.
+    assert result["autonomy"] == {"level": 1, "label": "Prepare diff", "auto_merge": False, "human_review_required": True}
+    # No checkout in demo mode → default safety policy.
+    assert result["policy"]["loaded"] is False
+    # run_id + reproducible evidence hash.
+    assert result["run_id"].startswith("umbra_")
+    assert result["evidence_hash"].startswith("sha256:")
+
+
+def test_scan_autonomy_level_zero_reports_only():
+    result = asyncio.run(Orchestrator().scan("https://github.com/acme/demo", autonomy_level=0))
+    assert result["autonomy"]["level"] == 0
+    assert result["autonomy"]["label"] == "Report only"
+    assert result["autonomy"]["auto_merge"] is False
+
+
 def test_event_bus_replays_and_streams():
     async def scenario():
         bus = EventBus()

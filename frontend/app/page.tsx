@@ -187,6 +187,41 @@ export default function Landing() {
         </motion.div>
       </section>
 
+      {/* The Evidence Locker — proof as a product feature, not a receipts dump.
+          One captured shift, opened instantly; the heavy detail (revision, commit,
+          hash, export) lives in the dashboard, so the landing stays atmospheric. */}
+      <section id="evidence-locker" className="relative py-24">
+        <Reveal>
+          <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
+            <span className="h-1.5 w-1.5 rounded-full bg-teal shadow-[0_0_8px_#5eead4]" /> The Evidence Locker
+          </p>
+          <h2 className="mt-3 max-w-[22ch] font-serif text-[clamp(30px,4.4vw,54px)] leading-[1.02] tracking-[-0.03em]">One night. One repo. Every receipt.</h2>
+          <p className="mt-4 max-w-[62ch] text-[15px] leading-relaxed text-fog">
+            Open a captured Umbra shift from a real Codex-enabled run. Inspect the OSV advisories, Codex diff, provider ledger, autonomy level, and exportable Evidence Pack — instantly.
+          </p>
+        </Reveal>
+        <Reveal className="mt-9">
+          <GlowCard glow="rgba(94,234,212,0.14)" className="p-7 sm:p-9">
+            <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5 font-mono text-[12.5px]">
+              <span className="flex items-center gap-2 text-cloud"><span className="h-1.5 w-1.5 rounded-full bg-rose-400" /> 26 advisories found</span>
+              <span className="text-fog/25">·</span>
+              <span className="text-cloud">next 14.2.5 <span className="text-teal">→</span> 14.2.33</span>
+              <span className="text-fog/25">·</span>
+              <span className="text-cyan">osv.dev · repo-clone · codex-cli</span>
+              <span className="text-fog/25">·</span>
+              <span className="text-fog">human review required</span>
+            </div>
+            <div className="mt-7 border-t border-[color:var(--surface-border)] pt-6">
+              <Magnetic>
+                <HoverBorderGradient href="/dashboard?proof=calhacks" className="px-6 py-3.5 text-sm font-semibold">
+                  Open captured shift <span className="text-teal">→</span>
+                </HoverBorderGradient>
+              </Magnetic>
+            </div>
+          </GlowCard>
+        </Reveal>
+      </section>
+
       {/* Evidence — "does it actually work?" answered first, with a real artifact. */}
       <section id="evidence" className="relative py-24">
         <Reveal>

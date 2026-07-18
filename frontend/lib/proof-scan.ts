@@ -12,6 +12,13 @@ export const PROOF_SCAN = {
   "umbra_score": 0,
   "source": "live",
   "repo_url": "https://github.com/Pranav-Karra-3301/calhacks-12",
+  // Auditable-layer metadata (compatible with a live scan result). The backend
+  // computes evidence_hash from the canonical result on export, so it is omitted
+  // here; run_id/autonomy/policy render the Autonomy + Policy cards for the proof.
+  "run_id": "umbra_20260717_pranav-karra-3301-calhacks-12_captured",
+  "captured_at": PROOF_CAPTURED_AT,
+  "autonomy": { "level": 1, "label": "Prepare diff", "auto_merge": false, "human_review_required": true },
+  "policy": { "loaded": false, "summary": "Default Umbra policy applied: prepare reviewable work, never auto-merge." },
   "reasoning_summary": "Live Watchman checked 11 manifest dependencies and found 26 OSV advisories. Updated `next` from `^14.2.5` to patched `^14.2.33` in:\n\n- [package.json](package.json)\n- [package-lock.json](package-lock.json)\n\nVerification:\n\n- `npm audit --offline --json` — 0 vulnerabilities\n- `git diff --check` — passed\n- `npm run typecheck` — blocked; offline install could not fetch uncached `ws@8.18.3` package.",
   "vulnerabilities": [
     {

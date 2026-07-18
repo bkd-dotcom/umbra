@@ -43,15 +43,22 @@ class Orchestrator:
         for event in load_demo_cache()["events"]:
             await self.bus.emit(event)
 
-    async def scan(self, repo_url: str, agents: list[str] | None = None, pr_number: int | None = None, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None, model: str | None = None, reasoning_effort: str | None = None) -> dict[str, Any]:
+    async def scan(self, repo_url: str, agents: list[str] | None = None, pr_number: int | None = None, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None, model: str | None = None, reasoning_effort: str | None = None, autonomy_level: int = 1) -> dict[str, Any]:
         # Cache is intentionally the availability boundary: a demo never depends on third parties.
         from backend.agents import Janitor, Reviewer, Watchman
         from backend.codex_client import CodexClient
+        from backend.evidence import autonomy_metadata, canonical_hash, make_run_id, read_policy
         from backend.integrations.repository import checkout_public_repo, live_repositories_enabled, reset_checkout
 
         payload = load_demo_cache()
         payload["repo_url"] = repo_url
         requested = set(agents or ["watchman", "reviewer", "janitor"])
+        # Autonomy level 0 = report only: never spend Codex on a propose, even for
+        # a founder. Levels 1-3 keep the caller's resolved Codex permission; the
+        # higher levels only change the metadata (Umbra never auto-merges at any
+        # level — the actual PR/review still runs through an explicit endpoint).
+        if autonomy_level == 0:
+            allow_codex = False
         # One Codex client for the whole scan carries the caller's speed choice
         # (lighter model / lower reasoning effort) to every agent it runs.
         codex = CodexClient(model=model, reasoning_effort=reasoning_effort)
@@ -70,6 +77,10 @@ class Orchestrator:
                 repo_path = await asyncio.to_thread(shared_cm.__enter__)
             except Exception:  # noqa: BLE001 - no shared checkout → agents fall back exactly as before
                 shared_cm = repo_path = None
+
+        # Repository policy metadata, read while the checkout still exists (the
+        # tree is deleted on __exit__). Default policy when there is no clone.
+        policy_meta = read_policy(repo_path)
 
         agent_runs = []
         try:
@@ -131,6 +142,14 @@ class Orchestrator:
         finding_count = len(response["vulnerabilities"]) + len(response.get("dead_code", [])) if live_watchman else len(payload["vulnerabilities"]) + len(payload["dead_code"])
         response["roi"] = roi_estimate(finding_count)
         response["benchmark"] = {"mode": "precomputed", "baseline_minutes": 96, "umbra_minutes": 18, "coverage": "seeded express-style repository"}
+        # --- Auditable product layer: autonomy + policy + run_id + evidence_hash.
+        # run_id/evidence_hash are added LAST so the hash covers every field above
+        # (autonomy + policy included). evidence_hash is computed over the canonical
+        # result minus the evidence_hash key itself, so a re-hash reproduces it.
+        response["autonomy"] = autonomy_metadata(autonomy_level)
+        response["policy"] = policy_meta
+        response["run_id"] = make_run_id(repo_url, str(response.get("source", "")))
+        response["evidence_hash"] = canonical_hash(response)
         return response
 
     async def investigate(self, repo_url: str, error_log: str, github_token: str | None = None, openai_key: str | None = None, allow_codex: bool | None = None) -> dict[str, Any]:

@@ -71,7 +71,12 @@ async def login(provider: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Sign-in with '{provider}' is not configured.")
     request.session["oauth_mode"] = "login"
     redirect_uri = f"{oauth_redirect_base()}/auth/callback/{provider}"
-    return await client.authorize_redirect(request, redirect_uri)
+    # Force the provider's account picker every sign-in. Without this, after a
+    # user signs out of Umbra the provider still holds its own session + a prior
+    # authorization grant, so clicking "Sign in" silently bounces straight back
+    # and drops the user into the dashboard — which reads as "I was never signed
+    # out." `select_account` is honored by both GitHub and Google.
+    return await client.authorize_redirect(request, redirect_uri, prompt="select_account")
 
 
 @router.get("/auth/connect/github")
@@ -86,7 +91,9 @@ async def connect_github(request: Request):
         raise HTTPException(status_code=404, detail="GitHub sign-in is not configured.")
     request.session["oauth_mode"] = "connect"
     redirect_uri = f"{oauth_redirect_base()}/auth/callback/github"
-    return await client.authorize_redirect(request, redirect_uri)
+    # Show the account picker so the user can link the GitHub account they mean
+    # (not whichever one github.com happens to have signed in).
+    return await client.authorize_redirect(request, redirect_uri, prompt="select_account")
 
 
 def _fallback_dest(request: Request, mode: str) -> str:

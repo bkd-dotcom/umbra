@@ -49,7 +49,10 @@ def test_login_github_redirects_to_github(monkeypatch):
     auth._registered.discard("github")  # force re-registration with test creds
     response = client.get("/auth/login/github", follow_redirects=False)
     assert response.status_code in (302, 307)
-    assert "github.com/login/oauth/authorize" in response.headers["location"]
+    location = response.headers["location"]
+    assert "github.com/login/oauth/authorize" in location
+    # Force the account picker so a signed-out user isn't silently bounced back in.
+    assert "prompt=select_account" in location
 
 
 def test_denied_consent_falls_back_to_landing(monkeypatch):

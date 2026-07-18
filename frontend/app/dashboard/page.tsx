@@ -309,12 +309,15 @@ export default function Dashboard() {
   // immediately (falls back to the labelled demo if the scan can't run).
   const booted = useRef(false);
   useEffect(() => {
-    if (booted.current) return;
+    // Wait for auth to resolve so the ?proof gate below can trust the guest check.
+    if (user === "loading" || booted.current) return;
     const params = new URLSearchParams(window.location.search);
     // `/dashboard?proof=...` opens the captured proof scan instantly (landing CTA).
+    // It's a judge-facing artifact, so only for guests — a logged-in user working
+    // the platform keeps their own session even if they follow that landing link.
     if (params.get("proof")) {
       booted.current = true;
-      openCaptured();
+      if (user === null) openCaptured();
       return;
     }
     const raw = params.get("repo");
@@ -325,7 +328,7 @@ export default function Dashboard() {
     setRepoUrl(url);
     launchScan(url);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [user]);
 
   // Logged-out preview: default the public input to the sample repo (matching the
   // sample header/state) when there's no ?repo handoff and nothing typed yet.
@@ -440,7 +443,7 @@ export default function Dashboard() {
       <section className="relative pt-6">
         <ZoneLabel n="01" title="Current shift" hint={guest ? "public preview" : undefined} />
 
-        <JudgePath onOpenCaptured={openCaptured} />
+        {guest && <JudgePath onOpenCaptured={openCaptured} />}
 
         {/* Command bar — issue the scan */}
         {me ? (
@@ -970,7 +973,9 @@ function ApiStatus({ up }: { up: boolean | null }) {
 }
 
 // A short, guided path for a judge landing cold on the dashboard — orients them
-// on where the live proof is before they start clicking. Shown to everyone.
+// on where the live proof is before they start clicking. Guests only (judges
+// arriving from the landing page); a logged-in user working the platform never
+// sees the "For judges" onboarding card or its captured-scan shortcut.
 function JudgePath({ onOpenCaptured }: { onOpenCaptured: () => void }) {
   const steps = [
     ["01", "Run a public repo scan", "Live, OSV-grounded findings from any open-source repo — or open a captured scan below for instant proof."],

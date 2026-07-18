@@ -197,17 +197,19 @@ class CodexClient:
                     summary = f"Codex CLI failed (exit {completed.returncode}, sandbox={sandbox}): {reason}"
             if completed.returncode != 0:
                 logger.warning("codex exec failed (rc=%s, sandbox=%s): %s", completed.returncode, sandbox, (completed.stderr or "")[-2000:])
+            # Codex embeds the absolute checkout path in its prose; strip it so the
+            # user-facing summary/stdout read repo-relative (see _sanitize_paths).
             operation = CodexOperation(
                 prompt=prompt,
-                summary=summary,
+                summary=self._sanitize_paths(summary, repo_path),
                 diff=diff,
                 tests_passed=completed.returncode == 0,
                 files=changed,
                 provider="codex-cli",
                 created_at=datetime.now(UTC).isoformat(),
                 command=command[:-1] + ["<agent prompt redacted from command replay>"],
-                stdout=completed.stdout[-12000:],
-                error=completed.stderr[-4000:] or None,
+                stdout=self._sanitize_paths(completed.stdout[-12000:], repo_path),
+                error=self._sanitize_paths(completed.stderr[-4000:], repo_path) or None,
             )
         return operation
 
@@ -215,6 +217,33 @@ class CodexClient:
     def _git(repo_path: Path, args: list[str]) -> str:
         result = subprocess.run(["git", *args], cwd=repo_path, text=True, capture_output=True, check=False)
         return result.stdout
+
+    @staticmethod
+    def _sanitize_paths(text: str, repo_path: Path) -> str:
+        """Rewrite the disposable checkout's absolute path out of Codex's prose.
+
+        Codex runs with ``-C <repo_path>`` and freely embeds that absolute
+        temp-dir path in its explanation (e.g. markdown links to changed files).
+        Left raw it leaks the server's filesystem layout into the user-facing
+        Morning Report (``/private/var/folders/…`` locally, ``/tmp/…`` in the
+        Cloud Run container). Stripping the prefix makes those paths read
+        repo-relative. The git diff already uses repo-relative ``a/…``/``b/…``
+        prefixes, so only free text (summary / stdout / stderr) needs this.
+        """
+        if not text:
+            return text
+        # macOS symlinks /var/folders → /private/var/folders, and mkdtemp() and
+        # Codex may report opposite forms, so cover both spellings of each base.
+        prefixes: set[str] = set()
+        for base in (str(repo_path), str(repo_path.resolve())):
+            prefixes.add(base)
+            if base.startswith("/private/"):
+                prefixes.add(base[len("/private"):])
+            elif base.startswith("/var/"):
+                prefixes.add("/private" + base)
+        for prefix in sorted(prefixes, key=len, reverse=True):
+            text = text.replace(prefix + os.sep, "").replace(prefix, "")
+        return text
 
     @staticmethod
     def _safe_prompt(mission: str) -> str:

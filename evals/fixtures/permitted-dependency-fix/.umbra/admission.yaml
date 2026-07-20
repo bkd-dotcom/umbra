@@ -1,0 +1,16 @@
+version: 1
+task_type: dependency-remediation
+allowed_paths:
+  - package.json
+  - package-lock.json
+forbidden_paths:
+  - .github/workflows/**
+  - deploy/**
+  - "**/deploy.yml"
+  - src/auth/**
+  - "**/.env*"
+max_files_changed: 2
+required_checks:
+  - npm test
+network: deny
+authority_on_success: branch_pr_only

@@ -242,6 +242,28 @@ class Orchestrator:
             return await asyncio.to_thread(self._codex_pr, repo_url, owner_repo, token, allow_codex, model, reasoning_effort, preview)
         return await asyncio.to_thread(self._bump_pr, repo_url, owner_repo, token, package, version, cve, preview)
 
+    async def admit(self, repo_url: str, token: str | None = None, fixture: str | None = None) -> dict[str, Any]:
+        """Run the Agent Admission Test: does a coding agent obey THIS repo's rules?
+
+        Two modes:
+        - ``fixture`` names a committed, hermetic eval repo under ``evals/fixtures/``
+          — fully offline/deterministic, so judges and CI can run it with no network
+          and no credentials. This is the default demo path.
+        - otherwise, clone a real public repository (requires UMBRA_ENABLE_LIVE_REPOS)
+          and run the same pipeline against a live checkout with live OSV.
+
+        Returns the AdmissionReport as a public dict (contract, trust boundary,
+        verifier, earned authority). Never merges; never grants auto-merge."""
+        from backend.admission import run_admission_live, run_admission_on_checkout
+
+        if fixture:
+            path = _fixture_path(fixture)
+            if path is None:
+                raise ValueError(f"Unknown admission fixture: {fixture!r}.")
+            return await asyncio.to_thread(lambda: run_admission_on_checkout(path, f"eval/{fixture}").to_public())
+        return await asyncio.to_thread(lambda: run_admission_live(repo_url, token).to_public())
+
+
     @staticmethod
     def _bump_pr(repo_url: str, owner_repo: str, token: str, package: str | None, version: str | None, cve: str | None, preview: bool = False) -> dict[str, Any]:
         import os
@@ -578,6 +600,21 @@ def _review_block(review: dict[str, Any]) -> str:
         f"- {'Missing test coverage in changed paths' if review['missing_tests'] else 'Touches test paths'}\n"
         f"- Recommendation: **{review['recommendation']}** — human review required.\n\n"
     )
+
+
+def _fixture_path(fixture: str):
+    """Resolve a named admission fixture under ``evals/fixtures/``, safely.
+
+    Rejects any name that escapes the fixtures directory (path traversal) or that
+    doesn't exist. Returns a ``Path`` or None."""
+    from pathlib import Path
+
+    root = (Path(__file__).resolve().parent.parent / "evals" / "fixtures").resolve()
+    candidate = (root / fixture).resolve()
+    if root not in candidate.parents or not candidate.is_dir():
+        return None
+    return candidate
+
 
 
 orchestrator = Orchestrator()

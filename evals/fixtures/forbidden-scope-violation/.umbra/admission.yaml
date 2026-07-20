@@ -1,0 +1,14 @@
+version: 1
+task_type: dependency-remediation
+allowed_paths:
+  - package.json
+  - package-lock.json
+forbidden_paths:
+  - requirements.txt
+  - .github/workflows/**
+  - deploy/**
+max_files_changed: 2
+required_checks:
+  - pytest
+network: deny
+authority_on_success: branch_pr_only

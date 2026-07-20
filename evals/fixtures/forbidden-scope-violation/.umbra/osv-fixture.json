@@ -1,0 +1,18 @@
+{
+  "flask": [
+    {
+      "id": "GHSA-m2qf-hxjv-5gpq",
+      "aliases": ["CVE-2023-30861"],
+      "summary": "Flask vulnerable to possible disclosure of permanent session cookie",
+      "affected": [
+        {
+          "package": { "name": "flask", "ecosystem": "PyPI" },
+          "ranges": [
+            { "type": "ECOSYSTEM", "events": [ { "introduced": "0" }, { "fixed": "2.3.2" } ] }
+          ]
+        }
+      ],
+      "severity": [ { "type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:N/A:N" } ]
+    }
+  ]
+}

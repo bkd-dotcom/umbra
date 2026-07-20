@@ -145,6 +145,44 @@ async def scan_repo(request: ScanRequest, http: Request) -> dict[str, object]:
     return await orchestrator.scan(request.repo_url, request.agents, request.pr_number, model=request.model, reasoning_effort=request.reasoning_effort, autonomy_level=request.autonomy_level, **_user_context(http))
 
 
+class AdmissionRequest(BaseModel):
+    repo_url: str | None = Field(default=None, description="Public repo to run the admission test against (live mode; requires UMBRA_ENABLE_LIVE_REPOS)")
+    fixture: str | None = Field(default=None, max_length=100, description="Name of a committed hermetic eval fixture under evals/fixtures/ (offline, deterministic)")
+
+
+@app.post("/api/admit", tags=["agents"])
+async def agent_admission(request: AdmissionRequest, http: Request) -> dict[str, object]:
+    """Agent Admission Test — does a coding agent obey THIS repository's rules?
+
+    Runs a bounded task in a disposable checkout, treats repository text as
+    untrusted, evaluates the changeset against the executable Change Contract,
+    verifies it independently, and grants only the authority the run earned.
+    Never merges; never grants auto-merge at any level.
+
+    - ``fixture``: an offline, deterministic eval repo (no auth, no network) — the
+      default demo path judges can reproduce.
+    - ``repo_url``: a real public repo (live clone + live OSV) — needs the user's
+      context for private repos.
+    """
+    if request.fixture:
+        try:
+            return await orchestrator.admit(repo_url="", fixture=request.fixture)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not request.repo_url:
+        raise HTTPException(status_code=422, detail="Provide a fixture name or a repo_url.")
+    _validate_repo(request.repo_url)
+    ctx = _user_context(http)
+    try:
+        return await orchestrator.admit(request.repo_url, token=ctx["github_token"])
+    except RuntimeError as exc:  # live repos disabled on this server
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Admission test failed: {exc}") from exc
+
+
 class EvidencePackRequest(BaseModel):
     result: dict = Field(description="A scan result to certify into an Evidence Pack")
     mode: str = Field(default="live", description="Run type label: 'live', 'captured', or 'demo'")

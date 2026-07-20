@@ -14,9 +14,10 @@ RUN npm run build   # `output: export` writes the static site to /fe/out
 FROM python:3.11-slim
 WORKDIR /app
 # git: disposable public/private repo clones (cloud-scan mode).
+# make: runs the admission eval fixtures' required checks (e.g. `make test`).
 # Node 20 + @openai/codex: live Codex CLI for the founder account only (gated by
 # UMBRA_FOUNDER_IDS at request time; never invoked for other users).
-RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends git make curl ca-certificates \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && npm install -g @openai/codex \

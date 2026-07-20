@@ -14,7 +14,7 @@ const serif = Instrument_Serif({ subsets: ["latin"], weight: "400", style: ["nor
 const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--ff-mono", display: "swap" });
 
 const DESCRIPTION =
-  "Umbra is an autonomous AI engineering crew for your GitHub repo, built for OpenAI Build Week. Codex CLI proposes fix diffs inside a disposable clone (never auto-merged), GPT‑5.6 reasons over real repo evidence, and a provider ledger labels every output live / cache / unavailable — so the night crew hunts CVEs, traces incidents, and answers your codebase while you sleep.";
+  "Umbra is a change-control plane for coding agents, built for OpenAI Build Week. Before an agent is trusted with your repo, Umbra tests whether it obeys your rules: an executable contract bounds the change, untrusted repository text is quarantined, an independent verifier checks it, and only the earned authority is granted — proven by a signed, independently verifiable receipt. Codex proposes patches in a disposable clone; Umbra never merges.";
 
 // If an OG share image is added later, drop it at /public/og.png (1200×630) and
 // set `images: ["/og.png"]` on both openGraph and twitter below.

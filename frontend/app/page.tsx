@@ -137,7 +137,7 @@ export default function Landing() {
             transition={{ delay: 0.12 }}
             className="mt-6 max-w-[42ch] text-[clamp(17px,2.1vw,22px)] leading-snug text-cloud/75"
           >
-            An autonomous engineering crew that works while you sleep.
+            An autonomous engineer you can actually trust — because every change is governed.
           </motion.p>
 
           {/* Stable capability line — no mid-word typewriter jitter in a judge's
@@ -149,7 +149,7 @@ export default function Landing() {
             transition={{ delay: 0.15 }}
             className="mt-4 max-w-[68ch] font-mono text-[clamp(13px,1.55vw,15px)] leading-relaxed text-fog"
           >
-            While you sleep, Umbra <span className="text-cyan">hunts CVEs</span>, <span className="text-amber">traces incidents</span>, <span className="text-teal">prepares reviewable diffs</span>, and <span className="text-pink">answers with file references</span>.
+            Coding agents can change your repo. Umbra makes those changes <span className="text-teal">governable</span>: it tests whether an agent obeys <span className="text-cyan">your repository&apos;s rules</span>, then grants only the authority it <span className="text-amber">earns</span> — and proves it with a <span className="text-pink">signed receipt</span>.
           </motion.p>
 
           {/* Concrete Build Week / OpenAI line — honest about what runs when. */}
@@ -160,7 +160,7 @@ export default function Landing() {
             transition={{ delay: 0.18 }}
             className="mt-4 max-w-[64ch] text-[14px] leading-relaxed text-fog"
           >
-            Built for <span className="text-cloud">OpenAI Build Week</span> — Codex proposes patches in a disposable clone and GPT‑5.6 reasons over your repo&apos;s evidence when enabled. Every output is labelled with what produced it.
+            Built for <span className="text-cloud">OpenAI Build Week</span> — Codex proposes patches in a disposable clone; an executable contract, an independent verifier, and a human gate decide what ships. It <span className="text-cloud">never merges</span>.
           </motion.p>
 
           {/* Judge proof strip — what's real, at a glance. */}
@@ -172,10 +172,10 @@ export default function Landing() {
             className="mt-6 flex flex-wrap gap-2"
           >
             {([
-              ["Live repo scan", "#22d3ee"],
-              ["OSV-grounded findings", "#5eead4"],
-              ["Codex patch proposals", "#a78bfa"],
-              ["GPT reasoning replay", "#fbbf24"],
+              ["Executable change contract", "#22d3ee"],
+              ["Untrusted-content quarantine", "#5eead4"],
+              ["Independent verifier", "#a78bfa"],
+              ["Signed remediation receipt", "#fbbf24"],
               ["Never auto-merges", "#8b90a6"],
             ] as const).map(([label, color]) => (
               <span key={label} className="flex items-center gap-1.5 rounded-full border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-2.5 py-1 font-mono text-[10.5px] tracking-[0.03em] text-fog">
@@ -299,7 +299,7 @@ export default function Landing() {
       <section className="relative -mx-6 overflow-hidden rounded-[2rem] border border-violet/10 bg-[radial-gradient(70%_80%_at_15%_0%,rgba(167,139,250,0.10),transparent_58%),linear-gradient(180deg,rgba(255,255,255,0.035),transparent)] px-6 py-20 md:-mx-10 md:px-10">
         <div className="pointer-events-none absolute right-6 top-6 hidden font-mono text-[10px] uppercase tracking-[0.28em] text-violet/40 md:block">unit manifest</div>
         <HeroParallax
-          heading={<h2 className="font-serif text-[clamp(28px,4vw,46px)] leading-[1.05] tracking-[-0.02em] text-cloud">Five specialists, one shift.</h2>}
+          heading={<h2 className="font-serif text-[clamp(28px,4vw,46px)] leading-[1.05] tracking-[-0.02em] text-cloud">Bounded specialists, one shift.</h2>}
           sub="Each works a disposable clone and files a grounded artifact — no fabrication, no auto-merge."
           items={[
             { title: "Watchman", sub: "Hunts CVEs across resolved dependencies, live against OSV.dev.", accent: "#22d3ee" },
@@ -412,8 +412,8 @@ export default function Landing() {
           <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
             <span className="h-1.5 w-1.5 rounded-full bg-cyan shadow-[0_0_8px_#22d3ee]" /> The night crew
           </p>
-          <h2 className="mt-3 max-w-[18ch] font-serif text-[clamp(30px,4.2vw,52px)] leading-[1.02] tracking-[-0.03em]">Five specialists. One quiet shift.</h2>
-          <p className="mt-4 max-w-[56ch] text-[15px] leading-relaxed text-fog">Open the file on each. One is always on station — the rest hold the line in the dark.</p>
+          <h2 className="mt-3 max-w-[18ch] font-serif text-[clamp(30px,4.2vw,52px)] leading-[1.02] tracking-[-0.03em]">Specialists on station. Every change still governed.</h2>
+          <p className="mt-4 max-w-[56ch] text-[15px] leading-relaxed text-fog">Open the file on each. They investigate and prepare work — but nothing reaches your repo without passing the contract, the verifier, and you.</p>
         </Reveal>
         <Reveal className="mt-10">
           <CrewDossier />

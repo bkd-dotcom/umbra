@@ -42,3 +42,66 @@ def test_authority_never_stores_auto_merge_true():
 
 def test_my_authority_requires_auth():
     assert client.get("/api/my/authority").status_code == 401
+
+
+def test_revoke_authority_persists_level_0_and_flag():
+    store = _MemoryStore()
+    store.save_authority("github:1", "owner/repo", {"authority_level": 2, "authority": "branch_pr"})
+    rec = store.revoke_authority("github:1", "owner/repo", reason="looked wrong at 2am")
+    assert rec["authority_level"] == 0 and rec["revoked"] is True
+    assert rec["revoked_reason"] == "looked wrong at 2am" and rec["auto_merge"] is False
+    # Durable: a fresh read still sees the revocation.
+    got = store.get_authority("github:1", "owner/repo")
+    assert got["revoked"] is True and got["authority_level"] == 0
+
+
+def test_revoke_authority_on_unknown_repo_creates_revoked_record():
+    store = _MemoryStore()
+    rec = store.revoke_authority("github:1", "never/admitted")
+    assert rec["revoked"] is True and rec["authority_level"] == 0
+
+
+def test_revoke_endpoint_requires_auth():
+    assert client.post("/api/my/authority/revoke", json={"repo": "o/r"}).status_code == 401
+
+
+def test_pr_authority_gate_blocks_revoked_or_low_authority():
+    """The PR-open gate (_enforce_pr_authority) is the real server-side enforcement:
+    a revoked or below-L2 passport blocks a PR; no passport leaves crew flows alone."""
+    import fastapi
+
+    from backend import main
+    from backend.store import _MemoryStore, set_store
+
+    store = _MemoryStore()
+    set_store(store)
+    try:
+        user = {"provider": "github", "sub": "1"}
+        url = "https://github.com/owner/repo"
+
+        # No passport → gate does not apply (no exception).
+        main._enforce_pr_authority(user, url)
+
+        # Earned L2 → allowed.
+        store.save_authority("github:1", "owner/repo", {"authority_level": 2, "authority": "branch_pr"})
+        main._enforce_pr_authority(user, url)
+
+        # Revoked (Emergency Brake) → blocked with 403.
+        store.revoke_authority("github:1", "owner/repo", reason="brake")
+        try:
+            main._enforce_pr_authority(user, url)
+            assert False, "expected revoked authority to block the PR"
+        except fastapi.HTTPException as exc:
+            assert exc.status_code == 403 and "revoked" in exc.detail.lower()
+
+        # Re-admitted below L2 → still blocked.
+        store.save_authority("github:1", "owner/repo", {"authority_level": 1, "authority": "analyze"})
+        try:
+            main._enforce_pr_authority(user, url)
+            assert False, "expected sub-L2 authority to block the PR"
+        except fastapi.HTTPException as exc:
+            assert exc.status_code == 403
+    finally:
+        set_store(_MemoryStore())
+
+

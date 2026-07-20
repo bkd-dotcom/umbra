@@ -49,6 +49,36 @@ def test_receipt_rejects_foreign_signature():
     assert result["verified"] is False and result["signature_valid"] is False
 
 
+def test_verify_is_key_pinned_not_self_referential():
+    """A self-consistent envelope signed by a FOREIGN key must NOT verify — the
+    check pins Umbra's key, so 'some key signed this' is not enough."""
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from backend.receipt import _canonical, _sha256
+
+    env = _envelope()
+    # Re-sign the SAME receipt payload with an attacker keypair and swap in that
+    # public key + canonical hash so the envelope is internally consistent.
+    attacker = Ed25519PrivateKey.generate()
+    canonical = _canonical(env["receipt"])
+    env["signature"] = base64.b64encode(attacker.sign(canonical.encode())).decode()
+    env["canonical_hash"] = _sha256(canonical)
+    env["public_key"] = base64.b64encode(
+        attacker.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    ).decode()
+
+    result = verify_receipt(env)
+    # Internally consistent, but NOT issued by Umbra → rejected.
+    assert result["verified"] is False
+    assert result["issued_by_umbra"] is False
+    assert result["hash_matches"] is True          # the envelope is self-consistent…
+    assert result["key_matches_server"] is False   # …but the key isn't Umbra's.
+
+
+
 def test_receipt_embeds_invariants_and_hashes():
     env = _envelope()
     r = env["receipt"]

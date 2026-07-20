@@ -117,6 +117,26 @@ def scan_text(text: str, source: str) -> list[QuarantineFinding]:
     return findings
 
 
+_REDACTION = "[Umbra: line quarantined as untrusted repository content — excluded from the agent's task context]"
+
+
+def sanitize_text(text: str, source: str) -> tuple[str, int]:
+    """Return ``text`` with every flagged line replaced by a redaction marker, plus
+    the count redacted. This is the concrete quarantine: the sanitized text is what
+    Umbra hands to the coding agent as context, so agent-directed manipulation in
+    the original never reaches the agent's writable-task context."""
+    if not text:
+        return text, 0
+    flagged_lines = {f.line for f in scan_text(text, source)}
+    if not flagged_lines:
+        return text, 0
+    out: list[str] = []
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        out.append(_REDACTION if line_no in flagged_lines else line)
+    return "\n".join(out), len(flagged_lines)
+
+
+
 def scan_repository_text(repo_path, sources: tuple[str, ...] = UNTRUSTED_SOURCES) -> TrustBoundaryResult:
     """Scan the well-known untrusted-text files in a checkout for manipulation
     patterns. Never raises — an unreadable file is simply skipped."""

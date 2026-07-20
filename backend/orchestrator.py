@@ -254,13 +254,13 @@ class Orchestrator:
 
         Returns the AdmissionReport as a public dict (contract, trust boundary,
         verifier, earned authority). Never merges; never grants auto-merge."""
-        from backend.admission import run_admission_live, run_admission_on_checkout
+        from backend.admission import run_admission_live, run_admission_on_fixture
 
         if fixture:
             path = _fixture_path(fixture)
             if path is None:
                 raise ValueError(f"Unknown admission fixture: {fixture!r}.")
-            report = await asyncio.to_thread(lambda: run_admission_on_checkout(path, f"eval/{fixture}").to_public())
+            report = await asyncio.to_thread(lambda: run_admission_on_fixture(path, f"eval/{fixture}").to_public())
         else:
             report = await asyncio.to_thread(lambda: run_admission_live(repo_url, token).to_public())
         report["receipt"] = _sign_admission_receipt(report)
@@ -635,6 +635,11 @@ def _sign_admission_receipt(report: dict[str, Any]) -> dict[str, Any]:
         providers=report.get("providers"),
         authority_level=int(report.get("authority_level", 0)),
         authority=str(report.get("authority", "observe")),
+        diff_hash=report.get("diff_hash"),
+        advisory_hash=report.get("advisory_hash"),
+        checks=report.get("checks"),
+        codex_config=report.get("codex_config"),
+        executor=report.get("executor"),
         outcome=report.get("outcome"),
     )
 

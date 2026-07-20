@@ -211,6 +211,21 @@ class _MemoryStore:
                 key=lambda r: r.get("updated_at", ""), reverse=True,
             )
 
+    def revoke_authority(self, user_key: str, repo: str, reason: str | None = None) -> dict[str, Any]:
+        """Emergency brake: force this repo's passport to Level 0 (observe), durably.
+        A subsequent admission-gated action must fail until admission is re-run."""
+        with self._lock:
+            key = f"{user_key}|{repo}"
+            rec = dict(self._authority.get(key) or {"user_key": user_key, "repo": repo})
+            rec.update({
+                "authority_level": 0, "authority": "observe",
+                "authority_label": "Observe only — authority revoked",
+                "revoked": True, "revoked_reason": reason, "revoked_at": _now(),
+                "updated_at": _now(), "auto_merge": False,
+            })
+            self._authority[key] = rec
+            return dict(rec)
+
     # --- Remediation-queue dismissals ---
     # A per-user set of dismissed advisory keys (repo:package@version:cve). The
     # queue itself is derived client-side from saved scans; this lets a user hide
@@ -457,6 +472,18 @@ class _FirestoreStore:
     def list_authority(self, user_key: str) -> list[dict[str, Any]]:
         query = self._authority_col().where("user_key", "==", user_key)
         return sorted(({**(doc.to_dict() or {}), "id": doc.id} for doc in query.stream()), key=lambda r: r.get("updated_at", ""), reverse=True)
+
+    def revoke_authority(self, user_key: str, repo: str, reason: str | None = None) -> dict[str, Any]:
+        doc_id = hashlib.sha256(f"{user_key}::{repo}".encode()).hexdigest()
+        rec = {
+            "user_key": user_key, "repo": repo,
+            "authority_level": 0, "authority": "observe",
+            "authority_label": "Observe only — authority revoked",
+            "revoked": True, "revoked_reason": reason, "revoked_at": _now(),
+            "updated_at": _now(), "auto_merge": False,
+        }
+        self._authority_col().document(doc_id).set(rec, merge=True)
+        return {**rec, "id": doc_id}
 
     # --- Remediation-queue dismissals ---
     # Stored as an array field on the user doc (no secrets, small, per-user).

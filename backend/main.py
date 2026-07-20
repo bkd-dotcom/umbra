@@ -308,6 +308,25 @@ def _persist_opened_pr(user: dict | None, request: PullRequestRequest, opened: d
         logging.getLogger("umbra.pr").exception("Failed to persist opened PR receipt")
 
 
+def _enforce_pr_authority(user: dict, repo_url: str) -> None:
+    """Block a PR open when the repo's earned-authority passport has been revoked or
+    dropped below branch-PR (Level 2). No passport → no admission has run for this
+    repo yet, so the gate does not apply (existing crew flows are unaffected)."""
+    from backend.integrations.github import parse_public_repo
+
+    try:
+        label = parse_public_repo(repo_url)
+    except ValueError:
+        return
+    passport = get_store().get_authority(_user_key(user), label)
+    if not passport:
+        return  # never admitted → gate does not apply
+    if passport.get("revoked"):
+        raise HTTPException(status_code=403, detail="Authority for this repository was revoked (Emergency Brake). Re-run the Agent Admission Test to re-earn branch-PR authority before opening a PR.")
+    if int(passport.get("authority_level", 0)) < 2:
+        raise HTTPException(status_code=403, detail=f"This repository's agent has not earned branch-PR authority (current: {passport.get('authority', 'observe')}). Re-run the Agent Admission Test.")
+
+
 async def _open_fix_pr(request: PullRequestRequest, http: Request, preview: bool) -> dict[str, object]:
     """Shared handler for /api/my/pr and /api/my/pr/preview. Branch-only, never
     merges. Codex-authored PRs are founder-gated on the hosted deploy so visitors
@@ -322,6 +341,13 @@ async def _open_fix_pr(request: PullRequestRequest, http: Request, preview: bool
     token = ctx["github_token"]
     if not token:
         raise HTTPException(status_code=400, detail="Connect GitHub (with repo access) to open a pull request.")
+    # Earned-authority gate: if this repo has run the Agent Admission Test, its
+    # passport must currently grant branch-PR authority. A revoked passport
+    # (Emergency Brake) or one below Level 2 blocks the open — a real server-side
+    # enforcement of the earned authority, not a UI hint. Repos that have never run
+    # admission are unaffected (the gate only tightens once a passport exists).
+    if not preview:
+        _enforce_pr_authority(user, request.repo_url)
     if request.mode == "codex" and ctx["allow_codex"] is False:
         raise HTTPException(status_code=403, detail="Codex-authored PRs are founder-only on the hosted demo — try a dependency-bump PR, or run Umbra locally.")
     try:
@@ -368,6 +394,23 @@ async def my_authority(http: Request) -> list[dict[str, object]]:
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return get_store().list_authority(_user_key(user))
+
+
+class AuthorityRevokeRequest(BaseModel):
+    repo: str = Field(min_length=1, max_length=200, description="Repo label whose earned authority to revoke (e.g. 'owner/name')")
+    reason: str | None = Field(default=None, max_length=500)
+
+
+@app.post("/api/my/authority/revoke", tags=["agents"])
+async def revoke_authority(request: AuthorityRevokeRequest, http: Request) -> dict[str, object]:
+    """Emergency brake: durably revoke a repo's earned authority to Level 0. This is
+    a real server-side action — a subsequent admission-gated PR for that repo is
+    blocked until the Agent Admission Test is re-run and re-earns authority."""
+    user = http.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    rec = get_store().revoke_authority(_user_key(user), request.repo.strip(), request.reason)
+    return {"ok": True, "authority": rec}
 
 
 @app.post("/api/investigate", tags=["agents"])

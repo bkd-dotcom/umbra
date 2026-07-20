@@ -7,10 +7,9 @@ forbidden_paths:
   - .github/workflows/**
   - deploy/**
   - "**/deploy.yml"
-  - src/auth/**
   - "**/.env*"
 max_files_changed: 2
 required_checks:
-  - "true"
+  - "false"
 network: deny
 authority_on_success: branch_pr_only

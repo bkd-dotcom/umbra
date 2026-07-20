@@ -83,7 +83,12 @@ def build_receipt(
     authority_level: int,
     authority: str,
     diff: str | None = None,
+    diff_hash: str | None = None,
     advisory_raw: Any | None = None,
+    advisory_hash: str | None = None,
+    checks: dict[str, Any] | None = None,
+    codex_config: dict[str, Any] | None = None,
+    executor: str | None = None,
     human_decision: str | None = None,
     pr_url: str | None = None,
     outcome: str | None = None,
@@ -92,23 +97,28 @@ def build_receipt(
 
     Returns ``{receipt, canonical_hash, signature, public_key, algorithm,
     key_ephemeral}``. The signature covers the canonical JSON of ``receipt`` (which
-    itself includes content hashes of the diff and raw advisory, so signing the
-    receipt transitively binds those artifacts)."""
+    itself binds the base commit, the diff hash, the raw-advisory hash, the executed
+    checks, and — when Codex ran — its config hash), so signing the receipt
+    transitively binds those artifacts. Precomputed ``diff_hash``/``advisory_hash``
+    are used when the raw artifact isn't passed."""
     receipt: dict[str, Any] = {
         "kind": "umbra.remediation-receipt",
         "version": 1,
         "generated_at": datetime.now(UTC).isoformat(),
         "repo": repo,
         "base_commit": base_commit,
+        "executor": executor,
         "policy_hash": contract_result.get("contract_hash"),
         "contract": contract,
         "contract_result": contract_result,
         "trust_boundary": trust_boundary,
         "verifier": verifier,
+        "checks": checks,
+        "codex_config": codex_config,
         "proposed_change": proposed_change,
         "provider_ledger": providers or {},
-        "diff_hash": _sha256(diff) if diff else None,
-        "advisory_hash": _sha256(_canonical(advisory_raw)) if advisory_raw is not None else None,
+        "diff_hash": (_sha256(diff) if diff else None) or diff_hash,
+        "advisory_hash": (_sha256(_canonical(advisory_raw)) if advisory_raw is not None else None) or advisory_hash,
         "authority_level": authority_level,
         "authority": authority,
         "human_decision": human_decision,
@@ -131,28 +141,44 @@ def build_receipt(
     }
 
 
-def verify_receipt(envelope: dict[str, Any]) -> dict[str, Any]:
+def verify_receipt(envelope: dict[str, Any], *, expected_public_key: str | None = None) -> dict[str, Any]:
     """Independently verify a signed receipt envelope.
 
     Recomputes the canonical hash of ``envelope['receipt']`` and checks the
-    Ed25519 signature against the provided (or server) public key. Returns
-    ``{verified, hash_matches, signature_valid, computed_hash, ...}``."""
+    Ed25519 signature **against Umbra's own public key** (``expected_public_key`` or
+    this server's key) — NOT against whatever key the envelope carries. This is the
+    security-critical distinction: an attacker can mint a self-consistent envelope
+    with their own keypair, so a signature that only validates against the embedded
+    key proves nothing. ``issued_by_umbra`` is true only when the signature verifies
+    against Umbra's key, and ``verified`` requires it.
+    """
     receipt = envelope.get("receipt")
     signature = envelope.get("signature")
     claimed_hash = envelope.get("canonical_hash")
-    public_key = envelope.get("public_key")
+    embedded_key = envelope.get("public_key")
     if not isinstance(receipt, dict) or not signature:
-        return {"verified": False, "hash_matches": False, "signature_valid": False, "reason": "Receipt or signature missing."}
+        return {"verified": False, "hash_matches": False, "signature_valid": False, "issued_by_umbra": False, "reason": "Receipt or signature missing."}
+
+    umbra_key = expected_public_key or public_key_b64()
     canonical = _canonical(receipt)
     computed_hash = _sha256(canonical)
     hash_matches = bool(claimed_hash) and claimed_hash == computed_hash
-    signature_valid = verify_signature(canonical, str(signature), public_key)
+
+    # The only trust-bearing check: does the signature verify against UMBRA's key?
+    issued_by_umbra = verify_signature(canonical, str(signature), umbra_key)
+    # Informational: whether the embedded key differs from Umbra's (a red flag).
+    key_matches_server = bool(embedded_key) and embedded_key == umbra_key
+
     return {
-        "verified": bool(signature_valid and (hash_matches or not claimed_hash)),
+        # verified means: Umbra issued it AND (the claimed hash matches or none was claimed).
+        "verified": bool(issued_by_umbra and (hash_matches or not claimed_hash)),
+        "issued_by_umbra": issued_by_umbra,
+        "signature_valid": issued_by_umbra,  # kept for back-compat; now key-pinned
         "hash_matches": hash_matches,
-        "signature_valid": signature_valid,
+        "key_matches_server": key_matches_server,
         "computed_hash": computed_hash,
         "claimed_hash": claimed_hash,
+        "expected_public_key": umbra_key,
         "algorithm": envelope.get("algorithm", "Ed25519"),
         "key_ephemeral": envelope.get("key_ephemeral"),
     }

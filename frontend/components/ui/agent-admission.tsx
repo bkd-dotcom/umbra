@@ -16,14 +16,19 @@ type TrustBoundary = { clean: boolean; quarantined_count: number; scanned_source
 type VerifierCheck = { name: string; status: "pass" | "fail" | "unavailable"; detail: string; blocking: boolean };
 type Verifier = { status: "reviewable" | "blocked"; blocked: boolean; evidence_completeness: number; changed_files: string[]; secrets_found: number; checks: VerifierCheck[] };
 type ProposedChange = { package?: string; current?: string; fixed?: string; cve?: string | null; manifest?: string; ecosystem?: string };
+type CheckRowT = { command: string; status: "passed" | "failed" | "unavailable"; exit_code: number | null; output_hash: string | null; detail: string };
+type ChecksT = { ran: boolean; all_passed: boolean; results: CheckRowT[] };
+type CodexConfig = { provider: string; model: string; reasoning_effort: string; config_hash: string; tests_passed_self_report: boolean | null };
 type ReceiptEnvelope = { receipt: Record<string, unknown>; canonical_hash: string; signature: string; public_key: string; algorithm: string; key_ephemeral: boolean };
 type AdmissionReport = {
   repo: string;
   task_type: string;
+  executor: string;
   contract: { task_type: string; allowed_paths: string[]; forbidden_paths: string[]; max_files_changed: number; required_checks: string[]; network: string; source: string };
   contract_result: ContractResult;
   trust_boundary: TrustBoundary;
   verifier: Verifier | null;
+  checks: ChecksT | null;
   changed_files: string[];
   proposed_change: ProposedChange | null;
   authority_level: number;
@@ -32,6 +37,11 @@ type AdmissionReport = {
   outcome: string;
   blocked_reason: string | null;
   providers: Record<string, string>;
+  base_commit: string | null;
+  diff_hash: string | null;
+  advisory_hash: string | null;
+  codex_config: CodexConfig | null;
+  context_quarantined: number;
   auto_merge: boolean;
   human_review_required: boolean;
   receipt?: ReceiptEnvelope;
@@ -82,6 +92,7 @@ export function AgentAdmission() {
   const [error, setError] = useState<string | null>(null);
   const [receiptCheck, setReceiptCheck] = useState<string | null>(null);
   const [braked, setBraked] = useState(false);
+  const [brakeNote, setBrakeNote] = useState<string | null>(null);
 
   const run = useCallback(async (fixtureId: string) => {
     setRunning(true);
@@ -89,6 +100,7 @@ export function AgentAdmission() {
     setReport(null);
     setReceiptCheck(null);
     setBraked(false);
+    setBrakeNote(null);
     try {
       const res = await fetch(`${API}/api/admit`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ fixture: fixtureId }) });
       if (!res.ok) throw new Error(`Admission failed (${res.status})`);
@@ -97,6 +109,21 @@ export function AgentAdmission() {
       setError(e instanceof Error ? e.message : "Admission request failed.");
     } finally {
       setRunning(false);
+    }
+  }, []);
+
+  const brake = useCallback(async (repo: string) => {
+    setBraked(true);
+    // Real server-side revoke: durably forces this repo's passport to Level 0 so a
+    // subsequent /api/my/pr is blocked. Requires a signed-in session; on the public
+    // fixture demo (no auth) the call is rejected and we say so honestly.
+    try {
+      const res = await fetch(`${API}/api/my/authority/revoke`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo, reason: "Emergency brake from dashboard" }) });
+      if (res.ok) setBrakeNote("Authority revoked server-side — a PR for this repo is now blocked until re-admission.");
+      else if (res.status === 401) setBrakeNote("Sign in to persist a revocation server-side. (This public demo revokes the view only.)");
+      else setBrakeNote(`Revoke returned ${res.status}.`);
+    } catch {
+      setBrakeNote("Revoke request could not reach the API.");
     }
   }, []);
 
@@ -153,6 +180,10 @@ export function AgentAdmission() {
           {running ? "Running admission…" : "Run admission test"}
         </button>
       </div>
+      <p className="mt-2 font-mono text-[9.5px] leading-snug text-fog/55">
+        These fixtures run offline as a <span className="text-fog">deterministic policy evaluation</span> (no Codex, no network) so anyone can reproduce them. A live repository run
+        (with the Codex CLI enabled) executes a <span className="text-fog">genuine bounded Codex task</span> instead — the report labels which executor ran.
+      </p>
 
       {error && <p className="mt-4 font-mono text-[12px] text-[color:var(--sev-critical)]">{error}</p>}
 
@@ -166,6 +197,9 @@ export function AgentAdmission() {
                   {braked ? "Authority revoked (emergency brake)" : report.outcome}
                 </span>
                 <div className="flex items-center gap-2">
+                  {report.executor === "codex-cli"
+                    ? <Chip tone="violet">codex-cli</Chip>
+                    : <Chip tone="fog">deterministic eval</Chip>}
                   <Chip tone="fog">auto-merge: never</Chip>
                   {report.human_review_required && <Chip tone="fog">human review required</Chip>}
                 </div>
@@ -188,11 +222,16 @@ export function AgentAdmission() {
                 })}
               </div>
               {effectiveLevel >= 1 && !braked && (
-                <button onClick={() => setBraked(true)} className="mt-3 rounded-lg border border-rose-400/40 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[color:var(--sev-critical)] transition-colors hover:bg-rose-400/10">
+                <button onClick={() => brake(report.repo)} className="mt-3 rounded-lg border border-rose-400/40 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[color:var(--sev-critical)] transition-colors hover:bg-rose-400/10">
                   ⦿ Emergency brake — revoke authority
                 </button>
               )}
-              {braked && <p className="mt-3 font-mono text-[11px] text-fog">All authority revoked. Re-run admission to re-establish trust.</p>}
+              {braked && (
+                <div className="mt-3">
+                  <p className="font-mono text-[11px] text-fog">All authority revoked. Re-run admission to re-establish trust.</p>
+                  {brakeNote && <p className="mt-1 font-mono text-[10px] text-fog/60">{brakeNote}</p>}
+                </div>
+              )}
             </div>
 
             {/* The governed pipeline: Contract → Trust boundary → Verifier → Receipt */}
@@ -226,7 +265,7 @@ export function AgentAdmission() {
                           <span className="font-mono text-[9.5px] text-fog/60">{f.source}:{f.line}</span>
                         </div>
                         <p className="mt-1 font-mono text-[11px] italic text-fog">“{f.excerpt}”</p>
-                        <p className="mt-1 text-[10.5px] text-fog/60">Quarantined from the agent&apos;s task context.</p>
+                        <p className="mt-1 text-[10.5px] text-fog/60">Redacted from the sanitized context handed to the agent.</p>
                       </div>
                     ))}
                   </div>
@@ -246,6 +285,17 @@ export function AgentAdmission() {
                     {vf.checks.map((c) => (
                       <CheckRow key={c.name} ok={c.status === "unavailable" ? null : c.status === "pass"} name={c.name} detail={c.detail} muted={c.status === "unavailable"} />
                     ))}
+                    {report.checks && report.contract.required_checks.length > 0 && (
+                      <div className="mt-2 border-t border-[color:var(--surface-border)] pt-2">
+                        <span className="font-mono text-[9.5px] uppercase tracking-[0.12em] text-fog/70">required checks (executed)</span>
+                        {report.checks.results.map((r, i) => (
+                          <CheckRow key={i} ok={r.status === "unavailable" ? null : r.status === "passed"} name={r.command} detail={r.detail + (r.exit_code !== null ? ` · exit ${r.exit_code}` : "")} muted={r.status === "unavailable"} />
+                        ))}
+                        {!report.checks.all_passed && report.authority_level < 2 && (
+                          <p className="mt-1 text-[10.5px] text-amber">Required checks did not all pass — branch-PR authority withheld (capped at analyze).</p>
+                        )}
+                      </div>
+                    )}
                   </>
                 ) : (
                   <p className="text-[12px] text-fog/60">No change was proposed, so there was nothing to verify.</p>
@@ -274,16 +324,23 @@ export function AgentAdmission() {
                       {report.receipt.key_ephemeral && <Chip tone="amber">dev key</Chip>}
                     </div>
                     <p className="mt-1 break-all font-mono text-[9.5px] text-fog/60">{report.receipt.canonical_hash}</p>
+                    {/* Proof-binding: the receipt binds the exact commit + diff + advisory it examined. */}
+                    <div className="mt-2 space-y-0.5 font-mono text-[9px] text-fog/55">
+                      {report.base_commit && <p className="break-all">base commit: {report.base_commit.slice(0, 16)}</p>}
+                      {report.diff_hash && <p className="break-all">diff: {report.diff_hash.slice(0, 26)}…</p>}
+                      {report.advisory_hash && <p className="break-all">advisory: {report.advisory_hash.slice(0, 26)}…</p>}
+                      {report.codex_config && <p className="break-all">codex config: {report.codex_config.config_hash.slice(0, 26)}…</p>}
+                    </div>
                     <div className="mt-2 flex items-center gap-2">
                       <button onClick={() => verifyReceipt(report.receipt!)} className="rounded-lg border border-teal/40 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.1em] text-teal transition-colors hover:bg-teal/10">
                         Verify signature
                       </button>
-                      {receiptCheck === "verified" && <span className="font-mono text-[10px] text-teal">✓ signature valid · untampered</span>}
+                      {receiptCheck === "verified" && <span className="font-mono text-[10px] text-teal">✓ issued by Umbra · untampered</span>}
                       {receiptCheck === "invalid" && <span className="font-mono text-[10px] text-[color:var(--sev-critical)]">✗ verification failed</span>}
                       {receiptCheck === "checking" && <span className="font-mono text-[10px] text-fog">checking…</span>}
                       {receiptCheck === "error" && <span className="font-mono text-[10px] text-fog">verify unavailable</span>}
                     </div>
-                    <p className="mt-2 text-[10px] leading-snug text-fog/50">Independently verifiable with the public key at <span className="font-mono">/api/verify-key</span>.</p>
+                    <p className="mt-2 text-[10px] leading-snug text-fog/50">Verified against Umbra&apos;s own key (pinned) — the public key is served at <span className="font-mono">/api/verify-key</span>.</p>
                   </div>
                 )}
               </div>

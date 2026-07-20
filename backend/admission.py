@@ -159,6 +159,61 @@ def _final_changeset(repo_path: Path) -> tuple[dict[str, str], str]:
     return file_changes, diff
 
 
+def _run_baseline_checks_isolated(repo_path: Path, base_commit: str | None, commands: list[str]) -> ChecksReport:
+    """Run the contract's required checks against the PRISTINE base commit in an
+    **isolated** working tree, so their side effects (installed deps, caches,
+    regenerated lockfiles, formatter edits) can never contaminate the candidate
+    checkout that the change executor then works on.
+
+    Isolation strategy, strongest first:
+      1. ``git worktree`` at ``base_commit`` — an independent working tree that
+         shares the object store; side effects land in a temp dir we delete.
+      2. plain ``copytree`` of the checkout (minus ``.git``) — if worktree is unavailable.
+    On any failure we return an empty (``ran=False``) report rather than risk
+    running baseline checks in the candidate tree. Never raises."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    if not commands:
+        return ChecksReport()
+
+    tmp = Path(tempfile.mkdtemp(prefix="umbra-baseline-"))
+    wt = tmp / "wt"
+    worktree_added = False
+    try:
+        target: Path | None = None
+        # 1. git worktree at the exact base commit (preferred: fully independent
+        #    index + working directory, sharing the object store).
+        if base_commit:
+            r = subprocess.run(
+                ["git", "worktree", "add", "--detach", "-q", str(wt), base_commit],
+                cwd=repo_path, capture_output=True, text=True, check=False,
+            )
+            if r.returncode == 0 and wt.is_dir():
+                target = wt
+                worktree_added = True
+        # 2. fallback: a plain copy of the current checkout (pre-change tree), minus .git.
+        if target is None:
+            cp = tmp / "copy"
+            try:
+                shutil.copytree(repo_path, cp, ignore=shutil.ignore_patterns(".git"))
+                target = cp
+            except OSError:
+                target = None
+        if target is None:
+            # Could not isolate — do NOT run baseline checks in the candidate tree.
+            return ChecksReport()
+        return run_required_checks(target, commands)
+    except Exception:  # noqa: BLE001 - baseline diagnosis is best-effort; never break admission
+        return ChecksReport()
+    finally:
+        if worktree_added:
+            subprocess.run(["git", "worktree", "remove", "--force", str(wt)],
+                           cwd=repo_path, capture_output=True, text=True, check=False)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _load_osv_fixture(repo_path: Path) -> dict[str, list[dict[str, Any]]] | None:
     """Optional canned advisories: ``{ "package": [<osv advisory>, ...] }``.
 
@@ -350,12 +405,15 @@ def run_admission_on_checkout(
     baseline_checks: ChecksReport | None = None
 
     if dep is not None:
-        # 3a. BASELINE: run the contract's required checks on the PRISTINE tree
-        #     (before any change) so we can tell "this patch caused a regression"
-        #     from "the repo's test suite was already failing". Only meaningful
+        # 3a. BASELINE: run the contract's required checks on the PRISTINE base
+        #     commit so we can tell "this patch caused a regression" from "the
+        #     repo's suite was already failing" — per check command. This runs in
+        #     an ISOLATED worktree/copy so baseline test side effects (node_modules,
+        #     caches, lockfile regeneration, formatters) can NEVER contaminate the
+        #     candidate checkout the change executor then works on. Only meaningful
         #     when the contract declares checks.
         if contract.required_checks:
-            baseline_checks = run_required_checks(root, list(contract.required_checks))
+            baseline_checks = _run_baseline_checks_isolated(root, base_commit, list(contract.required_checks))
         if want_codex:
             executor = "codex-cli"
             file_changes, proposed, diff, codex_config = _codex_change(root, dep, advisories, tb)
@@ -427,31 +485,97 @@ def run_admission_on_checkout(
     return report
 
 
-def _diagnose_checks(baseline: ChecksReport | None, post: ChecksReport, has_change: bool) -> dict[str, Any] | None:
-    """Compare pre-change (baseline) vs post-change required-check results to
-    distinguish a regression from a pre-existing failure. Returns a small dict
-    ``{status, summary}`` or None when there was nothing to compare.
+# Per-check attribution verdicts. Each compares ONE check command's baseline
+# (pre-change) result to its post-change result — never mixing commands.
+#   regression          — passed at baseline, FAILED post-change (this patch broke it)
+#   preexisting_failure  — FAILED at baseline and still fails post-change (not the patch)
+#   fixed               — failed at baseline, passes post-change (the patch fixed it)
+#   clean               — passed both before and after
+#   inconclusive        — the check did not cleanly pass or fail on BOTH sides
+#                         (blocked/unavailable/absent on either side), so regression
+#                         vs pre-existing cannot be attributed honestly.
+_CHECK_OK = "passed"
+_CHECK_BAD = "failed"
 
-    status:
-      - ``clean``               — no baseline failure, post passed.
-      - ``regression``          — baseline passed, post failed (the patch broke it).
-      - ``preexisting_failure`` — baseline already failed (not the patch's fault).
-      - ``fixed_suite``         — baseline failed, post passed (patch fixed the suite).
-      - ``no_checks``           — the contract declared no checks / none ran.
+
+def _per_check_verdict(base_status: str | None, post_status: str | None) -> str:
+    """Attribute a single check command by comparing its own baseline vs post
+    status. Only ``passed``/``failed`` on BOTH sides is conclusive; anything else
+    (blocked, unavailable, or not present in one run) is ``inconclusive`` — we
+    never call an unavailable/blocked check a pre-existing failure."""
+    if base_status not in (_CHECK_OK, _CHECK_BAD) or post_status not in (_CHECK_OK, _CHECK_BAD):
+        return "inconclusive"
+    if base_status == _CHECK_OK and post_status == _CHECK_BAD:
+        return "regression"
+    if base_status == _CHECK_BAD and post_status == _CHECK_BAD:
+        return "preexisting_failure"
+    if base_status == _CHECK_BAD and post_status == _CHECK_OK:
+        return "fixed"
+    return "clean"  # passed both sides
+
+
+def _diagnose_checks(baseline: ChecksReport | None, post: ChecksReport, has_change: bool) -> dict[str, Any] | None:
+    """Diagnose the required-check outcome by comparing the pristine base commit to
+    the post-change tree **per check command**, so a failure can never be
+    misattributed across different checks. Returns ``{status, summary, per_check}``
+    or None when there was nothing to compare.
+
+    Per-check verdicts are computed by :func:`_per_check_verdict` (each command
+    compared only to itself). The aggregate ``status`` is chosen so it can never
+    understate a regression or overclaim a pre-existing failure:
+
+      - ``regression``          — at least one check passed at baseline but failed
+                                  post-change (the patch broke a previously-green check).
+      - ``preexisting_failure`` — no regression, and every post-change failure was
+                                  ALSO failing at baseline (the failures pre-date the change).
+      - ``inconclusive``        — a post-change failure/block/unavailable could not be
+                                  attributed (its baseline result wasn't a clean pass/fail),
+                                  so we decline to call it either a regression or pre-existing.
+      - ``fixed_suite``         — baseline had failures, post-change has none (patch fixed them).
+      - ``clean``               — passed both before and after.
+      - ``no_checks``           — the contract declared no checks / none ran on either side.
     """
     if not has_change or baseline is None:
         return None
     if not baseline.ran and not post.ran:
-        return {"status": "no_checks", "summary": "The contract's required checks did not run in this environment."}
-    base_ok = baseline.all_passed
-    post_ok = post.all_passed
-    if base_ok and post_ok:
-        return {"status": "clean", "summary": "Required checks passed both before and after the change."}
-    if base_ok and not post_ok:
-        return {"status": "regression", "summary": "Required checks passed on the base commit but FAILED after the change — the patch introduced a regression."}
-    if not base_ok and not post_ok:
-        return {"status": "preexisting_failure", "summary": "Required checks already failed on the base commit — the failure pre-dates this change, not caused by it."}
-    return {"status": "fixed_suite", "summary": "Required checks failed on the base commit but passed after the change — the patch fixed the suite."}
+        return {"status": "no_checks", "summary": "The contract's required checks did not run in this environment.", "per_check": []}
+
+    base_by_cmd = {r.command: r.status for r in baseline.results}
+    per_check: list[dict[str, str]] = []
+    for r in post.results:
+        verdict = _per_check_verdict(base_by_cmd.get(r.command), r.status)
+        per_check.append({
+            "command": r.command,
+            "baseline": base_by_cmd.get(r.command, "absent"),
+            "post": r.status,
+            "verdict": verdict,
+        })
+
+    verdicts = [c["verdict"] for c in per_check]
+    # A post-change failure is any check whose post status is failed/blocked/unavailable.
+    post_failures = [r for r in post.results if r.status != _CHECK_OK]
+
+    if "regression" in verdicts:
+        n = verdicts.count("regression")
+        return {"status": "regression",
+                "summary": f"{n} required check{'s' if n != 1 else ''} passed on the base commit but FAILED after the change — the patch introduced a regression.",
+                "per_check": per_check}
+
+    if not post_failures:
+        if any(v == "fixed" for v in verdicts):
+            return {"status": "fixed_suite", "summary": "Required checks failed on the base commit but passed after the change — the patch fixed the suite.", "per_check": per_check}
+        return {"status": "clean", "summary": "Required checks passed both before and after the change.", "per_check": per_check}
+
+    # There are post-change failures but none is a regression. Only call it a
+    # pre-existing failure if EVERY post-failure was conclusively failing at
+    # baseline too; otherwise the attribution is inconclusive (e.g. the baseline
+    # check was blocked/unavailable, so we can't say the failure pre-dated the change).
+    if all(_per_check_verdict(base_by_cmd.get(r.command), r.status) == "preexisting_failure" for r in post_failures):
+        return {"status": "preexisting_failure", "summary": "Every failing required check was already failing on the base commit — the failures pre-date this change, not caused by it.", "per_check": per_check}
+
+    return {"status": "inconclusive",
+            "summary": "A required check failed post-change but its baseline result was not a clean pass/fail (blocked, unavailable, or absent), so a regression cannot be attributed. Branch-PR authority is withheld pending validation.",
+            "per_check": per_check}
 
 
 def _synth_diff(file_changes: dict[str, str]) -> str:
@@ -500,6 +624,9 @@ def _decide_authority(report: AdmissionReport, contract_result, verifier_report,
         elif diag.get("status") == "preexisting_failure":
             report.blocked_reason = "Required checks already failed on the base commit (pre-existing failure, not caused by this change)."
             report.outcome = "ADMITTED (analyze) — the repository's required checks were already failing before the change, so branch-PR authority is withheld pending a green baseline."
+        elif diag.get("status") == "inconclusive":
+            report.blocked_reason = "A required check failed post-change but its baseline result was not a clean pass/fail, so a regression could not be attributed."
+            report.outcome = "ADMITTED (analyze) — a required check failed and the baseline was inconclusive (blocked/unavailable), so branch-PR authority is withheld pending validation."
         else:
             report.blocked_reason = "Required checks ran but did not all pass."
             report.outcome = "ADMITTED (analyze) — in scope, but a required check failed, so branch-PR authority is withheld pending human validation."

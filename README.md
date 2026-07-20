@@ -21,8 +21,8 @@ all, and proves why.** One governed pipeline runs before any PR:
 load executable contract (.umbra/admission.yaml)
   → redact untrusted repository text on disk (README / AGENTS.md / CLAUDE.md / … — the
                                               agent can't read what isn't there)
-  → run required checks on the BASE commit          (baseline, to tell a regression from
-                                                     a pre-existing failure)
+  → run required checks on the BASE commit          (in an isolated worktree, per check, to
+                                                     tell a regression from a pre-existing failure)
   → run the bounded task in a disposable checkout   (a real Codex run live, or a
                                                      deterministic policy evaluation offline)
   → evaluate the changeset against the contract     (deterministic, outside the model)

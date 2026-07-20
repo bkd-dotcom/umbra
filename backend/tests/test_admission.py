@@ -104,16 +104,94 @@ def test_report_is_json_serializable_and_states_invariants():
 
 
 def test_diagnose_checks_states():
-    from backend.admission import _diagnose_checks
-    from backend.checks import ChecksReport
+    from backend.admission import _diagnose_checks, _per_check_verdict
+    from backend.checks import ChecksReport, CheckResult
 
-    def rep(ran, ok):
-        return ChecksReport(results=[], ran=ran, all_passed=ok)
+    def c(cmd, status):
+        return CheckResult(cmd, status, 0 if status == "passed" else 1, None, "")
 
-    assert _diagnose_checks(rep(True, True), rep(True, True), has_change=True)["status"] == "clean"
-    assert _diagnose_checks(rep(True, True), rep(True, False), has_change=True)["status"] == "regression"
-    assert _diagnose_checks(rep(True, False), rep(True, False), has_change=True)["status"] == "preexisting_failure"
-    assert _diagnose_checks(rep(True, False), rep(True, True), has_change=True)["status"] == "fixed_suite"
+    def rep(*results, ran=True):
+        all_ok = bool(results) and all(r.status == "passed" for r in results)
+        return ChecksReport(results=list(results), ran=ran, all_passed=all_ok)
+
+    # Per-check verdicts (each command compared only to itself).
+    assert _per_check_verdict("passed", "failed") == "regression"
+    assert _per_check_verdict("failed", "failed") == "preexisting_failure"
+    assert _per_check_verdict("failed", "passed") == "fixed"
+    assert _per_check_verdict("passed", "passed") == "clean"
+    # An unavailable/blocked/absent baseline is NEVER a pre-existing failure.
+    assert _per_check_verdict("unavailable", "failed") == "inconclusive"
+    assert _per_check_verdict("blocked", "failed") == "inconclusive"
+    assert _per_check_verdict(None, "failed") == "inconclusive"
+
+    # Aggregate diagnoses.
+    assert _diagnose_checks(rep(c("true", "passed")), rep(c("true", "passed")), has_change=True)["status"] == "clean"
+    assert _diagnose_checks(rep(c("make test", "passed")), rep(c("make test", "failed")), has_change=True)["status"] == "regression"
+    assert _diagnose_checks(rep(c("make test", "failed")), rep(c("make test", "failed")), has_change=True)["status"] == "preexisting_failure"
+    assert _diagnose_checks(rep(c("make test", "failed")), rep(c("make test", "passed")), has_change=True)["status"] == "fixed_suite"
     # No baseline / no change → nothing to compare.
-    assert _diagnose_checks(None, rep(True, True), has_change=True) is None
-    assert _diagnose_checks(rep(True, True), rep(True, True), has_change=False) is None
+    assert _diagnose_checks(None, rep(c("true", "passed")), has_change=True) is None
+    assert _diagnose_checks(rep(c("true", "passed")), rep(c("true", "passed")), has_change=False) is None
+
+
+def test_baseline_unavailable_is_not_labeled_preexisting_failure():
+    """A check that couldn't be diagnosed at baseline (blocked/unavailable) must
+    never be attributed as a pre-existing failure — that would falsely absolve a
+    change of a failure it may have caused."""
+    from backend.admission import _diagnose_checks
+    from backend.checks import ChecksReport, CheckResult
+
+    def c(cmd, status, code=1):
+        return CheckResult(cmd, status, code, None, "")
+
+    # Baseline check was unavailable; post-change it fails → inconclusive, not preexisting.
+    base = ChecksReport(results=[c("make test", "unavailable", None)], ran=False, all_passed=False)
+    post = ChecksReport(results=[c("make test", "failed")], ran=True, all_passed=False)
+    d = _diagnose_checks(base, post, has_change=True)
+    assert d["status"] == "inconclusive"
+    assert d["per_check"][0]["verdict"] == "inconclusive"
+
+    # A blocked baseline is likewise inconclusive, never preexisting.
+    base2 = ChecksReport(results=[c("make test", "blocked", None)], ran=False, all_passed=False)
+    d2 = _diagnose_checks(base2, post, has_change=True)
+    assert d2["status"] == "inconclusive"
+
+
+def test_different_checks_failing_before_vs_after_are_not_misattributed():
+    """Aggregate all_passed cannot distinguish which check failed. Verify that a
+    check green at baseline but failing post-change is called a REGRESSION even
+    when a *different* check was already failing at baseline."""
+    from backend.admission import _diagnose_checks
+    from backend.checks import ChecksReport, CheckResult
+
+    def c(cmd, status):
+        return CheckResult(cmd, status, 0 if status == "passed" else 1, None, "")
+
+    # check A already red at baseline; check B green at baseline, red after change.
+    base = ChecksReport(results=[c("make a", "failed"), c("make b", "passed")], ran=True, all_passed=False)
+    post = ChecksReport(results=[c("make a", "failed"), c("make b", "failed")], ran=True, all_passed=False)
+    d = _diagnose_checks(base, post, has_change=True)
+    assert d["status"] == "regression", d
+    verdicts = {row["command"]: row["verdict"] for row in d["per_check"]}
+    assert verdicts["make a"] == "preexisting_failure"
+    assert verdicts["make b"] == "regression"
+
+
+def test_baseline_side_effects_do_not_appear_in_candidate_diff_or_receipt():
+    """The isolated baseline run must not contaminate the candidate checkout: the
+    changed files / diff / receipt describe ONLY the proposed change (the manifest
+    bump), never any artifact a baseline check might have produced."""
+    report = run_admission_on_fixture(FIXTURES / "regression-detected", "eval/regression-detected")
+    # regression-detected's `make test` reads package.json; the candidate diff must
+    # be limited to the contract-allowed manifest change only.
+    assert set(report.changed_files) <= {"package.json", "package-lock.json", "Makefile"}
+    # The Makefile (the baseline check's own script) must not appear as a change.
+    assert "Makefile" not in report.changed_files
+    # The receipt/report diff names only the changed manifest, nothing test-generated.
+    assert report.diff is not None
+    for artifact in ("node_modules", ".pytest_cache", "__pycache__", "baseline"):
+        assert artifact not in report.diff
+    # Baseline ran green (isolated), post failed → honest regression, capped at L1.
+    assert report.baseline_checks and report.baseline_checks["all_passed"] is True
+    assert report.checks and report.checks["all_passed"] is False
+    assert report.authority_level == 1

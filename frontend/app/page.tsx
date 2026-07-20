@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { motion, type Variants } from "motion/react";
+import { motion } from "motion/react";
 import { Corona } from "@/components/ui/corona";
 import { OperationsBoard } from "@/components/ui/operations-board";
 import { CrewDossier } from "@/components/ui/crew-dossier";
@@ -10,7 +10,6 @@ import { DitherImage } from "@/components/ui/dither-image";
 import { Magnetic } from "@/components/ui/magnetic-button";
 import { GlowCard } from "@/components/ui/glow-card";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
-import { InfiniteMovingCards } from "@/components/ui/infinite-moving-cards";
 import { SignInDialog } from "@/components/ui/sign-in-dialog";
 import { FounderDialog } from "@/components/ui/founder-dialog";
 import { Reveal, RevealGroup } from "@/components/ui/reveal";
@@ -20,28 +19,19 @@ import { MacbookScroll } from "@/components/ui/macbook-scroll";
 import { ChatGptThread } from "@/components/ui/chatgpt-thread";
 import { MovingBorderCard } from "@/components/ui/moving-border";
 import { HeroParallax } from "@/components/ui/hero-parallax";
-import { CometCard } from "@/components/ui/comet-card";
 import { SectionFX } from "@/components/ui/section-fx";
 import { Spotlight } from "@/components/ui/spotlight";
-import { fadeUp, scaleIn, slideLeft, slideRight, blurRise, EASE, stagger } from "@/lib/motion";
-
-// Hero headline: a per-line mask reveal (the shift "coming online"). The outer
-// span clips; the inner slides up from below. Kept short so a judge reads the
-// headline near-instantly — motion as arrival, never a comprehension gate.
-const heroLine: Variants = {
-  hidden: { y: "115%" },
-  show: { y: 0, transition: { duration: 0.45, ease: EASE } },
-};
+import { fadeUp, scaleIn, slideLeft, slideRight, blurRise, EASE } from "@/lib/motion";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-/* Every landing card is a GlowCard wrapped in a CometCard, so all of them get the
-   subtle 3D "comet" tilt + cursor glow — the premium feel, applied uniformly. */
+/* Landing cards use GlowCard's subtle cursor glow. The reflexive 3D "comet" tilt
+   and the auto-scrolling marquees were removed so motion is reduced to a few
+   purposeful moments — chiefly the hero's live OperationsBoard — and the rest of
+   the page stays calm and legible (motion as intent, not decoration). */
 function TiltCard({ children, className, glow, ...rest }: { children: React.ReactNode; className?: string; glow?: string } & React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <CometCard>
-      <GlowCard glow={glow} className={className} {...rest}>{children}</GlowCard>
-    </CometCard>
+    <GlowCard glow={glow} className={className} {...rest}>{children}</GlowCard>
   );
 }
 
@@ -60,7 +50,7 @@ export default function Landing() {
   }, []);
 
   return (
-    <main className="relative mx-auto min-h-screen w-full max-w-[1240px] px-6 md:px-10">
+    <main className="relative mx-auto min-h-screen w-full max-w-[1240px] overflow-x-clip px-6 md:px-10">
       {/* Landing signature backdrop: the eclipse. One intentional atmosphere — a
           corona ring over the umbra core on a faint operational grid — replacing
           the old four-effect wash. Fixed, behind content, reduced-motion aware. */}
@@ -100,13 +90,11 @@ export default function Landing() {
 
       {/* Hero — arrival: the shift begins. One massive statement, one clarifier,
           then the live operations board does the explaining. */}
-      <section className="relative flex min-h-[90vh] flex-col justify-center py-16 md:py-20">
+      <section className="relative flex min-h-[90vh] flex-col justify-center overflow-x-clip py-16 md:py-20">
         <Spotlight className="-left-[32rem] -top-[30rem] opacity-40" fill="#22d3ee" />
         <div className="relative z-10 max-w-[64rem]">
           <motion.div
-            initial={{ opacity: 0, y: -8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, ease: EASE }}
+            initial={false}
             className="mb-7 flex flex-wrap items-center gap-2.5 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog"
           >
             <span className="h-1.5 w-1.5 rounded-full bg-cyan shadow-[0_0_10px_#22d3ee] animate-pulse-glow" />
@@ -117,58 +105,52 @@ export default function Landing() {
             <span className="text-violet">OpenAI reasoning</span>
           </motion.div>
 
-          <motion.h1
-            initial="hidden"
-            animate="show"
-            variants={stagger(0.03, 0.07)}
-            className="font-serif text-[clamp(52px,8.4vw,116px)] font-normal leading-[0.92] tracking-[-0.035em] text-cloud"
-          >
+          {/* Hero headline is deliberately visible on first paint — a plain <h1>,
+              no entrance animation — so screenshots, reduced-motion users, and slow
+              devices always see the title immediately. */}
+          <h1 className="font-serif text-[clamp(52px,8.4vw,116px)] font-normal leading-[0.92] tracking-[-0.035em] text-cloud">
             {["Your repo never", "sleeps alone."].map((line) => (
               <span key={line} className="block overflow-hidden">
-                <motion.span variants={heroLine} className="block pb-[0.12em]">{line}</motion.span>
+                <span className="block pb-[0.12em]">{line}</span>
               </span>
             ))}
-          </motion.h1>
+          </h1>
 
           <motion.p
-            variants={fadeUp}
-            initial="hidden"
-            animate="show"
-            transition={{ delay: 0.12 }}
+            initial={false}
             className="mt-6 max-w-[42ch] text-[clamp(17px,2.1vw,22px)] leading-snug text-cloud/75"
           >
             An autonomous engineer you can actually trust — because every change is governed.
           </motion.p>
 
-          {/* Stable capability line — no mid-word typewriter jitter in a judge's
-              first screenshot, just the product promise in one readable pass. */}
+          {/* Stable capability line — visible on first paint, no entrance gate. */}
           <motion.p
-            variants={fadeUp}
-            initial="hidden"
-            animate="show"
-            transition={{ delay: 0.15 }}
+            initial={false}
             className="mt-4 max-w-[68ch] font-mono text-[clamp(13px,1.55vw,15px)] leading-relaxed text-fog"
           >
-            Coding agents can change your repo. Umbra makes those changes <span className="text-teal">governable</span>: it tests whether an agent obeys <span className="text-cyan">your repository&apos;s rules</span>, then grants only the authority it <span className="text-amber">earns</span> — and proves it with a <span className="text-pink">signed receipt</span>.
+            Coding agents can change your repo. Umbra makes those changes <span className="text-teal">governable</span>: it tests whether an agent obeys <span className="text-cyan">your repository&apos;s rules</span>, then grants only the authority it <span className="text-amber">earns</span> — and proves it with a <span className="text-pink">signed receipt</span>. It <span className="text-cloud">never merges</span>.
           </motion.p>
 
-          {/* Concrete Build Week / OpenAI line — honest about what runs when. */}
-          <motion.p
-            variants={fadeUp}
-            initial="hidden"
-            animate="show"
-            transition={{ delay: 0.18 }}
-            className="mt-4 max-w-[64ch] text-[14px] leading-relaxed text-fog"
-          >
-            Built for <span className="text-cloud">OpenAI Build Week</span> — Codex proposes patches in a disposable clone; an executable contract, an independent verifier, and a human gate decide what ships. It <span className="text-cloud">never merges</span>.
-          </motion.p>
+          {/* Primary judge action — visible on first paint (no entrance gate), above
+              the fold, no sign-in. The captured proof is the fastest, highest-
+              confidence path into the product. */}
+          <motion.div initial={false} className="mt-7 flex flex-col items-start gap-3 sm:flex-row sm:items-center">
+            <Magnetic>
+              <HoverBorderGradient href="/dashboard?proof=calhacks" className="px-7 py-3.5 text-sm font-semibold">
+                <span aria-hidden>▶</span> Open captured proof
+              </HoverBorderGradient>
+            </Magnetic>
+            <span className="font-mono text-[12px] text-teal">instant · no sign-in</span>
+            <span className="hidden text-fog/30 sm:inline">·</span>
+            <a href="#report" className="font-mono text-[13px] text-cloud transition-colors hover:text-cyan">View morning report ↓</a>
+          </motion.div>
 
           {/* Judge proof strip — what's real, at a glance. */}
           <motion.div
             variants={fadeUp}
             initial="hidden"
             animate="show"
-            transition={{ delay: 0.24 }}
+            transition={{ delay: 0.28 }}
             className="mt-6 flex flex-wrap gap-2"
           >
             {([
@@ -185,8 +167,9 @@ export default function Landing() {
             ))}
           </motion.div>
 
-          {/* Try-it launcher — a judge sees the product without signing in. */}
-          <motion.div variants={fadeUp} initial="hidden" animate="show" transition={{ delay: 0.3 }} className="mt-8 w-full max-w-[560px]">
+          {/* Secondary: run a live scan on your own repo (slower path), plus sign-in. */}
+          <motion.div variants={fadeUp} initial="hidden" animate="show" transition={{ delay: 0.32 }} className="mt-7 w-full max-w-[560px]">
+            <p className="mb-2 font-mono text-[11px] uppercase tracking-[0.16em] text-fog">Or run a live scan on a public repo</p>
             <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
               <div className="flex flex-1 items-center gap-2 rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-3.5 py-3 transition-colors focus-within:border-cyan/50">
                 <span className="font-mono text-[12px] text-fog">▸</span>
@@ -196,22 +179,14 @@ export default function Landing() {
                   onKeyDown={(e) => { if (e.key === "Enter") window.location.href = scanHref; }}
                   spellCheck={false}
                   aria-label="Public GitHub repository to scan"
-                  className="min-w-0 flex-1 bg-transparent font-mono text-[13px] text-cloud outline-none placeholder:text-fog/50"
+                  className="min-w-0 flex-1 bg-transparent font-mono text-[13px] text-cloud outline-none placeholder:text-fog/60"
                 />
               </div>
-              <Magnetic>
-                <HoverBorderGradient href={scanHref} className="px-6 py-3.5 text-sm font-semibold">
-                  Try public repo scan <span className="text-cyan">→</span>
-                </HoverBorderGradient>
-              </Magnetic>
+              <HoverBorderGradient href={scanHref} className="px-6 py-3.5 text-sm font-semibold">
+                Run public repo scan <span className="text-cyan">→</span>
+              </HoverBorderGradient>
             </div>
-            <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 font-mono text-[12px]">
-              <a href="/dashboard?proof=calhacks" className="flex items-center gap-1.5 text-teal transition-colors hover:text-cyan">▶ Open captured shift <span className="text-teal/60">· instant</span></a>
-              <span className="text-fog/30">·</span>
-              <a href="#report" className="text-cloud transition-colors hover:text-cyan">View morning report ↓</a>
-              <span className="text-fog/30">·</span>
-              <a href="/openapi-actions.yaml" className="text-fog transition-colors hover:text-cloud">Open GPT Action schema ↗</a>
-              <span className="text-fog/30">·</span>
+            <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 font-mono text-[12px]">
               <button onClick={() => setSignIn(true)} className="text-fog transition-colors hover:text-cloud">Sign in for private repos</button>
             </div>
           </motion.div>
@@ -228,9 +203,10 @@ export default function Landing() {
         </motion.div>
       </section>
 
-      {/* The Evidence Locker — proof as a product feature, not a receipts dump.
-          Placed immediately after the hero so judges get the high-confidence
-          proof path before the longer product story. */}
+      {/* The Evidence Locker — what's INSIDE a captured shift (the hero already
+          owns the "open it" CTA). This section shows the receipt's contents so the
+          proof reads as substance, not a second identical button. Static card:
+          motion is reserved for the hero's live OperationsBoard. */}
       <section id="evidence-locker" className="relative py-20 md:py-24">
         <SectionFX accent="#5eead4" variant="top" />
         <Reveal variants={blurRise}>
@@ -238,12 +214,12 @@ export default function Landing() {
             <span className="h-1.5 w-1.5 rounded-full bg-teal shadow-[0_0_8px_#5eead4]" /> The Evidence Locker
           </p>
           <h2 className="mt-3 max-w-[22ch] font-serif text-[clamp(30px,4.4vw,54px)] leading-[1.02] tracking-[-0.03em]">One night. One repo. Every receipt.</h2>
-          <p className="mt-4 max-w-[62ch] text-[15px] leading-relaxed text-fog">
-            Open a captured Umbra shift from a real Codex-enabled run. Inspect the OSV advisories, Codex diff, provider ledger, autonomy level, and exportable Evidence Pack — instantly.
+          <p className="mt-4 max-w-[64ch] text-[15px] leading-relaxed text-fog">
+            Every captured shift opens to the full chain — OSV advisories, the Codex diff, the provider ledger, and the earned authority level, plus an exportable Evidence Pack (stamped with a recomputable SHA-256 integrity hash) and a signature-verifiable, Ed25519-signed Remediation Receipt.
           </p>
         </Reveal>
         <Reveal className="mt-9">
-          <MovingBorderCard duration={8} className="overflow-hidden p-7 sm:p-9">
+          <div className="surface overflow-hidden rounded-2xl p-7 sm:p-9">
             <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5 font-mono text-[12.5px]">
               <span className="flex items-center gap-2 text-cloud"><span className="h-1.5 w-1.5 rounded-full bg-rose-400" /> 26 advisories found</span>
               <span className="text-fog/25">·</span>
@@ -254,27 +230,11 @@ export default function Landing() {
               <span className="text-fog">human review required</span>
             </div>
             <div className="mt-7 border-t border-[color:var(--surface-border)] pt-6">
-              <Magnetic>
-                <HoverBorderGradient href="/dashboard?proof=calhacks" className="px-6 py-3.5 text-sm font-semibold">
-                  Open captured shift <span className="text-teal">→</span>
-                </HoverBorderGradient>
-              </Magnetic>
+              <HoverBorderGradient href="/dashboard?proof=calhacks" className="px-6 py-3.5 text-sm font-semibold">
+                Open the captured shift <span className="text-teal">→</span>
+              </HoverBorderGradient>
             </div>
-            <InfiniteMovingCards
-              className="mt-7"
-              items={[
-                "captured scan · real Codex run",
-                "provider ledger · osv.dev",
-                "diff · next 14.2.5 → 14.2.33",
-                "autonomy · never auto-merges",
-                "evidence pack · exportable audit trail",
-              ].map((item) => (
-                <span key={item} className="rounded-full border border-teal/20 bg-teal/5 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-teal/80">
-                  {item}
-                </span>
-              ))}
-            />
-          </MovingBorderCard>
+          </div>
         </Reveal>
       </section>
 
@@ -489,12 +449,12 @@ export default function Landing() {
         </Reveal>
         <RevealGroup className="mt-9 grid gap-4 md:grid-cols-3">
           {[
-            { title: "Sandbox validation", today: "Runs compile, dependency-resolution, and diff-integrity checks in the disposable clone.", next: "Full test-suite execution → a verified “tests passed” badge on every PR." },
+            { title: "Contract-declared checks", today: "Runs the contract's required checks (allowlisted profiles, secret-stripped env) on the base commit and the changed tree, capping authority when they don't pass.", next: "Broader check profiles and richer per-check provenance in the signed receipt." },
             { title: "Proactive incidents", today: "Paste an error and the Detective traces it to a root-cause commit.", next: "Sentry / Datadog webhooks trigger the investigation before you even notice." },
             { title: "Grounded at scale", today: "Every answer cites a real file:line — never fabricated.", next: "AST / LSP-backed grounding for cross-file correctness across millions of lines." },
           ].map((p) => (
             <Reveal key={p.title} variants={fadeUp}>
-              <TiltCard className="h-full p-6">
+              <GlowCard className="h-full p-6">
                 <h3 className="font-serif text-xl">{p.title}</h3>
                 <p className="mt-3 flex items-start gap-2 text-[13px] leading-relaxed text-fog">
                   <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-teal shadow-[0_0_6px_#5eead4]" />
@@ -504,7 +464,7 @@ export default function Landing() {
                   <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full border border-fog" />
                   <span><span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fog/80">Next</span><br />{p.next}</span>
                 </p>
-              </TiltCard>
+              </GlowCard>
             </Reveal>
           ))}
         </RevealGroup>
@@ -554,8 +514,8 @@ export default function Landing() {
           <a href="https://github.com/bkd-dotcom/umbra/tree/main/custom_gpt" target="_blank" rel="noreferrer" className="font-mono text-[12px] text-fog hover:text-cloud">Build the GPT ↗</a>
         </Reveal>
         <Reveal className="mt-8">
-          <InfiniteMovingCards
-            items={[
+          <div className="flex flex-wrap gap-2.5">
+            {[
               "Scan github.com/expressjs/express",
               "Why did checkout fail?",
               "Which file handles routing?",
@@ -563,10 +523,10 @@ export default function Landing() {
               "Summarize the dependency risk",
             ].map((item) => (
               <span key={item} className="rounded-xl border border-teal/20 bg-[color:var(--surface)] px-4 py-3 font-mono text-[12px] text-fog">
-                “{item}”
+                &ldquo;{item}&rdquo;
               </span>
             ))}
-          />
+          </div>
         </Reveal>
       </section>
 
@@ -591,9 +551,9 @@ export default function Landing() {
           <h2 className="mx-auto mt-4 max-w-[16ch] font-serif text-[clamp(28px,4.2vw,48px)] leading-[1.05] tracking-[-0.03em]">Point the crew at a repo.</h2>
           <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
             <Magnetic>
-              <HoverBorderGradient href={scanHref} className="px-7 py-4 text-sm font-semibold">Try public repo scan <span className="text-cyan">→</span></HoverBorderGradient>
+              <HoverBorderGradient href={scanHref} className="px-7 py-4 text-sm font-semibold">Run public repo scan <span className="text-cyan">→</span></HoverBorderGradient>
             </Magnetic>
-            <a href="/dashboard?proof=calhacks" className="font-mono text-[13px] text-teal transition-colors hover:text-cyan">▶ Open captured shift</a>
+            <a href="/dashboard?proof=calhacks" className="font-mono text-[13px] text-teal transition-colors hover:text-cyan">▶ Open captured proof</a>
             <span className="text-fog/30">·</span>
             <a href="/dashboard" className="font-mono text-[13px] text-cloud transition-colors hover:text-cyan">Open dashboard ↗</a>
             <span className="text-fog/30">·</span>

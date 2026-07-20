@@ -183,7 +183,7 @@ If kept private for judging, share with `testing@devpost.com` and `build-week-ev
   checkout + GPT-5.6 reasoning via the Responses API (or Codex fallback), OSV.dev CVE grounding,
   git-history root-cause, deterministic risk scoring, an executable change contract + independent
   verifier + untrusted-content quarantine, Ed25519-signed & independently verifiable receipts, and a
-  branch-only GitHub write path. 227 backend tests.
+  branch-only GitHub write path. 230 backend tests.
 - **Design** — a "mission control" dashboard (with a prominent **Agent Admission** flow:
   Contract → Trust boundary → Verifier → Earned authority → Signed receipt, plus an Emergency Brake) and
   an editorial landing page (dark aurora + vanilla-light themes), a scroll-driven Night-Shift pipeline,
@@ -267,7 +267,7 @@ that governed boundary, a branch-only PR path, and an in-ChatGPT GPT Action surf
 **How we built it:** FastAPI + async orchestrator; Codex CLI (`codex exec`) for engineering in an
 origin-stripped disposable clone; GPT-5.6 via the Responses API for reasoning; OSV.dev + local git for
 grounding; deterministic contract/verifier/trust-boundary modules; Ed25519 receipts. Next.js 15 +
-Tailwind dashboard. 227 backend tests; offline eval fixtures.
+Tailwind dashboard. 230 backend tests; offline eval fixtures.
 
 **Built with:** Codex, GPT-5.6, Python, FastAPI, Next.js, TypeScript, Tailwind, OSV.dev, Ed25519.
 

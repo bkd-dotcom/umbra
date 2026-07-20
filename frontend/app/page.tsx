@@ -73,7 +73,7 @@ export default function Landing() {
         </div>
         {/* Center nav — simple hover-underline links (Aceternity-style). */}
         <div className="hidden items-center gap-1 md:flex">
-          {([["Proof", "#evidence-locker"], ["Report", "#report"], ["Crew", "#crew"], ["Shift", "#pipeline-setup"], ["OpenAI", "#openai"]] as const).map(([label, href]) => (
+          {([["Proof", "#evidence-locker"], ["Report", "#report"], ["Crew", "#crew"], ["Shift", "#pipeline-scan"], ["OpenAI", "#openai"]] as const).map(([label, href]) => (
             <a key={href} href={href} className="group relative rounded-lg px-3 py-1.5 font-mono text-[12px] text-fog transition-colors hover:text-cloud">
               {label}
               <span className="absolute inset-x-3 -bottom-0.5 h-px origin-left scale-x-0 bg-cyan transition-transform duration-300 group-hover:scale-x-100" />

@@ -167,14 +167,17 @@ const STAGES: Stage[] = [
   { n: 6, rail: "Human gate", desc: "Reviewer assesses — you merge, never Umbra", time: "06:00", accent: "#5eead4" },
 ];
 
-// Semantic scenes that group the six stations into ~viewport-sized narrative
-// beats for the landing's chapter rail. No copy is duplicated — each station's
-// existing card is emitted in exactly one scene. Kept in station order.
+// Semantic scenes — ONE dominant station per scene, so a desktop viewport never
+// shows two equal-weight station panels at once. No copy is duplicated (each
+// station's card appears in exactly one scene). Kept in station order; the intro
+// rides on scene 0. All six single-station scenes fit one viewport comfortably.
 export const PIPELINE_SCENES: { key: string; label: string; stages: number[]; fit?: boolean }[] = [
-  { key: "pipeline-setup", label: "Shift setup", stages: [0], fit: true },              // Scan (~700px)
-  { key: "pipeline-detect", label: "Detection & evidence", stages: [1, 2], fit: true }, // Triage, Root cause (~784px)
-  { key: "pipeline-draft", label: "Draft & independent check", stages: [3, 4] },        // Draft fix, Evidence (~952px, natural flow)
-  { key: "pipeline-gate", label: "Signed receipt & human gate", stages: [5], fit: true }, // Human gate (~489px)
+  { key: "pipeline-scan", label: "Scan", stages: [0], fit: true },           // Watchman · OSV
+  { key: "pipeline-triage", label: "Triage", stages: [1], fit: true },       // scored, ranked
+  { key: "pipeline-rootcause", label: "Root cause", stages: [2], fit: true },// Detective · git blame
+  { key: "pipeline-draft", label: "Draft fix", stages: [3], fit: true },     // Codex · branch-only diff
+  { key: "pipeline-evidence", label: "Evidence", stages: [4], fit: true },   // provider ledger + pack
+  { key: "pipeline-gate", label: "Human gate", stages: [5], fit: true },     // Reviewer · you merge
 ];
 
 export function NightShiftPipeline({

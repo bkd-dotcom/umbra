@@ -19,11 +19,13 @@ all, and proves why.** One governed pipeline runs before any PR:
 
 ```
 load executable contract (.umbra/admission.yaml)
-  → quarantine untrusted repository text (redact flagged lines from the agent's context)
+  → redact untrusted repository text on disk (README / AGENTS.md / CLAUDE.md / … — the
+                                              agent can't read what isn't there)
   → run the bounded task in a disposable checkout   (a real Codex run live, or a
                                                      deterministic policy evaluation offline)
   → evaluate the changeset against the contract     (deterministic, outside the model)
-  → execute the contract's required checks          (real commands; missing/failing → cap at analyze)
+  → execute the contract's required checks          (allowlisted profiles, secret-stripped env,
+                                                     network-jailed on Linux; missing/failing → cap at analyze)
   → independently verify it                          (the patch-writer can't self-approve)
   → grant only the authority the run EARNED          (0 observe · 1 analyze · 2 branch-PR)
   → seal it in an Ed25519-signed Remediation Receipt (binds base commit + diff + advisory + checks)
@@ -114,11 +116,28 @@ finding and fix as an **auditable receipt**, not a claim to take on faith:
   `GET /api/verify-key`) — so it proves *Umbra* issued the receipt, not merely that some key signed it.
   The receipt honestly flags whether the signing key is the managed production key or a dev fallback. See
   [`backend/receipt.py`](backend/receipt.py).
-- **Earned-authority passport** — the authority an agent earned per repo is persisted and revocable;
-  re-running admission upserts it, a failed run downgrades it, and the Emergency Brake
-  (`POST /api/my/authority/revoke`) forces it to Level 0 — which the PR-open route enforces. `auto_merge`
-  is never stored true.
+- **Earned-authority passport** — the authority an agent earned per repo is persisted and revocable, and
+  bound to the exact run (receipt hash, base commit, executor + Codex config hash, check result, 7-day
+  expiry). Re-running admission upserts it, a failed run downgrades it, and the Emergency Brake
+  (`POST /api/my/authority/revoke`) forces it to Level 0 — which the PR-open route enforces (a revoked,
+  sub-L2, or expired passport blocks the PR). `auto_merge` is never stored true. Set
+  `UMBRA_REQUIRE_ADMISSION=true` for strict mode, where a repo with no passport cannot get an
+  agent-created PR at all (otherwise admission governs *enrolled* repositories).
 - **Activity / audit timeline** — the shift, in order, from real durations and provider labels.
+
+### Honest enforcement boundaries
+
+Umbra states what it actually enforces, never more:
+
+- **Required checks** run only **allowlisted profiles** (`npm test`/`ci`, `pytest`, …) with a
+  **secret-stripped environment**. Network is isolated via Linux user namespaces (`unshare -rn`) where
+  available; elsewhere (e.g. macOS dev) the run is **`host-restricted`** — allowlisted + secret-stripped,
+  but the network is *declared, not cut*. The report/receipt records the enforcement level achieved
+  (`sandboxed` / `host-restricted`) and the UI labels it *enforced* vs *declared · isolation pending*.
+- **Trust boundary:** untrusted instruction files (README / AGENTS.md / CLAUDE.md / .cursorrules / …) are
+  **redacted on disk** in the disposable checkout *before* a Codex run, so the agent can't read the
+  manipulation — then restored before the diff is captured. It catches *tested* patterns; it is not a
+  claim to defeat all prompt injection.
 
 The landing page's **Night-Shift pipeline** walks this end-to-end (Scan → Triage → Root-cause →
 Draft fix → Evidence → Human gate), replaying a real captured scan.

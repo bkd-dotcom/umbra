@@ -21,6 +21,7 @@ import { MovingBorderCard } from "@/components/ui/moving-border";
 import { HeroParallax } from "@/components/ui/hero-parallax";
 import { SectionFX } from "@/components/ui/section-fx";
 import { Spotlight } from "@/components/ui/spotlight";
+import { ChapterRail } from "@/components/ui/chapter-rail";
 import { fadeUp, scaleIn, slideLeft, slideRight, blurRise, EASE } from "@/lib/motion";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -88,9 +89,13 @@ export default function Landing() {
         </div>
       </motion.nav>
 
+      {/* Optional chapter progress aid — after the primary nav in DOM order so the
+          real site navigation is the first landmark / tab stop. Fixed visually. */}
+      <ChapterRail />
+
       {/* Hero — arrival: the shift begins. One massive statement, one clarifier,
           then the live operations board does the explaining. */}
-      <section className="relative flex min-h-[90vh] flex-col justify-center overflow-x-clip py-16 md:py-20">
+      <section data-chapter="Captured proof" className="chapter relative flex min-h-[90vh] flex-col justify-center overflow-x-clip py-16 md:py-20">
         <Spotlight className="-left-[32rem] -top-[30rem] opacity-40" fill="#22d3ee" />
         <div className="relative z-10 max-w-[64rem]">
           <motion.div
@@ -207,7 +212,7 @@ export default function Landing() {
           owns the "open it" CTA). This section shows the receipt's contents so the
           proof reads as substance, not a second identical button. Static card:
           motion is reserved for the hero's live OperationsBoard. */}
-      <section id="evidence-locker" className="relative py-20 md:py-24">
+      <section id="evidence-locker" data-chapter="Evidence Locker" className="chapter relative py-20 md:py-24">
         <SectionFX accent="#5eead4" variant="top" />
         <Reveal variants={blurRise}>
           <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
@@ -240,7 +245,7 @@ export default function Landing() {
 
       {/* The handoff — the morning report inside a MacBook that opens as you scroll.
           "You slept. They didn't." lives here and nowhere else. */}
-      <section id="report" className="relative">
+      <section id="report" data-chapter="Morning report" className="chapter relative">
         <MacbookScroll
           showGradient
           title={
@@ -365,7 +370,7 @@ export default function Landing() {
       </section>
 
       {/* Night crew — the main character: a classified ops file, one unit on station. */}
-      <section id="crew" className="relative py-24">
+      <section id="crew" data-chapter="Night crew" className="chapter relative py-24">
         <SectionFX accent="#a78bfa" variant="right" />
         <div className="pointer-events-none absolute left-1/2 top-16 h-56 w-56 -translate-x-1/2 rounded-full bg-violet/10 blur-[90px]" aria-hidden />
         <Reveal variants={scaleIn}>
@@ -383,13 +388,13 @@ export default function Landing() {
       {/* The night shift, replayed — one real captured shift scrolled end to end,
           from the first OSV lookup to the diff Codex left for review. A sibling
           `relative` section (NO overflow-hidden ancestor) so the console pins. */}
-      <section id="pipeline" className="relative py-16 md:py-20">
+      <section id="pipeline" data-chapter="Shift replay" className="chapter relative py-16 md:py-20">
         <NightShiftPipeline />
       </section>
 
       {/* How OpenAI is used — an engineering evidence panel, not a marketing block.
           Placed after the story, before the ChatGPT surface. */}
-      <section id="openai" className="relative py-24">
+      <section id="openai" data-chapter="OpenAI evidence" className="chapter relative py-24">
         <SectionFX accent="#34d399" variant="grid" />
         <Reveal variants={blurRise}>
           <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
@@ -472,7 +477,7 @@ export default function Landing() {
 
       {/* Umbra inside ChatGPT — proof it isn't trapped in a dashboard. Placed
           before the report so the OpenAI surface lands ahead of the payoff. */}
-      <section id="chatgpt" className="relative -mx-6 overflow-hidden rounded-[2rem] border border-teal/10 bg-[radial-gradient(70%_80%_at_100%_100%,rgba(16,163,127,0.10),transparent_58%),linear-gradient(180deg,rgba(16,163,127,0.035),transparent)] px-6 py-24 md:-mx-10 md:px-10">
+      <section id="chatgpt" data-chapter="In ChatGPT" className="chapter relative -mx-6 overflow-hidden rounded-[2rem] border border-teal/10 bg-[radial-gradient(70%_80%_at_100%_100%,rgba(16,163,127,0.10),transparent_58%),linear-gradient(180deg,rgba(16,163,127,0.035),transparent)] px-6 py-24 md:-mx-10 md:px-10">
         <SectionFX accent="#10a37f" variant="right" />
         <div className="pointer-events-none absolute left-6 top-6 hidden font-mono text-[10px] uppercase tracking-[0.28em] text-teal/45 md:block">gpt action surface</div>
         <Reveal variants={slideRight}>

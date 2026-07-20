@@ -245,6 +245,42 @@
   to { background-position: 220px 220px; }
 }
 
+/* --- Chapter scroll choreography ------------------------------------------- */
+/* The landing reads as a sequence of narrative "chapters". On DESKTOP ONLY we
+   add SOFT (proximity, never mandatory) vertical snapping so a chapter can settle
+   into view without ever trapping the reader: proximity only nudges when you come
+   to rest near a boundary, so wheel/keyboard/touch scrolling is never hijacked and
+   long chapters scroll normally. Mobile/tablet keep plain natural scrolling.
+
+   Content is visible without any of this — snapping is pure enhancement. */
+@media (min-width: 1024px) and (prefers-reduced-motion: no-preference) {
+  /* Scoped to the landing page only: :has([data-chapter]) matches the document
+     root only on routes that render chapter sections (the landing). Dashboard and
+     other routes have no [data-chapter] and are never given snap behavior. */
+  html:has([data-chapter]) {
+    scroll-snap-type: y proximity;
+    /* Clear the sticky nav (top-3 ≈ 12px + ~52px height) when a chapter snaps. */
+    scroll-padding-top: 76px;
+  }
+  /* A major chapter aligns its start to the top when the reader rests near it. */
+  .chapter {
+    scroll-snap-align: start;
+    scroll-snap-stop: normal; /* never force a stop — the reader can scroll past */
+  }
+  /* Optional: a chapter whose content COMFORTABLY fits one viewport may opt into
+     a full-height stage. It aligns content to the top (never center) so a taller-
+     than-expected chapter can only grow downward and scroll naturally — it can
+     never clip its own heading above the snap start. Long/dense chapters simply
+     omit this class and keep normal document flow. */
+  .chapter-tall {
+    min-height: 100svh;
+  }
+}
+
+/* Subtle, per-chapter entrance is handled by the Reveal component (opacity/
+   transform only) and is disabled under reduced-motion via the block below.
+   The chapter treatment itself adds no animation. */
+
 /* Respect reduced-motion globally: kill transforms/animations, keep opacity. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -253,4 +289,6 @@
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
+  /* Belt-and-braces: no snapping when reduced motion is requested. */
+  html:has([data-chapter]) { scroll-snap-type: none !important; }
 }

@@ -57,6 +57,41 @@ def decrypt(token: str) -> str:
     return Fernet(fernet_key()).decrypt(token.encode()).decode()
 
 
+def signing_seed() -> bytes:
+    """32-byte Ed25519 private seed used to sign Remediation Receipts.
+
+    Prod sets ``UMBRA_SIGNING_KEY`` (base64 of 32 raw bytes) via Secret Manager so
+    receipts are verifiable against a stable public key across restarts/instances.
+    The dev fallback is deterministic (like the Fernet dev key) so local/tests
+    round-trip — it is NOT a real secret and receipts signed with it are only as
+    trustworthy as the dev environment. The public key is served at
+    ``/api/verify-key`` so anyone can verify a receipt independently.
+    """
+    provided = os.getenv("UMBRA_SIGNING_KEY")
+    if provided:
+        try:
+            seed = base64.b64decode(provided)
+            if len(seed) >= 32:
+                return seed[:32]
+        except Exception:  # noqa: BLE001 - malformed env → fall back to dev seed
+            pass
+    return hashlib.sha256(b"umbra-dev-insecure-signing-seed").digest()
+
+
+def signing_key_is_ephemeral() -> bool:
+    """True when signing uses the deterministic dev seed (no UMBRA_SIGNING_KEY).
+
+    Surfaced honestly in the receipt so a reviewer knows whether the signature is
+    backed by a managed production key or a dev fallback."""
+    provided = os.getenv("UMBRA_SIGNING_KEY")
+    if not provided:
+        return True
+    try:
+        return len(base64.b64decode(provided)) < 32
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def github_oauth() -> tuple[str, str] | None:
     cid, secret = os.getenv("GITHUB_CLIENT_ID"), os.getenv("GITHUB_CLIENT_SECRET")
     return (cid, secret) if cid and secret else None

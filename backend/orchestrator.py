@@ -260,8 +260,11 @@ class Orchestrator:
             path = _fixture_path(fixture)
             if path is None:
                 raise ValueError(f"Unknown admission fixture: {fixture!r}.")
-            return await asyncio.to_thread(lambda: run_admission_on_checkout(path, f"eval/{fixture}").to_public())
-        return await asyncio.to_thread(lambda: run_admission_live(repo_url, token).to_public())
+            report = await asyncio.to_thread(lambda: run_admission_on_checkout(path, f"eval/{fixture}").to_public())
+        else:
+            report = await asyncio.to_thread(lambda: run_admission_live(repo_url, token).to_public())
+        report["receipt"] = _sign_admission_receipt(report)
+        return report
 
 
     @staticmethod
@@ -614,6 +617,26 @@ def _fixture_path(fixture: str):
     if root not in candidate.parents or not candidate.is_dir():
         return None
     return candidate
+
+
+def _sign_admission_receipt(report: dict[str, Any]) -> dict[str, Any]:
+    """Build a signed Remediation Receipt from an admission report — the
+    proof-carrying, independently-verifiable record of the run."""
+    from backend.receipt import build_receipt
+
+    return build_receipt(
+        repo=str(report.get("repo", "")),
+        base_commit=report.get("base_commit"),
+        contract=report.get("contract") or {},
+        contract_result=report.get("contract_result") or {},
+        verifier=report.get("verifier"),
+        trust_boundary=report.get("trust_boundary"),
+        proposed_change=report.get("proposed_change"),
+        providers=report.get("providers"),
+        authority_level=int(report.get("authority_level", 0)),
+        authority=str(report.get("authority", "observe")),
+        outcome=report.get("outcome"),
+    )
 
 
 

@@ -229,6 +229,31 @@ async def evidence_pack_verify(request: EvidenceVerifyRequest) -> dict[str, obje
     }
 
 
+@app.get("/api/verify-key", tags=["agents"])
+async def verify_key() -> dict[str, object]:
+    """The Ed25519 public key used to sign Remediation Receipts, so anyone can
+    verify a receipt's signature independently (offline). ``ephemeral`` is true
+    when the server is using the deterministic dev key rather than a managed one."""
+    from backend.receipt import public_key_b64
+    from backend.settings import signing_key_is_ephemeral
+
+    return {"algorithm": "Ed25519", "public_key": public_key_b64(), "ephemeral": signing_key_is_ephemeral()}
+
+
+class ReceiptVerifyRequest(BaseModel):
+    envelope: dict = Field(description="A signed Remediation Receipt envelope {receipt, signature, public_key, ...}")
+
+
+@app.post("/api/receipt/verify", tags=["agents"])
+async def receipt_verify(request: ReceiptVerifyRequest) -> dict[str, object]:
+    """Independently verify a signed Remediation Receipt: recompute its canonical
+    hash and check the Ed25519 signature against the embedded/server public key.
+    No auth — a receipt is meant to be verifiable by anyone."""
+    from backend.receipt import verify_receipt
+
+    return verify_receipt(request.envelope)
+
+
 class PullRequestRequest(BaseModel):
     repo_url: str
     mode: str = Field(default="bump", description="'bump' (deterministic dependency bump), 'apply_diff' (open a PR from a diff Umbra already produced), or 'codex' (Codex-authored)")

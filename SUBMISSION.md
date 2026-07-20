@@ -37,18 +37,22 @@ make a change at all, and proves why. One governed, deterministic pipeline runs 
   treated as untrusted input; agent-directed manipulation (policy override, secret access, scope
   expansion) is flagged and, before a real Codex run, the untrusted instruction files (README / AGENTS.md
   / CLAUDE.md / .cursorrules / …) are **redacted on disk in the disposable checkout** so the agent can't
-  read the manipulation — then restored before the diff is captured. Honest scope: it catches *tested*
-  patterns, never claims to prevent all prompt injection.
+  read the manipulation. They're restored afterward and the changeset is **recomputed from `git` on the
+  final tree**, so the signed diff reflects only the agent's real change (never the redaction); any agent
+  edit to an instruction file is dropped and recorded. Honest scope: it catches *tested* patterns, never
+  claims to prevent all prompt injection.
 - **Executor (honest)** — the change is produced by a **genuine bounded Codex run** in a disposable
   checkout when the Codex CLI is enabled (label `codex-cli`, captured with a config hash), or by a
   **deterministic policy evaluation** for the offline fixtures (label `deterministic`). The report and
   provider ledger always name which ran — the offline path never claims Codex participated.
-- **Required checks, sandboxed** ([`backend/checks.py`](backend/checks.py)) — the contract's
+- **Required checks, isolated by tier** ([`backend/checks.py`](backend/checks.py)) — the contract's
   `required_checks` actually run, but only **allowlisted profiles** (`npm test`/`ci`, `pytest`, …) with a
-  **secret-stripped env** and, on Linux, a **network namespace** (`unshare -rn`); a non-profile command
-  (e.g. `curl … | sh`) is refused, never executed. The enforcement level achieved (`sandboxed` /
-  `host-restricted`) is recorded honestly. A missing/failing required check **caps authority at Level 1**
-  — branch-PR requires they ran and passed. (Fixture `failing-check-caps-authority` proves the cap.)
+  **secret-stripped env** and the strongest isolation that **preflights**: `sandboxed` (bubblewrap
+  filesystem+network sandbox), `network-isolated` (Linux `unshare -rn`), or `host-restricted` (no working
+  wrapper — allowlist + scrubbed env only). A non-profile command (e.g. `curl … | sh`) is refused, never
+  executed; the tier achieved is recorded honestly (never overclaimed). A missing/failing required check
+  **caps authority at Level 1** — branch-PR requires they ran and passed. (Fixture
+  `failing-check-caps-authority` proves the cap.)
 - **Independent Verifier** ([`backend/verifier.py`](backend/verifier.py)) — the patch-writer can't
   self-approve; a separate deterministic pass checks scope, secrets, whether the bump *actually* clears
   the cited advisory (read out of the produced manifest), the executed test result, and citations. Never

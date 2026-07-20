@@ -130,14 +130,22 @@ finding and fix as an **auditable receipt**, not a claim to take on faith:
 Umbra states what it actually enforces, never more:
 
 - **Required checks** run only **allowlisted profiles** (`npm test`/`ci`, `pytest`, …) with a
-  **secret-stripped environment**. Network is isolated via Linux user namespaces (`unshare -rn`) where
-  available; elsewhere (e.g. macOS dev) the run is **`host-restricted`** — allowlisted + secret-stripped,
-  but the network is *declared, not cut*. The report/receipt records the enforcement level achieved
-  (`sandboxed` / `host-restricted`) and the UI labels it *enforced* vs *declared · isolation pending*.
+  **secret-stripped environment**, under the strongest isolation that actually preflights — recorded
+  truthfully as one of three tiers:
+  - **`sandboxed`** — a bubblewrap filesystem+network sandbox (read-only OS, writable bind only on the
+    disposable checkout, private HOME/tmp, all namespaces unshared). This is the only tier called a full
+    sandbox: the repo's own build scripts can't read the host home or write outside the checkout.
+  - **`network-isolated`** — Linux `unshare -rn` (network cut, host filesystem — *not* a full sandbox).
+  - **`host-restricted`** — no working wrapper (e.g. macOS dev): allowlist + secret-stripped env only.
+  Each wrapper is **preflighted** (`… true`) before its tier is claimed, so a namespace that fails to
+  initialize is never mislabeled. The report/receipt record the tier achieved and the UI shows it
+  (*enforced · sandboxed* / *network-isolated runner* / *host-restricted · isolation pending*).
 - **Trust boundary:** untrusted instruction files (README / AGENTS.md / CLAUDE.md / .cursorrules / …) are
   **redacted on disk** in the disposable checkout *before* a Codex run, so the agent can't read the
-  manipulation — then restored before the diff is captured. It catches *tested* patterns; it is not a
-  claim to defeat all prompt injection.
+  manipulation. They're restored afterward and the changeset is **recomputed from `git` on the final
+  tree**, so the signed diff reflects only the agent's real change (never the redaction); any agent edit
+  to an instruction file is dropped and recorded. It catches *tested* patterns; it is not a claim to
+  defeat all prompt injection.
 
 The landing page's **Night-Shift pipeline** walks this end-to-end (Scan → Triage → Root-cause →
 Draft fix → Evidence → Human gate), replaying a real captured scan.

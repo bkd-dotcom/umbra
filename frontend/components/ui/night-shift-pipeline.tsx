@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { motion } from "motion/react";
 import { EASE } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import { PROOF_SCAN } from "@/lib/proof-scan";
+import { PROOF_SCAN, PROOF_REPO } from "@/lib/proof-scan";
 import {
   ArtifactShell,
   CREW,
@@ -171,13 +171,18 @@ const STAGES: Stage[] = [
 // shows two equal-weight station panels at once. No copy is duplicated (each
 // station's card appears in exactly one scene). Kept in station order; the intro
 // rides on scene 0. All six single-station scenes fit one viewport comfortably.
-export const PIPELINE_SCENES: { key: string; label: string; stages: number[]; fit?: boolean }[] = [
-  { key: "pipeline-scan", label: "Scan", stages: [0], fit: true },           // Watchman · OSV
-  { key: "pipeline-triage", label: "Triage", stages: [1], fit: true },       // scored, ranked
-  { key: "pipeline-rootcause", label: "Root cause", stages: [2], fit: true },// Detective · git blame
-  { key: "pipeline-draft", label: "Draft fix", stages: [3], fit: true },     // Codex · branch-only diff
-  { key: "pipeline-evidence", label: "Evidence", stages: [4], fit: true },   // provider ledger + pack
-  { key: "pipeline-gate", label: "Human gate", stages: [5], fit: true },     // Reviewer · you merge
+// `monitor` labels the Operations Monitor top bar per scene (evidence type +
+// honesty tone) — a visual container only, never fake controls.
+export const PIPELINE_SCENES: {
+  key: string; label: string; stages: number[]; fit?: boolean;
+  monitor: { context: string; tone: "scan" | "captured" | "sample" | "diff" | "receipt" | "gate" };
+}[] = [
+  { key: "pipeline-scan", label: "Scan", stages: [0], fit: true, monitor: { context: "operator log · watchman", tone: "scan" } },
+  { key: "pipeline-triage", label: "Triage", stages: [1], fit: true, monitor: { context: "osv.dev advisories · captured", tone: "captured" } },
+  { key: "pipeline-rootcause", label: "Root cause", stages: [2], fit: true, monitor: { context: "git history · blame", tone: "sample" } },
+  { key: "pipeline-draft", label: "Draft fix", stages: [3], fit: true, monitor: { context: "codex diff · branch-only", tone: "diff" } },
+  { key: "pipeline-evidence", label: "Evidence", stages: [4], fit: true, monitor: { context: "provider ledger · receipt", tone: "receipt" } },
+  { key: "pipeline-gate", label: "Human gate", stages: [5], fit: true, monitor: { context: "authority decision · human gate", tone: "gate" } },
 ];
 
 export function NightShiftPipeline({
@@ -213,10 +218,12 @@ export function NightShiftPipeline({
           {/* Editorial shift timeline — time, position, and a static 6-station line.
               The active station is emphasized by color/opacity only (no motion). */}
           <ShiftTimeline current={i} accent={stage.accent} />
-          {/* The one dominant station card for this scene. */}
+          {/* The one dominant station for this scene, framed as an Operations
+              Monitor: a restrained dark surface with a thin top bar (status dot +
+              repo/context label). Container only — no clickable controls, no nav. */}
           <div className="flex flex-col gap-5">
             {def.stages.map((s) => (
-              <article key={STAGES[s].n} className="rounded-2xl border p-5 shadow-[var(--shadow-card)]" style={{ borderColor: "var(--surface-border)", background: "var(--surface)" }}>
+              <OperationsMonitor key={STAGES[s].n} accent={STAGES[s].accent} context={def.monitor.context} tone={def.monitor.tone} clock={STAGES[s].time}>
                 <div className="mb-3 flex items-baseline gap-3">
                   <span className="font-serif text-2xl leading-none" style={{ color: STAGES[s].accent }}>{String(STAGES[s].n).padStart(2, "0")}</span>
                   <div>
@@ -226,7 +233,7 @@ export function NightShiftPipeline({
                   <span className="ml-auto font-mono text-[10px] tabular-nums text-fog/70">{STAGES[s].time}</span>
                 </div>
                 <StagePanel index={s} D={D} mode={mode} still />
-              </article>
+              </OperationsMonitor>
             ))}
           </div>
         </div>
@@ -312,6 +319,53 @@ function ShiftTimeline({ current, accent }: { current: number; accent: string })
           );
         })}
       </ol>
+    </div>
+  );
+}
+
+/* ------------------------- Operations Monitor frame ------------------------ */
+/* A restrained "operator screen" container: dark surface, thin border, a subtle
+   top bar with a tiny status dot, the real repository target, and a per-scene
+   context label. It is a VISUAL CONTAINER ONLY — no navigation, no clickable
+   controls, no fake browser chrome or laptop illustration. Real product evidence
+   (the existing StagePanel) renders inside. Scales cleanly; no forced height. */
+const _MONITOR_TONE: Record<string, { dot: string; chip: string; text: string }> = {
+  scan:     { dot: "#22d3ee", chip: "scan-start", text: "text-cyan" },
+  captured: { dot: "#fbbf24", chip: "captured · calhacks-12", text: "text-amber" },
+  sample:   { dot: "#8b90a6", chip: "sample", text: "text-fog" },
+  diff:     { dot: "#5eead4", chip: "branch-only", text: "text-teal" },
+  receipt:  { dot: "#5eead4", chip: "signed receipt", text: "text-teal" },
+  gate:     { dot: "#a78bfa", chip: "human gate", text: "text-violet" },
+};
+
+function OperationsMonitor({
+  accent, context, tone, clock, children,
+}: {
+  accent: string; context: string; tone: keyof typeof _MONITOR_TONE; clock: string; children: React.ReactNode;
+}) {
+  const t = _MONITOR_TONE[tone];
+  return (
+    <div
+      className="overflow-hidden rounded-2xl border shadow-[var(--shadow-card)]"
+      style={{ borderColor: "var(--surface-border)", background: "var(--color-ink-2)" }}
+    >
+      {/* Top bar — status dot · repo target · context label · clock. Not interactive. */}
+      <div
+        className="flex items-center gap-2.5 border-b px-4 py-2.5"
+        style={{ borderColor: "var(--surface-border)", background: "var(--surface-2)" }}
+      >
+        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: t.dot, boxShadow: `0 0 8px ${t.dot}` }} aria-hidden />
+        <span className="truncate font-mono text-[11px] text-cloud" translate="no">{PROOF_REPO}</span>
+        <span className="hidden truncate font-mono text-[10px] text-fog sm:inline">· {context}</span>
+        <span className={cn("ml-auto shrink-0 rounded-full border px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em]", t.text)} style={{ borderColor: "var(--surface-border)", background: "var(--color-ink)" }}>
+          {t.chip}
+        </span>
+        <span className="shrink-0 font-mono text-[10px] tabular-nums text-fog/70">{clock}</span>
+      </div>
+      {/* Body — real product evidence. */}
+      <div className="p-5" style={{ borderTop: `1px solid ${accent}22` }}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -589,6 +643,12 @@ function EvidencePanel({ D, mode, still }: { D: Derived; mode: Mode; still: bool
           <span className="ml-auto shrink-0 font-mono text-[9.5px] text-teal">hashable · exportable</span>
         </div>
       )}
+      {/* Honest distinction: the Evidence Pack carries a recomputable integrity
+          hash; the Remediation Receipt is the tamper-evident signed artifact. */}
+      <div className="mt-2 flex flex-col gap-1 font-mono text-[10.5px] leading-snug">
+        <span className="text-fog">Evidence Pack · <span className="text-cloud">SHA-256 integrity hash</span> (recomputable)</span>
+        <span className="text-fog">Remediation Receipt · <span className="text-teal">Ed25519-signed</span> · signature-verifiable</span>
+      </div>
     </div>
   );
 }

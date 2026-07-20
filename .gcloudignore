@@ -10,3 +10,11 @@ frontend/.next/
 frontend/out/
 .env
 frontend/.env.local
+# Never upload local dev notes, signing keys, or captured receipts to the build context.
+opencode.md
+*.key
+*.pem
+umbra-signing-key*
+*signing-key*
+umbra-receipt*.json
+live-*-receipt.json

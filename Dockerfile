@@ -24,6 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-cer
     && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md ./
 COPY backend ./backend
+# Committed, hermetic admission eval fixtures — the offline/deterministic
+# /api/admit demo path resolves them at /app/evals/fixtures.
+COPY evals ./evals
 # Curated OpenAPI for the ChatGPT plugin / GPT Action (served at /openapi-actions.yaml).
 COPY custom_gpt ./custom_gpt
 # [cloud] adds google-cloud-firestore for durable per-user storage.

@@ -1,10 +1,12 @@
 "use client";
 
-import { motion } from "motion/react";
+import { motion, useReducedMotion } from "motion/react";
 import { cn } from "@/lib/utils";
 
 /** Aceternity "Hover Border Gradient" — a pill whose gradient border sweeps on
- *  hover. Renders as <a> when `href` is given, else <button>. */
+ *  hover. Renders as <a> when `href` is given, else <button>. Reduced-motion:
+ *  the perpetual conic sweep is not rendered (the pill keeps its static border),
+ *  so no infinite rotation runs for users who prefer reduced motion. */
 export function HoverBorderGradient({
   children,
   href,
@@ -18,6 +20,7 @@ export function HoverBorderGradient({
   className?: string;
   type?: "button" | "submit";
 }) {
+  const reduce = useReducedMotion();
   const inner = (
     <span
       className={cn(
@@ -35,7 +38,9 @@ export function HoverBorderGradient({
   const shell =
     "group relative inline-flex w-fit items-center justify-center overflow-hidden rounded-full border border-[color:var(--surface-border)] bg-[color:var(--surface-2)] p-px transition-transform duration-200 ease-out hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.97]";
 
-  const sweep = (
+  // The perpetual conic sweep. Omitted entirely under reduced motion so no
+  // infinite rotation loop runs; the pill's static border remains the resting state.
+  const sweep = reduce ? null : (
     <motion.span
       aria-hidden
       className="absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100"

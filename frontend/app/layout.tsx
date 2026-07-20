@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, Instrument_Serif, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { SmoothScroll } from "@/components/ui/smooth-scroll";
@@ -35,6 +35,13 @@ export const metadata: Metadata = {
     title: "Umbra — the AI engineer that works the night shift",
     description: DESCRIPTION,
   },
+};
+
+// Mobile browser chrome color. This is the DEFAULT dark page background
+// (#05060a); it is a single static value and does not track the manual
+// light-theme toggle (Umbra ships dark by default).
+export const viewport: Viewport = {
+  themeColor: "#05060a",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

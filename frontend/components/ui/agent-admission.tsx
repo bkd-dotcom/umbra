@@ -307,12 +307,17 @@ export function AgentAdmission({ repo = "", signedIn = false }: { repo?: string;
                           <span className="font-mono text-[9.5px] text-fog/60">{f.source}:{f.line}</span>
                         </div>
                         <p className="mt-1 font-mono text-[11px] italic text-fog">“{f.excerpt}”</p>
-                        <p className="mt-1 text-[10.5px] text-fog/60">Redacted from the sanitized context handed to the agent.</p>
+                        <p className="mt-1 text-[10.5px] text-fog/60">Redacted in the agent&apos;s temporary checkout and prompt context.</p>
                       </div>
                     ))}
                   </div>
                 )}
                 {tb && !tb.clean && <p className="mt-2 text-[10px] leading-snug text-fog/50">{tb.note}</p>}
+                {tb?.scanned_sources && tb.scanned_sources.length > 0 && (
+                  <p className="mt-2 font-mono text-[9px] leading-snug text-fog/50">
+                    scanned: {tb.scanned_sources.join(" · ")}
+                  </p>
+                )}
               </div>
 
               {/* 3. Independent verifier */}
@@ -333,9 +338,13 @@ export function AgentAdmission({ repo = "", signedIn = false }: { repo?: string;
                           <span className="font-mono text-[9.5px] uppercase tracking-[0.12em] text-fog/70">required checks (executed)</span>
                           {(() => {
                             const enf = report.checks.enforcement;
-                            const tone = enf === "sandboxed" ? "teal" : enf === "host-restricted" ? "amber" : "fog";
-                            const label = enf === "sandboxed" ? "enforced · sandboxed" : enf === "host-restricted" ? "declared · isolation pending" : "not enforced";
-                            return <Chip tone={tone as "teal" | "amber" | "fog"}>{label}</Chip>;
+                            const map: Record<string, { tone: "teal" | "amber" | "fog"; label: string }> = {
+                              sandboxed: { tone: "teal", label: "enforced · sandboxed (fs+net)" },
+                              "network-isolated": { tone: "teal", label: "network-isolated runner" },
+                              "host-restricted": { tone: "amber", label: "host-restricted · isolation pending" },
+                            };
+                            const m = map[enf] ?? { tone: "fog" as const, label: "not enforced" };
+                            return <Chip tone={m.tone}>{m.label}</Chip>;
                           })()}
                         </div>
                         {report.checks.results.map((r, i) => (

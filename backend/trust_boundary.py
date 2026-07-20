@@ -162,3 +162,45 @@ def scan_context(text: str, source: str) -> TrustBoundaryResult:
     result = TrustBoundaryResult(scanned_sources=[source])
     result.findings.extend(scan_text(text, source))
     return result
+
+
+def sanitize_checkout(repo_path, sources: tuple[str, ...] = UNTRUSTED_SOURCES) -> dict[str, str]:
+    """Redact flagged lines in the untrusted instruction files ON DISK, in place.
+
+    This makes the trust boundary real for a workspace-access agent: after this
+    runs, the agent's checkout no longer contains the manipulation text in the
+    well-known instruction files (README, AGENTS.md, CLAUDE.md, .cursorrules, …) —
+    it can't read what isn't there. Returns a map of ``rel_path -> original_text``
+    so the caller can restore the originals with :func:`restore_checkout` before
+    computing the change diff (so the redaction itself never appears as a change).
+    Only files that actually contained a flagged line are touched.
+    """
+    from pathlib import Path
+
+    root = Path(repo_path)
+    originals: dict[str, str] = {}
+    for rel in sources:
+        path = root / rel
+        try:
+            if not path.is_file():
+                continue
+            raw = path.read_text(errors="replace")
+            sanitized, count = sanitize_text(raw, rel)
+            if count > 0:
+                originals[rel] = raw
+                path.write_text(sanitized)
+        except OSError:
+            continue
+    return originals
+
+
+def restore_checkout(repo_path, originals: dict[str, str]) -> None:
+    """Restore the files redacted by :func:`sanitize_checkout` to their originals."""
+    from pathlib import Path
+
+    root = Path(repo_path)
+    for rel, text in (originals or {}).items():
+        try:
+            (root / rel).write_text(text)
+        except OSError:
+            continue

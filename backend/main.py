@@ -247,7 +247,8 @@ class ReceiptVerifyRequest(BaseModel):
 @app.post("/api/receipt/verify", tags=["agents"])
 async def receipt_verify(request: ReceiptVerifyRequest) -> dict[str, object]:
     """Independently verify a signed Remediation Receipt: recompute its canonical
-    hash and check the Ed25519 signature against the embedded/server public key.
+    hash and check the Ed25519 signature **against Umbra's own pinned public key**
+    (so it proves Umbra issued the receipt, not merely that some key signed it).
     No auth — a receipt is meant to be verifiable by anyone."""
     from backend.receipt import verify_receipt
 
@@ -268,10 +269,20 @@ class PullRequestRequest(BaseModel):
 
 def _persist_authority(user: dict | None, report: dict[str, object]) -> None:
     """Record the earned-authority passport from an admission run, keyed by repo.
-    Best-effort; never raises."""
+
+    Binds the passport tightly to the exact admission that earned it — the signed
+    receipt hash, base commit, executor + Codex config hash, last check result, and
+    an expiry — so a later PR can be traced to precisely this admission. Best-effort;
+    never raises."""
+    from datetime import UTC, datetime, timedelta
+
     try:
         if not user or not report.get("repo"):
             return
+        receipt_env = report.get("receipt") or {}
+        checks = report.get("checks") or {}
+        codex_config = report.get("codex_config") or {}
+        now = datetime.now(UTC)
         get_store().save_authority(_user_key(user), str(report["repo"]), {
             "authority_level": report.get("authority_level", 0),
             "authority": report.get("authority", "observe"),
@@ -279,6 +290,17 @@ def _persist_authority(user: dict | None, report: dict[str, object]) -> None:
             "outcome": report.get("outcome", ""),
             "contract_hash": (report.get("contract_result") or {}).get("contract_hash"),
             "task_type": report.get("task_type"),
+            # Tight bindings to the exact admission run.
+            "executor": report.get("executor"),
+            "base_commit": report.get("base_commit"),
+            "diff_hash": report.get("diff_hash"),
+            "advisory_hash": report.get("advisory_hash"),
+            "codex_config_hash": codex_config.get("config_hash"),
+            "receipt_hash": receipt_env.get("canonical_hash"),
+            "checks_enforcement": checks.get("enforcement"),
+            "checks_all_passed": checks.get("all_passed"),
+            "admitted_at": now.isoformat(),
+            "expires_at": (now + timedelta(days=7)).isoformat(),
         })
     except Exception:  # noqa: BLE001 - authority persistence is best-effort
         logging.getLogger("umbra.authority").exception("Failed to persist authority passport")
@@ -308,10 +330,23 @@ def _persist_opened_pr(user: dict | None, request: PullRequestRequest, opened: d
         logging.getLogger("umbra.pr").exception("Failed to persist opened PR receipt")
 
 
+def _require_admission() -> bool:
+    """Strict mode: when UMBRA_REQUIRE_ADMISSION=true, an agent-created PR requires a
+    current branch-PR passport for the repo (no admission → no PR). Default off, so
+    admission "governs enrolled repositories" and existing crew flows are unaffected
+    until a repo opts into the governed workflow."""
+    return os.getenv("UMBRA_REQUIRE_ADMISSION", "false").lower() == "true"
+
+
 def _enforce_pr_authority(user: dict, repo_url: str) -> None:
-    """Block a PR open when the repo's earned-authority passport has been revoked or
-    dropped below branch-PR (Level 2). No passport → no admission has run for this
-    repo yet, so the gate does not apply (existing crew flows are unaffected)."""
+    """Gate a PR open on the repo's earned-authority passport.
+
+    Always blocks a revoked passport (Emergency Brake), one below branch-PR, or an
+    expired one. In strict mode (UMBRA_REQUIRE_ADMISSION=true) a repo with NO
+    passport is also blocked — the fully governed workflow. Otherwise a repo that
+    never ran admission is unaffected (admission governs *enrolled* repositories)."""
+    from datetime import UTC, datetime
+
     from backend.integrations.github import parse_public_repo
 
     try:
@@ -320,11 +355,20 @@ def _enforce_pr_authority(user: dict, repo_url: str) -> None:
         return
     passport = get_store().get_authority(_user_key(user), label)
     if not passport:
-        return  # never admitted → gate does not apply
+        if _require_admission():
+            raise HTTPException(status_code=403, detail="This repository has not been admitted. Run the Agent Admission Test to earn branch-PR authority before opening a PR (strict mode).")
+        return  # not enrolled → gate does not apply
     if passport.get("revoked"):
         raise HTTPException(status_code=403, detail="Authority for this repository was revoked (Emergency Brake). Re-run the Agent Admission Test to re-earn branch-PR authority before opening a PR.")
     if int(passport.get("authority_level", 0)) < 2:
         raise HTTPException(status_code=403, detail=f"This repository's agent has not earned branch-PR authority (current: {passport.get('authority', 'observe')}). Re-run the Agent Admission Test.")
+    expires_at = passport.get("expires_at")
+    if expires_at:
+        try:
+            if datetime.fromisoformat(expires_at) < datetime.now(UTC):
+                raise HTTPException(status_code=403, detail="This repository's admission has expired. Re-run the Agent Admission Test to re-earn branch-PR authority.")
+        except (ValueError, TypeError):
+            pass
 
 
 async def _open_fix_pr(request: PullRequestRequest, http: Request, preview: bool) -> dict[str, object]:

@@ -65,6 +65,35 @@ def test_revoke_endpoint_requires_auth():
     assert client.post("/api/my/authority/revoke", json={"repo": "o/r"}).status_code == 401
 
 
+def test_persist_authority_binds_receipt_and_run():
+    """The persisted passport binds the exact admission: receipt hash, base commit,
+    executor/config hash, check result, and an expiry."""
+    from backend import main
+    from backend.store import _MemoryStore, set_store
+
+    store = _MemoryStore()
+    set_store(store)
+    try:
+        user = {"provider": "github", "sub": "7"}
+        report = {
+            "repo": "owner/repo", "authority_level": 2, "authority": "branch_pr",
+            "task_type": "dependency-remediation", "executor": "codex-cli",
+            "base_commit": "abc123def456", "diff_hash": "sha256:dd", "advisory_hash": "sha256:aa",
+            "contract_result": {"contract_hash": "sha256:cc"},
+            "checks": {"enforcement": "sandboxed", "all_passed": True},
+            "codex_config": {"config_hash": "sha256:xx"},
+            "receipt": {"canonical_hash": "sha256:rr"},
+        }
+        main._persist_authority(user, report)
+        p = store.get_authority("github:7", "owner/repo")
+        assert p["receipt_hash"] == "sha256:rr" and p["base_commit"] == "abc123def456"
+        assert p["executor"] == "codex-cli" and p["codex_config_hash"] == "sha256:xx"
+        assert p["checks_enforcement"] == "sandboxed" and p["checks_all_passed"] is True
+        assert p["admitted_at"] and p["expires_at"] and p["expires_at"] > p["admitted_at"]
+    finally:
+        set_store(_MemoryStore())
+
+
 def test_pr_authority_gate_blocks_revoked_or_low_authority():
     """The PR-open gate (_enforce_pr_authority) is the real server-side enforcement:
     a revoked or below-L2 passport blocks a PR; no passport leaves crew flows alone."""
@@ -101,6 +130,44 @@ def test_pr_authority_gate_blocks_revoked_or_low_authority():
             assert False, "expected sub-L2 authority to block the PR"
         except fastapi.HTTPException as exc:
             assert exc.status_code == 403
+    finally:
+        set_store(_MemoryStore())
+
+
+def test_pr_authority_strict_mode_blocks_unenrolled_repo(monkeypatch):
+    """UMBRA_REQUIRE_ADMISSION=true → a repo with no passport is blocked."""
+    import fastapi
+
+    from backend import main
+    from backend.store import _MemoryStore, set_store
+
+    set_store(_MemoryStore())
+    monkeypatch.setenv("UMBRA_REQUIRE_ADMISSION", "true")
+    try:
+        try:
+            main._enforce_pr_authority({"provider": "github", "sub": "1"}, "https://github.com/owner/repo")
+            assert False, "strict mode should block an unadmitted repo"
+        except fastapi.HTTPException as exc:
+            assert exc.status_code == 403 and "not been admitted" in exc.detail.lower()
+    finally:
+        set_store(_MemoryStore())
+
+
+def test_pr_authority_blocks_expired_passport():
+    import fastapi
+
+    from backend import main
+    from backend.store import _MemoryStore, set_store
+
+    store = _MemoryStore()
+    set_store(store)
+    try:
+        store.save_authority("github:1", "owner/repo", {"authority_level": 2, "authority": "branch_pr", "expires_at": "2000-01-01T00:00:00+00:00"})
+        try:
+            main._enforce_pr_authority({"provider": "github", "sub": "1"}, "https://github.com/owner/repo")
+            assert False, "expected expired passport to block the PR"
+        except fastapi.HTTPException as exc:
+            assert exc.status_code == 403 and "expired" in exc.detail.lower()
     finally:
         set_store(_MemoryStore())
 

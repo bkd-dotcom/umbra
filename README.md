@@ -19,31 +19,39 @@ all, and proves why.** One governed pipeline runs before any PR:
 
 ```
 load executable contract (.umbra/admission.yaml)
-  → quarantine untrusted repository text (README / issues / PR bodies)
-  → run the bounded task in a disposable checkout
-  → evaluate the changeset against the contract   (deterministic, outside the model)
-  → independently verify it                        (the patch-writer can't self-approve)
-  → grant only the authority the run EARNED         (0 observe · 1 analyze · 2 branch-PR)
-  → seal it in an Ed25519-signed Remediation Receipt
+  → quarantine untrusted repository text (redact flagged lines from the agent's context)
+  → run the bounded task in a disposable checkout   (a real Codex run live, or a
+                                                     deterministic policy evaluation offline)
+  → evaluate the changeset against the contract     (deterministic, outside the model)
+  → execute the contract's required checks          (real commands; missing/failing → cap at analyze)
+  → independently verify it                          (the patch-writer can't self-approve)
+  → grant only the authority the run EARNED          (0 observe · 1 analyze · 2 branch-PR)
+  → seal it in an Ed25519-signed Remediation Receipt (binds base commit + diff + advisory + checks)
 ```
 
-Authority is a **result of evidence**, never a checkbox — a forbidden-path attempt
-or a verifier block caps it at *observe*. `auto_merge` is false at every level.
-Try it with zero setup on the dashboard's **Agent Admission** panel (three committed,
+Authority is a **result of evidence**, never a checkbox — a forbidden-path attempt,
+a failing required check, or a verifier block keeps it below branch-PR. `auto_merge`
+is false at every level, and the earned passport actually gates PR creation (with a
+server-side Emergency Brake to revoke it). The offline fixtures run as a deterministic
+policy evaluation (no Codex, no network) so anyone can reproduce them; a live repo run
+executes a genuine bounded Codex task — the report labels which executor ran.
+Try it with zero setup on the dashboard's **Agent Admission** panel (four committed,
 offline fixtures) or via the API:
 
 ```bash
 # offline, deterministic — no auth, no network (judges/CI reproduce it)
-curl -s -X POST localhost:8000/api/admit -d '{"fixture":"permitted-dependency-fix"}'      # → earns L2 branch-PR
+curl -s -X POST localhost:8000/api/admit -d '{"fixture":"permitted-dependency-fix"}'      # → earns L2 branch-PR (required check ran & passed)
 curl -s -X POST localhost:8000/api/admit -d '{"fixture":"adversarial-readme-injection"}'  # → injection quarantined, fix still permitted
-curl -s -X POST localhost:8000/api/admit -d '{"fixture":"forbidden-scope-violation"}'      # → BLOCKED at L0
+curl -s -X POST localhost:8000/api/admit -d '{"fixture":"forbidden-scope-violation"}'      # → BLOCKED at L0 (out of scope)
+curl -s -X POST localhost:8000/api/admit -d '{"fixture":"failing-check-caps-authority"}'   # → capped at L1 (required check failed)
 
-# verify a receipt's signature independently against the public key
+# verify a receipt against Umbra's OWN pinned public key (proves Umbra issued it)
 curl -s localhost:8000/api/verify-key
 ```
 
 Fixtures live in [`evals/fixtures/`](evals/fixtures/); the modules are
 [`backend/contract.py`](backend/contract.py), [`backend/verifier.py`](backend/verifier.py),
+[`backend/checks.py`](backend/checks.py),
 [`backend/trust_boundary.py`](backend/trust_boundary.py), [`backend/admission.py`](backend/admission.py),
 and [`backend/receipt.py`](backend/receipt.py).
 
@@ -94,17 +102,22 @@ finding and fix as an **auditable receipt**, not a claim to take on faith:
   advisory it remediates, the recorded Reviewer verdict, opened-at), grouped by repo.
 - **Triage with reasons** — snoozing or accepting-risk on a finding requires a reason and is recorded
   server-side, so a suppression is an auditable act surfaced in the activity timeline — never a silent hide.
-- **Evidence Pack + verify** — any run exports to a portable, path-sanitized Markdown pack stamped
-  with a canonical `sha256`; `POST /api/evidence-pack/verify` **recomputes** that hash so anyone can
-  confirm the report wasn't altered (tamper-evident). See [`backend/evidence.py`](backend/evidence.py).
-- **Signed Remediation Receipt** — every admission run seals its accountability chain (contract,
-  trust-boundary, verifier, earned authority, proposed change) into an **Ed25519-signed** envelope.
-  `POST /api/receipt/verify` checks the signature against the public key served at `GET /api/verify-key`,
-  so a receipt is *independently* verifiable — not just a hash anyone could recompute. The receipt
-  honestly flags whether the signing key is the managed production key or a dev fallback. See
+- **Evidence Pack + integrity hash** — any run exports to a portable, path-sanitized Markdown pack
+  stamped with a canonical `sha256`; `POST /api/evidence-pack/verify` **recomputes** that hash to catch
+  accidental alteration. This is an *integrity checksum*, not tamper-proof provenance — anyone can edit a
+  report and recompute the hash. For tamper-evidence, use the signed receipt below. See
+  [`backend/evidence.py`](backend/evidence.py).
+- **Signed Remediation Receipt (tamper-evident)** — every admission run seals its accountability chain
+  (base commit, contract, trust-boundary, executed checks, verifier, earned authority, diff/advisory
+  hashes, and the Codex config hash when Codex ran) into an **Ed25519-signed** envelope.
+  `POST /api/receipt/verify` verifies the signature **against Umbra's own pinned public key** (served at
+  `GET /api/verify-key`) — so it proves *Umbra* issued the receipt, not merely that some key signed it.
+  The receipt honestly flags whether the signing key is the managed production key or a dev fallback. See
   [`backend/receipt.py`](backend/receipt.py).
 - **Earned-authority passport** — the authority an agent earned per repo is persisted and revocable;
-  re-running admission upserts it, a failed run downgrades it. `auto_merge` is never stored true.
+  re-running admission upserts it, a failed run downgrades it, and the Emergency Brake
+  (`POST /api/my/authority/revoke`) forces it to Level 0 — which the PR-open route enforces. `auto_merge`
+  is never stored true.
 - **Activity / audit timeline** — the shift, in order, from real durations and provider labels.
 
 The landing page's **Night-Shift pipeline** walks this end-to-end (Scan → Triage → Root-cause →
@@ -181,7 +194,7 @@ and read-only (a zero-scope token just raises the public-read rate limit).
 ## Tests
 
 ```bash
-uv run pytest        # 195 tests (backend/tests)
+uv run pytest        # 213 tests (backend/tests)
 ```
 
 Frontend: `cd frontend && npm run build` (must produce a clean static export to `out/`).

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -18,13 +19,16 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from fastapi import BackgroundTasks, Header, Request
 
-from backend import auth
+from backend import auth, schedules, triage
+from backend.auth import _user_key
 from backend.codex_client import CodexClient
 from backend.integrations.github import parse_public_repo
 from backend.integrations.github_app import installation_token
 from backend.integrations.repository import cloud_scan_enabled, live_repositories_enabled
+from backend.notifications import make_unsub_token, send_report_email
 from backend.orchestrator import orchestrator
-from backend.settings import cookie_secure, founder_ids, frontend_origin, github_app_configured, github_app_webhook_secret, session_secret
+from backend.scheduling import compute_next_run
+from backend.settings import cookie_secure, cron_key, founder_ids, frontend_origin, github_app_configured, github_app_webhook_secret, session_secret
 from backend.store import get_store
 from backend.webhooks import REVIEWABLE_ACTIONS, verify_github_signature
 
@@ -62,6 +66,8 @@ app.add_middleware(
 # Auth + per-user routes. Registered before the static mount below so /auth/*
 # and /api/* always match ahead of the greedy "/" UI mount.
 app.include_router(auth.router)
+app.include_router(triage.router)
+app.include_router(schedules.router)
 
 
 @app.get("/api/health", tags=["system"])
@@ -154,6 +160,31 @@ async def evidence_pack(request: EvidencePackRequest) -> dict[str, object]:
     return build_evidence_pack(request.result, request.mode)
 
 
+class EvidenceVerifyRequest(BaseModel):
+    result: dict = Field(description="A scan result (ideally carrying evidence_hash) to independently verify")
+
+
+@app.post("/api/evidence-pack/verify", tags=["agents"])
+async def evidence_pack_verify(request: EvidenceVerifyRequest) -> dict[str, object]:
+    """Independently recompute the canonical hash of a result and compare it to the
+    ``evidence_hash`` the result claims. This is the reviewer-side check: it proves
+    the result was not altered after Umbra recorded it. No auth — verification of a
+    shared/captured pack must be possible by anyone. Note: this is a canonical
+    integrity hash, not a cryptographic signature."""
+    from backend.evidence import canonical_hash
+
+    result = request.result
+    claimed = result.get("evidence_hash")
+    computed = canonical_hash(result)
+    has_claim = bool(claimed)
+    return {
+        "has_claim": has_claim,
+        "claimed_hash": claimed,
+        "computed_hash": computed,
+        "verified": bool(has_claim and claimed == computed),
+    }
+
+
 class PullRequestRequest(BaseModel):
     repo_url: str
     mode: str = Field(default="bump", description="'bump' (deterministic dependency bump), 'apply_diff' (open a PR from a diff Umbra already produced), or 'codex' (Codex-authored)")
@@ -161,19 +192,44 @@ class PullRequestRequest(BaseModel):
     version: str | None = None
     cve: str | None = None
     diff: str | None = Field(default=None, max_length=200_000, description="For mode='apply_diff': the reviewed diff to apply and open a PR from")
+    diffs: list[str] | None = Field(default=None, description="For mode='combine': the reviewed diffs to consolidate into one PR")
     model: str | None = Field(default=None, description="For mode='codex': Codex model; invalid values fall back to the default")
     reasoning_effort: str | None = Field(default=None, description="For mode='codex': reasoning effort; invalid values fall back to the default")
 
 
-@app.post("/api/my/pr", tags=["agents"])
-async def open_fix_pr(request: PullRequestRequest, http: Request) -> dict[str, object]:
-    """Open a fix PR on explicit user request. Requires a signed-in user with a
-    GitHub token (write); branch-only, never merges. Codex-authored PRs are
-    founder-gated on the hosted deploy so visitors can't spend Codex credits;
-    'apply_diff' just opens a PR from a diff Umbra already produced (no Codex run,
-    no credit spend), so it is not gated."""
+def _persist_opened_pr(user: dict | None, request: PullRequestRequest, opened: dict[str, object]) -> None:
+    """Best-effort: record a real opened PR into the per-user ledger so it becomes
+    a durable receipt. Skips previews (no url/number) and unauthenticated calls;
+    never raises — a ledger write must never fail the PR open itself."""
+    try:
+        if not user:
+            return
+        if not (opened.get("url") and opened.get("number")):
+            return  # preview-shaped or write-less result — nothing to record
+        get_store().save_pr(_user_key(user), {
+            "repo_url": request.repo_url,
+            "number": opened.get("number"),
+            "url": opened.get("url"),
+            "branch": opened.get("branch"),
+            "base": opened.get("base"),
+            "mode": request.mode,
+            "package": request.package,
+            "cve": request.cve,
+            "review": opened.get("review"),
+        })
+    except Exception:  # noqa: BLE001 - ledger persistence is best-effort
+        logging.getLogger("umbra.pr").exception("Failed to persist opened PR receipt")
+
+
+async def _open_fix_pr(request: PullRequestRequest, http: Request, preview: bool) -> dict[str, object]:
+    """Shared handler for /api/my/pr and /api/my/pr/preview. Branch-only, never
+    merges. Codex-authored PRs are founder-gated on the hosted deploy so visitors
+    can't spend Codex credits; 'apply_diff'/'combine' open a PR from diffs Umbra
+    already produced (no Codex run), so they are not gated. On a real (non-preview)
+    open, the result is recorded to the user's PR ledger."""
     _validate_repo(request.repo_url)
-    if not http.session.get("user"):
+    user = http.session.get("user")
+    if not user:
         raise HTTPException(status_code=401, detail="Sign in to open a pull request.")
     ctx = _user_context(http)
     token = ctx["github_token"]
@@ -182,13 +238,39 @@ async def open_fix_pr(request: PullRequestRequest, http: Request) -> dict[str, o
     if request.mode == "codex" and ctx["allow_codex"] is False:
         raise HTTPException(status_code=403, detail="Codex-authored PRs are founder-only on the hosted demo — try a dependency-bump PR, or run Umbra locally.")
     try:
-        return await orchestrator.open_fix_pr(request.repo_url, str(token), request.mode, request.package, request.version, request.cve, allow_codex=ctx["allow_codex"], diff=request.diff, model=request.model, reasoning_effort=request.reasoning_effort)
+        result = await orchestrator.open_fix_pr(request.repo_url, str(token), request.mode, request.package, request.version, request.cve, allow_codex=ctx["allow_codex"], diff=request.diff, model=request.model, reasoning_effort=request.reasoning_effort, diffs=request.diffs, preview=preview)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Could not open the pull request: {exc}") from exc
+    if not preview:
+        _persist_opened_pr(user, request, result)
+    return result
+
+
+@app.post("/api/my/pr", tags=["agents"])
+async def open_fix_pr(request: PullRequestRequest, http: Request) -> dict[str, object]:
+    """Open a fix PR on explicit user request. Requires a signed-in user with a
+    GitHub token (write); branch-only, never merges."""
+    return await _open_fix_pr(request, http, preview=False)
+
+
+@app.post("/api/my/pr/preview", tags=["agents"])
+async def preview_fix_pr(request: PullRequestRequest, http: Request) -> dict[str, object]:
+    """Preview the planned PR — the title, changed files, and the Reviewer's
+    deterministic verdict — without opening anything. Same auth as the open path."""
+    return await _open_fix_pr(request, http, preview=True)
+
+
+@app.get("/api/my/prs", tags=["agents"])
+async def my_prs(http: Request) -> list[dict[str, object]]:
+    """The signed-in user's durable branch-only PR receipts."""
+    user = http.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return get_store().list_prs(_user_key(user))
 
 
 @app.post("/api/investigate", tags=["agents"])
@@ -259,6 +341,68 @@ async def event_stream() -> StreamingResponse:
             await asyncio.sleep(0)
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# --- Scheduled morning reports: cron runner ---------------------------------
+# A periodic external tick (Cloud Scheduler) hits this endpoint with the shared
+# cron key. For every due schedule we run a scan, save it to the owner's history,
+# email the report (unless they opted out), and advance next_run_at. Auth is a
+# shared secret header, not a user session — it acts on behalf of many users.
+def _schedule_owner_key(schedule: dict) -> str | None:
+    key = schedule.get("user_key") or schedule.get("owner")
+    return str(key) if key else None
+
+
+@app.post("/api/cron/run-due-scans", tags=["system"], include_in_schema=False)
+async def run_due_scans(x_umbra_cron_key: str = Header(default="")) -> dict[str, object]:
+    """Run every schedule whose next_run_at is due. Guarded by the shared cron key
+    (503 if the server has none configured, 401 on mismatch). Never auto-merges —
+    this only runs scans and sends reports."""
+    configured = cron_key()
+    if not configured:
+        raise HTTPException(status_code=503, detail="Scheduler is not configured on this server.")
+    if x_umbra_cron_key != configured:
+        raise HTTPException(status_code=401, detail="Invalid cron key.")
+
+    store = get_store()
+    now = datetime.now(timezone.utc)
+    due = store.list_due_schedules(now.isoformat())
+    ran = 0
+    emailed = 0
+    for schedule in due:
+        owner = _schedule_owner_key(schedule)
+        repo = schedule.get("repo_full_name") or ""
+        if not (owner and repo):
+            continue
+        repo_url = f"https://github.com/{repo}"
+        try:
+            result = await orchestrator.scan(repo_url)
+        except Exception:  # noqa: BLE001 - one repo failing must not stop the batch
+            logging.getLogger("umbra.cron").exception("Scheduled scan failed for %s", repo)
+            continue
+        ran += 1
+        store.save_scan(owner, {
+            "repo_full_name": repo,
+            "umbra_score": result.get("umbra_score"),
+            "source": result.get("source", "scheduled"),
+            "vuln_count": len(result.get("vulnerabilities") or []),
+            "report": result,
+        })
+        # Email the report unless the owner opted out or email isn't configured.
+        recipient = (schedule.get("email") or "").strip()
+        if recipient and not store.notifications_opt_out(owner):
+            base = os.getenv("UMBRA_PUBLIC_URL") or frontend_origin()
+            view_url = f"{base}/dashboard"
+            unsub_url = f"{base}/api/unsubscribe?token={make_unsub_token(owner)}"
+            if send_report_email(recipient, repo, result, view_url, unsub_url):
+                emailed += 1
+        # Advance the schedule in place so it does not immediately re-fire.
+        try:
+            next_run = compute_next_run(int(schedule.get("hour", 0)), int(schedule.get("minute", 0)), schedule.get("timezone", "UTC"), schedule.get("cadence", "daily"), now)
+            store.update_schedule_run(schedule.get("id"), now.isoformat(), next_run, None)
+        except Exception:  # noqa: BLE001 - a bad schedule shouldn't break the batch
+            logging.getLogger("umbra.cron").exception("Failed to advance schedule %s", schedule.get("id"))
+    return {"ran": ran, "emailed": emailed, "due": len(due)}
 
 
 # --- Autonomy: install-once GitHub App PR auto-review -----------------------

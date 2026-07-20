@@ -211,34 +211,46 @@ class Orchestrator:
         await self.bus.emit({"agent": "REVIEWER", "message": f"Auto-reviewed PR #{pr_number} on {owner_repo}", "level": "analysis"})
         return {"reviewed": pr_number, "comment": posted, "finding": finding}
 
-    async def open_fix_pr(self, repo_url: str, token: str, mode: str = "bump", package: str | None = None, version: str | None = None, cve: str | None = None, allow_codex: bool | None = None, diff: str | None = None, model: str | None = None, reasoning_effort: str | None = None) -> dict[str, Any]:
+    async def open_fix_pr(self, repo_url: str, token: str, mode: str = "bump", package: str | None = None, version: str | None = None, cve: str | None = None, allow_codex: bool | None = None, diff: str | None = None, model: str | None = None, reasoning_effort: str | None = None, diffs: list[str] | None = None, preview: bool = False) -> dict[str, Any]:
         """Open a fix PR on the user's explicit request. Branch-only, never merges.
         The write ``token`` is used only here (and inside github_write) — never
         passed to the Codex child process.
 
-        ``apply_diff`` opens a PR from a diff Umbra already produced and the user
-        reviewed on screen (Watchman's scan) — no second Codex run, so it is fast
-        and spends no Codex credits. ``codex`` re-derives a fix from scratch on the
-        caller's chosen model/effort. ``bump`` is the deterministic dependency bump."""
+        ``bump`` is the deterministic single-package dependency bump. ``bump_all``
+        bumps every vulnerable dependency to a version clearing its OSV advisories
+        in ONE PR (still deterministic — no Codex). ``apply_diff`` opens a PR from a
+        diff Umbra already produced and the user reviewed on screen. ``combine``
+        applies several reviewed diffs (e.g. Watchman + Janitor) into one PR,
+        skipping any that conflict. ``codex`` re-derives a fix from scratch.
+
+        Every mode is gated by the deterministic Reviewer assessment, embedded in
+        the PR body and returned as ``review``. With ``preview=True`` the planned
+        change (files + Reviewer assessment) is returned WITHOUT opening a PR, so
+        the UI can show the Reviewer's verdict before the user confirms."""
         from backend.integrations.github import parse_public_repo
 
         owner_repo = parse_public_repo(repo_url)
         if mode == "apply_diff":
             if not (diff or "").strip():
                 raise ValueError("No proposed diff was provided to open a PR from.")
-            return await asyncio.to_thread(self._apply_diff_pr, repo_url, owner_repo, token, diff)
+            return await asyncio.to_thread(self._apply_diff_pr, repo_url, owner_repo, token, diff, preview)
+        if mode == "bump_all":
+            return await asyncio.to_thread(self._bump_all_pr, repo_url, owner_repo, token, preview)
+        if mode == "combine":
+            return await asyncio.to_thread(self._combined_pr, repo_url, owner_repo, token, diffs or [], preview)
         if mode == "codex":
-            return await asyncio.to_thread(self._codex_pr, repo_url, owner_repo, token, allow_codex, model, reasoning_effort)
-        return await asyncio.to_thread(self._bump_pr, repo_url, owner_repo, token, package, version, cve)
+            return await asyncio.to_thread(self._codex_pr, repo_url, owner_repo, token, allow_codex, model, reasoning_effort, preview)
+        return await asyncio.to_thread(self._bump_pr, repo_url, owner_repo, token, package, version, cve, preview)
 
     @staticmethod
-    def _bump_pr(repo_url: str, owner_repo: str, token: str, package: str | None, version: str | None, cve: str | None) -> dict[str, Any]:
+    def _bump_pr(repo_url: str, owner_repo: str, token: str, package: str | None, version: str | None, cve: str | None, preview: bool = False) -> dict[str, Any]:
         import os
         import shutil
         import subprocess
 
         import httpx
 
+        from backend.agents.reviewer import Reviewer
         from backend.integrations.dependencies import discover_dependencies
         from backend.integrations.github_write import open_pull_request
         from backend.integrations.repository import checkout_public_repo
@@ -294,6 +306,7 @@ class Orchestrator:
                     lock_note = "- ⚠️ `package-lock.json` was not regenerated (npm unavailable) — run `npm install` on this branch to sync the lockfile before merging.\n"
 
         cross_major = _version_key(current)[:1] != _version_key(fixed)[:1]
+        review = Reviewer.assess_change(list(file_changes))
         branch = f"umbra/fix-{re.sub(r'[^a-zA-Z0-9._-]+', '-', package.lower())}-{fixed}"
         title = f"Bump {package} to {fixed}"
         body = (
@@ -304,12 +317,17 @@ class Orchestrator:
             "- Deterministic edit — no model or Codex involved.\n"
             + lock_note
             + ("- ⚠️ Crosses a major version — review app compatibility before merging.\n" if cross_major else "")
+            + _review_block(review)
             + "- Opened on a new branch; **Umbra never merges** — review and merge yourself.\n"
         )
-        return open_pull_request(owner_repo, token, branch, title, body, file_changes)
+        if preview:
+            return {"preview": True, "title": title, "files": sorted(file_changes), "review": review, "note": lock_note.strip()}
+        result = open_pull_request(owner_repo, token, branch, title, body, file_changes)
+        result["review"] = review
+        return result
 
     @staticmethod
-    def _apply_diff_pr(repo_url: str, owner_repo: str, token: str, diff: str) -> dict[str, Any]:
+    def _apply_diff_pr(repo_url: str, owner_repo: str, token: str, diff: str, preview: bool = False) -> dict[str, Any]:
         """Open a PR by applying a diff Umbra already produced and the user reviewed.
 
         No Codex run happens here: the diff (Watchman's proposed patch, shown on
@@ -322,6 +340,7 @@ class Orchestrator:
         from datetime import UTC, datetime
         from pathlib import Path
 
+        from backend.agents.reviewer import Reviewer
         from backend.integrations.github_write import open_pull_request
         from backend.integrations.repository import checkout_public_repo
 
@@ -349,20 +368,27 @@ class Orchestrator:
                     file_changes[rel] = path.read_text(errors="replace")
             if not file_changes:
                 raise ValueError("Applying the proposed diff produced no file changes to open a PR for.")
+        review = Reviewer.assess_change(list(file_changes))
         branch = f"umbra/patch-{datetime.now(UTC).strftime('%Y%m%d%H%M')}"
         body = (
             "### Umbra proposed patch\n\n"
             "Applies the fix Umbra proposed during the scan (the diff you reviewed) — "
             "no new model run was performed to open this PR.\n\n"
             "- Applied with `git apply` in a disposable checkout (origin stripped; nothing is pushed by the agent).\n"
-            "- Opened on a new branch; **Umbra never merges** — review and merge yourself.\n"
+            + _review_block(review)
+            + "- Opened on a new branch; **Umbra never merges** — review and merge yourself.\n"
         )
-        return open_pull_request(owner_repo, token, branch, "Umbra: proposed patch", body, file_changes)
+        if preview:
+            return {"preview": True, "title": "Umbra: proposed patch", "files": sorted(file_changes), "review": review}
+        result = open_pull_request(owner_repo, token, branch, "Umbra: proposed patch", body, file_changes)
+        result["review"] = review
+        return result
 
     @staticmethod
-    def _codex_pr(repo_url: str, owner_repo: str, token: str, allow_codex: bool | None, model: str | None = None, reasoning_effort: str | None = None) -> dict[str, Any]:
+    def _codex_pr(repo_url: str, owner_repo: str, token: str, allow_codex: bool | None, model: str | None = None, reasoning_effort: str | None = None, preview: bool = False) -> dict[str, Any]:
         from datetime import UTC, datetime
 
+        from backend.agents.reviewer import Reviewer
         from backend.codex_client import CodexClient
         from backend.integrations.github_write import open_pull_request
         from backend.integrations.repository import checkout_public_repo
@@ -383,13 +409,175 @@ class Orchestrator:
             if not file_changes:
                 raise ValueError("Codex proposed no readable changes, so there is nothing to open a PR for.")
             summary = operation.summary
+        review = Reviewer.assess_change(list(file_changes))
         branch = f"umbra/codex-fix-{datetime.now(UTC).strftime('%Y%m%d%H%M')}"
         body = (
             f"### Umbra Codex fix\n\n{summary}\n\n"
             "- Authored by Codex in a disposable checkout (origin stripped; the agent never pushes or merges).\n"
-            "- Opened on a new branch; **Umbra never merges** — review and merge yourself.\n"
+            + _review_block(review)
+            + "- Opened on a new branch; **Umbra never merges** — review and merge yourself.\n"
         )
-        return open_pull_request(owner_repo, token, branch, "Umbra Codex: proposed fix", body, file_changes)
+        if preview:
+            return {"preview": True, "title": "Umbra Codex: proposed fix", "files": sorted(file_changes), "review": review, "summary": summary}
+        result = open_pull_request(owner_repo, token, branch, "Umbra Codex: proposed fix", body, file_changes)
+        result["review"] = review
+        return result
+
+    @staticmethod
+    def _bump_all_pr(repo_url: str, owner_repo: str, token: str, preview: bool = False) -> dict[str, Any]:
+        """Consolidated remediation: bump EVERY vulnerable dependency to a version
+        that clears its OSV advisories, in ONE deterministic PR. Loops the same
+        primitives as ``_bump_pr`` (``pick_fixed_version`` + ``bump_manifest``),
+        chaining edits into one commit. No Codex — available to any write-access
+        user. Reviewer-gated + preview-aware like every other mode."""
+        import os
+        import shutil
+        import subprocess
+
+        import httpx
+
+        from backend.agents.reviewer import Reviewer
+        from backend.integrations.dependencies import discover_dependencies
+        from backend.integrations.github_write import open_pull_request
+        from backend.integrations.repository import checkout_public_repo
+        from backend.remediation import _version_key, bump_manifest, pick_fixed_version
+
+        base = os.getenv("OSV_API_BASE", "https://api.osv.dev/v1").rstrip("/")
+        bumps: list[dict[str, Any]] = []
+        touched: set[str] = set()
+        lock_note = ""
+        with checkout_public_repo(repo_url, token) as repo_path:
+            for dep in discover_dependencies(repo_path):
+                name, ecosystem, current = dep["name"], dep["ecosystem"], dep["version"]
+                try:
+                    resp = httpx.post(f"{base}/query", json={"package": {"name": name, "ecosystem": ecosystem}, "version": current}, timeout=15)
+                    resp.raise_for_status()
+                    vulns = resp.json().get("vulns", [])
+                except Exception:  # noqa: BLE001 - one flaky OSV query must not abort the batch
+                    continue
+                if not vulns:
+                    continue
+                fixed = pick_fixed_version(vulns, current, None)  # clear ALL advisories on this package
+                if not fixed or _version_key(fixed) <= _version_key(current):
+                    continue
+                edit = bump_manifest(repo_path, name, ecosystem, fixed)
+                if not edit:
+                    continue
+                manifest_path, new_content = edit
+                # Persist immediately so a second package in the SAME manifest edits
+                # the already-updated content (chained into one commit).
+                (repo_path / manifest_path).write_text(new_content)
+                touched.add(manifest_path)
+                bumps.append({"package": name, "current": current, "fixed": fixed, "advisories": len(vulns), "cross_major": _version_key(current)[:1] != _version_key(fixed)[:1]})
+            if not bumps:
+                raise ValueError("No dependency has an OSV-listed fixed version above its current pin, so there is nothing to bump.")
+            file_changes: dict[str, str] = {mp: (repo_path / mp).read_text() for mp in touched}
+            # One lockfile regen at the end (npm) — same safety as _bump_pr.
+            if "package.json" in file_changes and (repo_path / "package-lock.json").exists():
+                if shutil.which("npm"):
+                    try:
+                        subprocess.run(
+                            ["npm", "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund", "--legacy-peer-deps"],
+                            cwd=repo_path, capture_output=True, timeout=180, check=True,
+                        )
+                        file_changes["package-lock.json"] = (repo_path / "package-lock.json").read_text()
+                        lock_note = "- Regenerated `package-lock.json` so a clean install resolves the fixed versions.\n"
+                    except (subprocess.SubprocessError, OSError):
+                        lock_note = "- ⚠️ Could not regenerate `package-lock.json` automatically — run `npm install` on this branch before merging.\n"
+                else:
+                    lock_note = "- ⚠️ `package-lock.json` was not regenerated (npm unavailable) — run `npm install` on this branch before merging.\n"
+
+        review = Reviewer.assess_change(list(file_changes))
+        total_adv = sum(b["advisories"] for b in bumps)
+        lines = "".join(f"- **{b['package']}** `{b['current']}` → `{b['fixed']}` — clears {b['advisories']} advisor{'y' if b['advisories'] == 1 else 'ies'}{' ⚠️ major bump' if b['cross_major'] else ''}\n" for b in bumps)
+        title = f"Bump {len(bumps)} dependenc{'y' if len(bumps) == 1 else 'ies'} · clear {total_adv} advisor{'y' if total_adv == 1 else 'ies'}"
+        body = (
+            "### Umbra consolidated security fix\n\n"
+            "Bumps every vulnerable dependency to a version that clears its OSV advisories, in one PR:\n\n"
+            f"{lines}\n"
+            "- Deterministic edits — no model or Codex involved.\n"
+            + lock_note
+            + _review_block(review)
+            + "- Opened on a new branch; **Umbra never merges** — review and merge yourself.\n"
+        )
+        branch = f"umbra/fix-{total_adv}-advisories"
+        if preview:
+            return {"preview": True, "title": title, "files": sorted(file_changes), "review": review, "bumps": bumps, "note": lock_note.strip()}
+        result = open_pull_request(owner_repo, token, branch, title, body, file_changes)
+        result["review"] = review
+        result["bumps"] = bumps
+        return result
+
+    @staticmethod
+    def _combined_pr(repo_url: str, owner_repo: str, token: str, diffs: list[str], preview: bool = False) -> dict[str, Any]:
+        """Combine several reviewed diffs (e.g. Watchman's dep fix + Janitor's
+        cleanup) into ONE PR. Applies them sequentially in a disposable checkout;
+        any diff that conflicts is skipped and noted honestly in the PR body (open
+        it separately). No Codex run — the diffs were already produced. Reviewer-
+        gated + preview-aware. Branch-only; Umbra never merges."""
+        import subprocess
+        import tempfile
+        from datetime import UTC, datetime
+        from pathlib import Path
+
+        from backend.agents.reviewer import Reviewer
+        from backend.integrations.github_write import open_pull_request
+        from backend.integrations.repository import checkout_public_repo
+
+        clean = [d for d in (diffs or []) if (d or "").strip()]
+        if not clean:
+            raise ValueError("No proposed diffs were provided to combine into a PR.")
+        skipped = 0
+        with checkout_public_repo(repo_url, token) as repo_path:
+            for d in clean:
+                with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False) as handle:
+                    handle.write(d if d.endswith("\n") else d + "\n")
+                    patch_file = handle.name
+                try:
+                    applied = subprocess.run(["git", "apply", "--whitespace=nowarn", patch_file], cwd=repo_path, text=True, capture_output=True, check=False)
+                finally:
+                    Path(patch_file).unlink(missing_ok=True)
+                if applied.returncode != 0:
+                    skipped += 1
+            changed = [line for line in subprocess.run(["git", "diff", "--name-only"], cwd=repo_path, text=True, capture_output=True, check=False).stdout.splitlines() if line]
+            file_changes: dict[str, str] = {}
+            for rel in changed:
+                path = repo_path / rel
+                if path.is_file():
+                    file_changes[rel] = path.read_text(errors="replace")
+            if not file_changes:
+                raise ValueError("None of the proposed diffs apply cleanly to the latest repo state — re-run the scan to refresh them.")
+
+        review = Reviewer.assess_change(list(file_changes))
+        skipped_note = f"- ⚠️ {skipped} proposed change(s) were omitted — they conflicted with the applied changes; open them as separate PRs.\n" if skipped else ""
+        branch = f"umbra/combined-{datetime.now(UTC).strftime('%Y%m%d%H%M')}"
+        title = "Umbra: combined crew changes"
+        body = (
+            "### Umbra combined change\n\n"
+            "Applies the crew's proposed changes (the diffs you reviewed on screen) in one PR.\n\n"
+            "- Applied with `git apply` in a disposable checkout (origin stripped; nothing is pushed by the agent).\n"
+            + skipped_note
+            + _review_block(review)
+            + "- Opened on a new branch; **Umbra never merges** — review and merge yourself.\n"
+        )
+        if preview:
+            return {"preview": True, "title": title, "files": sorted(file_changes), "review": review, "skipped": skipped}
+        result = open_pull_request(owner_repo, token, branch, title, body, file_changes)
+        result["review"] = review
+        result["skipped"] = skipped
+        return result
+
+
+def _review_block(review: dict[str, Any]) -> str:
+    """Render the deterministic Reviewer verdict as a PR-body section — the same
+    formula the Reviewer runs on real PRs, so every PR Umbra opens is gated by it."""
+    return (
+        "\n### Reviewer assessment (deterministic)\n\n"
+        f"- Risk score: **{review['risk_score']}/100** ({review['severity']})\n"
+        f"- Files changed: {review['files_changed']} · blast-radius {review['blast_radius']}/5\n"
+        f"- {'Missing test coverage in changed paths' if review['missing_tests'] else 'Touches test paths'}\n"
+        f"- Recommendation: **{review['recommendation']}** — human review required.\n\n"
+    )
 
 
 orchestrator = Orchestrator()

@@ -6,6 +6,7 @@ is stored server-side here (never in the session cookie).
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 import uuid
@@ -37,8 +38,11 @@ class _MemoryStore:
         self._tokens: dict[str, str] = {}
         self._openai_keys: dict[str, str] = {}
         self._scans: dict[str, list[dict[str, Any]]] = {}
+        self._prs: dict[str, list[dict[str, Any]]] = {}  # user_key -> opened-PR receipts (newest first)
         self._dismissed: dict[str, set[str]] = {}  # user_key -> set of dismissed remediation keys
         self._installations: dict[str, dict[str, Any]] = {}  # installation_id -> {account_login, account_type, repos, user_key}
+        self._schedules: dict[str, dict[str, Any]] = {}  # schedule_id -> {user_key, repo_full_name, hour, minute, timezone, cadence, email, enabled, next_run_at, ...}
+        self._triage: dict[str, dict[str, dict[str, Any]]] = {}  # user_key -> {finding_key -> {status, reason, repo, updated_at}}
         self._lock = threading.Lock()
 
     def get_or_create_user(self, key: str, profile: dict[str, Any]) -> dict[str, Any]:
@@ -90,6 +94,98 @@ class _MemoryStore:
         with self._lock:
             if key in self._scans:
                 self._scans[key] = [s for s in self._scans[key] if s.get("scan_id") not in ids]
+
+    def get_scan(self, key: str, scan_id: str) -> dict[str, Any] | None:
+        """One saved scan by id (for the emailed-report deep-link). Scoped to the owner."""
+        with self._lock:
+            return next((dict(s) for s in self._scans.get(key, []) if s.get("scan_id") == scan_id), None)
+
+    # --- Opened-PR receipts (the PR ledger) ---
+    # A durable record of every branch-only PR Umbra opened for this user, so the
+    # dashboard can show a real audit trail (PR #, branch, the advisory it fixes,
+    # the Reviewer verdict) instead of a transient toast. Umbra never merges, so we
+    # record only that a PR was OPENED — we don't claim merged/closed state we don't
+    # poll for. Upserted by (repo_url, number): re-opening the same PR updates in place.
+    def save_pr(self, key: str, pr: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            lst = self._prs.setdefault(key, [])
+            ident = (pr.get("repo_url"), pr.get("number"))
+            lst[:] = [p for p in lst if (p.get("repo_url"), p.get("number")) != ident]
+            rec = {**pr, "opened_at": _now()}
+            lst.insert(0, rec)
+            self._prs[key] = lst[:50]
+            return dict(rec)
+
+    def list_prs(self, key: str, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(p) for p in self._prs.get(key, [])[:limit]]
+
+    # --- Notification opt-out (email unsubscribe) ---
+    def set_notifications_opt_out(self, key: str, opt_out: bool) -> None:
+        with self._lock:
+            user = self._users.setdefault(key, {"created_at": _now()})
+            user["notifications_opt_out"] = opt_out
+            user["updated_at"] = _now()
+
+    def notifications_opt_out(self, key: str) -> bool:
+        with self._lock:
+            return bool(self._users.get(key, {}).get("notifications_opt_out"))
+
+    # --- Scheduled scans (morning reports) ---
+    # A top-level map keyed by schedule_id (like installations) so the cron can scan
+    # ALL users' due schedules in one pass; each record carries its owner user_key.
+    def save_schedule(self, user_key: str, schedule: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            sid = uuid.uuid4().hex
+            rec = {**schedule, "id": sid, "user_key": user_key, "created_at": _now()}
+            self._schedules[sid] = rec
+            return dict(rec)
+
+    def list_schedules(self, user_key: str) -> list[dict[str, Any]]:
+        with self._lock:
+            return sorted(
+                [dict(s) for s in self._schedules.values() if s.get("user_key") == user_key],
+                key=lambda s: s.get("created_at", ""),
+            )
+
+    def delete_schedule(self, user_key: str, schedule_id: str) -> None:
+        with self._lock:
+            rec = self._schedules.get(schedule_id)
+            if rec and rec.get("user_key") == user_key:
+                self._schedules.pop(schedule_id, None)
+
+    def set_schedule_enabled(self, user_key: str, schedule_id: str, enabled: bool) -> None:
+        with self._lock:
+            rec = self._schedules.get(schedule_id)
+            if rec and rec.get("user_key") == user_key:
+                rec["enabled"] = enabled
+                rec["updated_at"] = _now()
+
+    def list_due_schedules(self, now_iso: str) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(s) for s in self._schedules.values() if s.get("enabled") and s.get("next_run_at") and s["next_run_at"] <= now_iso]
+
+    def update_schedule_run(self, schedule_id: str, last_run_at: str, next_run_at: str, last_scan_id: str | None) -> None:
+        with self._lock:
+            rec = self._schedules.get(schedule_id)
+            if rec:
+                rec.update({"last_run_at": last_run_at, "next_run_at": next_run_at, "last_scan_id": last_scan_id, "updated_at": _now()})
+
+    # --- Finding triage lifecycle ---
+    # Per-user, per-finding triage state (open / snoozed / accepted_risk; pr_drafted
+    # and fixed are reserved for system writers and not yet emitted). Keyed by the
+    # finding key (repo:package@version, package-group granularity) so it persists
+    # across nightly shifts. Suppressions carry a reason → they become an auditable
+    # act, surfaced in the activity timeline + evidence, never a silent hide.
+    def set_triage(self, user_key: str, finding_key: str, status: str, reason: str | None = None, repo: str | None = None) -> dict[str, Any]:
+        with self._lock:
+            user = self._triage.setdefault(user_key, {})
+            user[finding_key] = {"finding_key": finding_key, "repo": repo, "status": status, "reason": reason, "user_key": user_key, "updated_at": _now()}
+            return dict(user[finding_key])
+
+    def list_triage(self, user_key: str) -> list[dict[str, Any]]:
+        with self._lock:
+            return sorted([dict(r) for r in self._triage.get(user_key, {}).values()], key=lambda r: r.get("updated_at", ""), reverse=True)
 
     # --- Remediation-queue dismissals ---
     # A per-user set of dismissed advisory keys (repo:package@version:cve). The
@@ -233,6 +329,91 @@ class _FirestoreStore:
                 pending = 0
         if pending:
             batch.commit()
+
+    def get_scan(self, key: str, scan_id: str) -> dict[str, Any] | None:
+        """One saved scan by its Firestore doc id (emailed-report deep-link). Scoped to owner."""
+        snap = self._user(key).collection("scans").document(scan_id).get()
+        return {**(snap.to_dict() or {}), "scan_id": snap.id} if snap.exists else None
+
+    # --- Opened-PR receipts (the PR ledger) ---
+    # Per-user `prs` subcollection. Deterministic doc id per (repo_url, number) so a
+    # re-open is a single merge-upsert (repo_url contains '/', so it's hashed into a
+    # Firestore-safe id). Records only that a PR was OPENED (branch-only) — never a
+    # merged/closed state Umbra doesn't poll for.
+    def save_pr(self, key: str, pr: dict[str, Any]) -> dict[str, Any]:
+        doc_id = hashlib.sha256(f"{pr.get('repo_url')}#{pr.get('number')}".encode()).hexdigest()
+        rec = {**pr, "opened_at": _now()}
+        self._user(key).collection("prs").document(doc_id).set(rec, merge=True)
+        return {**rec, "id": doc_id}
+
+    def list_prs(self, key: str, limit: int = 50) -> list[dict[str, Any]]:
+        from google.cloud.firestore import Query
+
+        query = self._user(key).collection("prs").order_by("opened_at", direction=Query.DESCENDING).limit(limit)
+        return [{**(doc.to_dict() or {}), "id": doc.id} for doc in query.stream()]
+
+    # --- Notification opt-out (email unsubscribe) ---
+    def set_notifications_opt_out(self, key: str, opt_out: bool) -> None:
+        self._user(key).set({"notifications_opt_out": opt_out, "updated_at": _now()}, merge=True)
+
+    def notifications_opt_out(self, key: str) -> bool:
+        snap = self._user(key).get()
+        return bool((snap.to_dict() or {}).get("notifications_opt_out")) if snap.exists else False
+
+    # --- Scheduled scans (morning reports) ---
+    # Top-level collection (like app_installations) so the cron can query due
+    # schedules across all users; each carries its owner user_key + next_run_at.
+    def _schedules_col(self):
+        return self._db.collection("schedules")
+
+    def save_schedule(self, user_key: str, schedule: dict[str, Any]) -> dict[str, Any]:
+        doc = self._schedules_col().document()
+        rec = {**schedule, "user_key": user_key, "created_at": _now()}
+        doc.set(rec)
+        return {**rec, "id": doc.id}
+
+    def list_schedules(self, user_key: str) -> list[dict[str, Any]]:
+        query = self._schedules_col().where("user_key", "==", user_key)
+        return sorted(({**(doc.to_dict() or {}), "id": doc.id} for doc in query.stream()), key=lambda s: s.get("created_at", ""))
+
+    def delete_schedule(self, user_key: str, schedule_id: str) -> None:
+        ref = self._schedules_col().document(schedule_id)
+        snap = ref.get()
+        if snap.exists and (snap.to_dict() or {}).get("user_key") == user_key:
+            ref.delete()
+
+    def set_schedule_enabled(self, user_key: str, schedule_id: str, enabled: bool) -> None:
+        ref = self._schedules_col().document(schedule_id)
+        snap = ref.get()
+        if snap.exists and (snap.to_dict() or {}).get("user_key") == user_key:
+            ref.set({"enabled": enabled, "updated_at": _now()}, merge=True)
+
+    def list_due_schedules(self, now_iso: str) -> list[dict[str, Any]]:
+        # Range on next_run_at only (no composite index needed); filter enabled in code.
+        query = self._schedules_col().where("next_run_at", "<=", now_iso)
+        return [{**(doc.to_dict() or {}), "id": doc.id} for doc in query.stream() if (doc.to_dict() or {}).get("enabled")]
+
+    def update_schedule_run(self, schedule_id: str, last_run_at: str, next_run_at: str, last_scan_id: str | None) -> None:
+        self._schedules_col().document(schedule_id).set(
+            {"last_run_at": last_run_at, "next_run_at": next_run_at, "last_scan_id": last_scan_id, "updated_at": _now()}, merge=True,
+        )
+
+    # --- Finding triage lifecycle ---
+    # Top-level collection scoped by user_key; deterministic (hashed) doc id per
+    # finding so a status update is a single merge-upsert. finding_key can contain
+    # '/', so it is hashed into a Firestore-safe doc id.
+    def _triage_col(self):
+        return self._db.collection("triage")
+
+    def set_triage(self, user_key: str, finding_key: str, status: str, reason: str | None = None, repo: str | None = None) -> dict[str, Any]:
+        doc_id = hashlib.sha256(f"{user_key}::{finding_key}".encode()).hexdigest()
+        rec = {"finding_key": finding_key, "repo": repo, "status": status, "reason": reason, "user_key": user_key, "updated_at": _now()}
+        self._triage_col().document(doc_id).set(rec, merge=True)
+        return {**rec, "id": doc_id}
+
+    def list_triage(self, user_key: str) -> list[dict[str, Any]]:
+        query = self._triage_col().where("user_key", "==", user_key)
+        return sorted(({**(doc.to_dict() or {}), "id": doc.id} for doc in query.stream()), key=lambda r: r.get("updated_at", ""), reverse=True)
 
     # --- Remediation-queue dismissals ---
     # Stored as an array field on the user doc (no secrets, small, per-user).

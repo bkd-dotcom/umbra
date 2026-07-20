@@ -123,3 +123,39 @@ def github_app_configured() -> bool:
     return bool(github_app_id() and github_app_private_key() and github_app_webhook_secret())
 
 
+# --- Scheduled scans + emailed morning reports -------------------------------
+# All optional: when unset the feature is simply inert (the cron endpoint 503s and
+# the dashboard tells the user scheduling/email isn't enabled). No worker process.
+def cron_key() -> str | None:
+    """Shared secret the scheduler (e.g. Cloud Scheduler) sends in the
+    ``X-Umbra-Cron-Key`` header to authorize ``POST /api/cron/run-due-scans``.
+    When unset, that endpoint returns 503 so it can't be triggered anonymously."""
+    return os.getenv("UMBRA_CRON_KEY") or None
+
+
+def resend_api_key() -> str | None:
+    return os.getenv("RESEND_API_KEY") or None
+
+
+def email_from() -> str:
+    """The From address for report emails. Must be on a Resend-verified domain in
+    prod; defaults to a placeholder that only works once a domain is verified."""
+    return os.getenv("UMBRA_EMAIL_FROM", "Umbra <reports@umbra.engineer>")
+
+
+def app_base_url() -> str:
+    """Where report emails link back to (the dashboard). Falls back to the
+    frontend origin so a deep-link works even if unset."""
+    return os.getenv("UMBRA_APP_URL", frontend_origin()).rstrip("/")
+
+
+def email_configured() -> bool:
+    """True when report emails can actually be sent (Resend key + From present)."""
+    return bool(resend_api_key() and email_from())
+
+
+def scheduling_configured() -> bool:
+    """True when scheduled scans can run (a cron shared-secret is set)."""
+    return cron_key() is not None
+
+

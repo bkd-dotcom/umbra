@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from backend.integrations.github import list_user_repos
 from backend.integrations.github_app import install_url
-from backend.settings import founder_ids, frontend_origin, github_app_configured, github_oauth, google_oauth, oauth_redirect_base
+from backend.settings import email_configured, founder_ids, frontend_origin, github_app_configured, github_oauth, google_oauth, oauth_redirect_base, scheduling_configured
 from backend.store import get_store
 
 router = APIRouter()
@@ -91,9 +91,13 @@ async def connect_github(request: Request):
         raise HTTPException(status_code=404, detail="GitHub sign-in is not configured.")
     request.session["oauth_mode"] = "connect"
     redirect_uri = f"{oauth_redirect_base()}/auth/callback/github"
-    # Show the account picker so the user can link the GitHub account they mean
-    # (not whichever one github.com happens to have signed in).
-    return await client.authorize_redirect(request, redirect_uri, prompt="select_account")
+    # NO account picker here (unlike the primary GitHub login). Connecting GitHub to
+    # an existing session — e.g. a Google-signed-in user linking repo access — should
+    # be a smooth, sticky link, not a forced re-pick that reads as "logged out." The
+    # `select_account` prompt is reserved for the primary GitHub login so sign-out
+    # feels complete there; here we reuse github.com's current session so the link
+    # persists across sessions.
+    return await client.authorize_redirect(request, redirect_uri)
 
 
 def _fallback_dest(request: Request, mode: str) -> str:
@@ -195,6 +199,11 @@ async def me(request: Request):
         "github_login": user.get("github_login"),
         "has_openai_key": bool(store.get_openai_key(key)),
         "is_founder": key in founder_ids(),
+        # Whether this server can run scheduled scans + email reports, so the
+        # dashboard's Scheduled Reports panel can be honest about availability.
+        "scheduling_enabled": scheduling_configured(),
+        "email_enabled": email_configured(),
+        "notifications_opt_out": store.notifications_opt_out(key),
     }
 
 
@@ -255,11 +264,31 @@ async def my_scans(request: Request):
     return get_store().list_scans(_user_key(user))
 
 
+@router.get("/api/my/scans/{scan_id}")
+async def get_my_scan(scan_id: str, request: Request):
+    """One saved report by id — the target of the morning-email 'View report' link
+    (`/dashboard?scan=<id>`). Scoped to the caller."""
+    user = get_current_user(request)
+    scan = get_store().get_scan(_user_key(user), scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found.")
+    return scan
+
+
 @router.post("/api/my/scans")
 async def save_my_scan(request: Request, summary: ScanSummary):
     user = get_current_user(request)
     get_store().save_scan(_user_key(user), summary.model_dump())
     return {"ok": True}
+
+
+@router.get("/api/my/prs")
+async def my_prs(request: Request):
+    """The PR ledger: every branch-only pull request Umbra opened for this user,
+    newest first — a durable audit trail (PR #, branch, the advisory it remediates,
+    the Reviewer verdict). Scoped to the caller. Umbra never merges these."""
+    user = get_current_user(request)
+    return get_store().list_prs(_user_key(user))
 
 
 @router.delete("/api/my/scans")

@@ -34,3 +34,4 @@ class OSVClient:
             response = await client.post(f"{self.base_url}/query", json=payload)
             response.raise_for_status()
             return response.json().get("vulns", [])
+

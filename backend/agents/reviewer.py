@@ -97,6 +97,33 @@ class Reviewer:
         return AgentResult("reviewer", "Cached Reviewer replay.", [finding], Replay("reviewer", operation.prompt, operation.diff, operation.summary, "Demo reasoning replayed from cache; no model or Codex request was made." if not note else note, {"codex_ms": 0, "reasoning_ms": 0}, providers))
 
     @staticmethod
+    def assess_change(paths: list[str]) -> dict[str, Any]:
+        """Deterministic blast-radius/risk assessment of a changeset (the list of
+        changed file paths) — no Codex, no GitHub, no network. This lets the
+        Reviewer *gate* any PR Umbra opens (bump / consolidated / applied diff /
+        combined) with the same formula it uses on real PRs, and power the
+        pre-open preview. Available to every user (nothing is founder-gated here)."""
+        inputs = RiskInputs(
+            files_changed=len(paths),
+            blast_radius=max(0, min(5, len(paths) // 2)),
+            missing_tests=int(not any("test" in p.lower() for p in paths)),
+            touches_auth=any(any(w in p.lower() for w in ("auth", "session", "permission")) for p in paths),
+            touches_payments=any(any(w in p.lower() for w in ("payment", "billing", "checkout")) for p in paths),
+        )
+        score = risk_score(inputs)
+        severity = "critical" if score >= 85 else "high" if score >= 70 else "medium" if score >= 40 else "low"
+        recommendation = "needs discussion" if score >= 70 else "add tests first" if inputs.missing_tests else "merge after human review"
+        return {
+            "risk_score": score,
+            "severity": severity,
+            "files_changed": len(paths),
+            "blast_radius": inputs.blast_radius,
+            "missing_tests": bool(inputs.missing_tests),
+            "recommendation": recommendation,
+            "provider": "deterministic",
+        }
+
+    @staticmethod
     def _unavailable_operation(error: str) -> CodexOperation:
         from datetime import UTC, datetime
         return CodexOperation("Review PR", f"Codex CLI unavailable: {error}", "", None, [], "unavailable", datetime.now(UTC).isoformat(), error=error)

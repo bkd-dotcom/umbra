@@ -10,3 +10,9 @@ frontend/out/
 frontend/.env.local
 *.tsbuildinfo
 Screenshot_20250524_215913_Gallery.jpg
+
+# Agent skills & local tooling (not part of the product)
+.agents/
+.claude/
+skills-lock.json
+ImprovisingPlan.md

@@ -5,7 +5,7 @@ import { motion } from "motion/react";
 import { Corona } from "@/components/ui/corona";
 import { OperationsBoard } from "@/components/ui/operations-board";
 import { CrewDossier } from "@/components/ui/crew-dossier";
-import { NightShiftPipeline } from "@/components/ui/night-shift-pipeline";
+import { NightShiftPipeline, PIPELINE_SCENES } from "@/components/ui/night-shift-pipeline";
 import { DitherImage } from "@/components/ui/dither-image";
 import { Magnetic } from "@/components/ui/magnetic-button";
 import { GlowCard } from "@/components/ui/glow-card";
@@ -73,7 +73,7 @@ export default function Landing() {
         </div>
         {/* Center nav — simple hover-underline links (Aceternity-style). */}
         <div className="hidden items-center gap-1 md:flex">
-          {([["Proof", "#evidence-locker"], ["Report", "#report"], ["Crew", "#crew"], ["Pipeline", "#pipeline"], ["OpenAI", "#openai"]] as const).map(([label, href]) => (
+          {([["Proof", "#evidence-locker"], ["Report", "#report"], ["Crew", "#crew"], ["Shift", "#pipeline-setup"], ["OpenAI", "#openai"]] as const).map(([label, href]) => (
             <a key={href} href={href} className="group relative rounded-lg px-3 py-1.5 font-mono text-[12px] text-fog transition-colors hover:text-cloud">
               {label}
               <span className="absolute inset-x-3 -bottom-0.5 h-px origin-left scale-x-0 bg-cyan transition-transform duration-300 group-hover:scale-x-100" />
@@ -385,12 +385,15 @@ export default function Landing() {
         </Reveal>
       </section>
 
-      {/* The night shift, replayed — one real captured shift scrolled end to end,
-          from the first OSV lookup to the diff Codex left for review. A sibling
-          `relative` section (NO overflow-hidden ancestor) so the console pins. */}
-      <section id="pipeline" data-chapter="Shift replay" className="chapter relative py-16 md:py-20">
-        <NightShiftPipeline />
-      </section>
+      {/* The night shift, replayed — one real captured shift, broken into four
+          viewport-sized scenes (setup → detection & evidence → draft & check →
+          signed receipt & human gate). Each is its own chapter so the rail tracks
+          the real narrative beats; scrolling stays continuous (no pinned track). */}
+      {PIPELINE_SCENES.map((s, i) => (
+        <section key={s.key} id={s.key} data-chapter={s.label} className={`chapter ${s.fit ? "chapter-fit" : ""} relative py-16 md:py-20`}>
+          <NightShiftPipeline scene={i} />
+        </section>
+      ))}
 
       {/* How OpenAI is used — an engineering evidence panel, not a marketing block.
           Placed after the story, before the ChatGPT surface. */}

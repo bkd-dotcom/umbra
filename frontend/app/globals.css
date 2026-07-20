@@ -246,21 +246,48 @@
 }
 
 /* --- Chapters ------------------------------------------------------------- */
-/* The landing reads as a sequence of narrative "chapters", but scrolling stays
-   fully continuous and native-smooth (Lenis inertia): we deliberately do NOT use
-   CSS scroll-snap — snapping fought Lenis and caused a stop-and-settle correction,
-   especially across chapters of very different heights (the Shift replay chapter is
-   several thousand pixels tall). Chapter identity comes from section styling + the
-   ChapterRail + anchor links, none of which touch scroll behavior.
+/* The landing reads as a sequence of narrative "chapters" (scenes), but scrolling
+   stays fully continuous and native-smooth (Lenis inertia): we deliberately do NOT
+   use CSS scroll-snap — snapping fought Lenis and caused a stop-and-settle
+   correction. Chapter identity comes from section styling, viewport-sized scene
+   composition, the ChapterRail, subtle active-scene emphasis, and anchor links —
+   none of which touch scroll behavior.
 
-   The only rule here is anchor clearance: when a chapter anchor is targeted (rail
-   dot or top-nav link), its top clears the sticky nav (top-3 ≈ 12px + ~52px). */
+   Anchor clearance: when a chapter anchor is targeted (rail dot or top-nav link),
+   its top clears the sticky nav (top-3 ≈ 12px + ~52px). */
 .chapter {
   scroll-margin-top: 76px;
 }
 
-/* Subtle, per-chapter entrance is handled by the Reveal component (opacity/
-   transform only) and is disabled under reduced-motion via the block below. */
+/* Desktop-only, reduced-motion-safe: scenes whose content COMFORTABLY fits ~one
+   viewport can opt into a full-height stage so each reads as a distinct screen.
+   Top-aligned (never centered) so a slightly-taller-than-expected scene grows
+   downward and scrolls naturally — it can never clip its own heading. Applied
+   only to scenes verified to fit; taller scenes keep normal document flow. */
+@media (min-width: 1024px) and (prefers-reduced-motion: no-preference) {
+  .chapter-fit {
+    min-height: 100svh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding-top: 76px; /* keep content clear of the sticky nav when centered */
+  }
+}
+
+/* Subtle active-scene emphasis (no scroll-tied transforms): the scene in view
+   sits at full strength; others rest slightly dimmed but fully readable. Driven
+   by a data attribute the ChapterRail's IntersectionObserver sets on desktop;
+   a plain opacity transition, disabled under reduced motion below. */
+@media (min-width: 1024px) and (prefers-reduced-motion: no-preference) {
+  .chapter[data-scene-active="false"] {
+    opacity: 0.72;
+    transition: opacity 0.5s ease;
+  }
+  .chapter[data-scene-active="true"] {
+    opacity: 1;
+    transition: opacity 0.5s ease;
+  }
+}
 
 /* Respect reduced-motion globally: kill transforms/animations, keep opacity. */
 @media (prefers-reduced-motion: reduce) {

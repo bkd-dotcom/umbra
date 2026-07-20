@@ -43,8 +43,13 @@ export function ChapterRail() {
       setActive(0);
 
       // Track visible ratio per chapter; active = the one filling the most viewport,
-      // so a long chapter being read stays active (no false progress).
+      // so a long chapter being read stays active (no false progress). The active
+      // scene is marked via data-scene-active so CSS can give it subtle emphasis
+      // (opacity only — no scroll-tied transforms).
       const ratios = new Map<Element, number>();
+      const markActive = (idx: number) => {
+        nodes.forEach((n, i) => { n.dataset.sceneActive = i === idx ? "true" : "false"; });
+      };
       io = new IntersectionObserver(
         (entries) => {
           for (const e of entries) ratios.set(e.target, e.isIntersecting ? e.intersectionRatio : 0);
@@ -55,14 +60,19 @@ export function ChapterRail() {
             if (r > bestRatio) { bestRatio = r; best = i; }
           });
           setActive(best);
+          markActive(best);
         },
         { threshold: [0, 0.15, 0.3, 0.5, 0.75, 1], rootMargin: "-76px 0px 0px 0px" },
       );
       nodes.forEach((n) => io!.observe(n));
+      markActive(0);
     };
 
     const teardown = () => {
       if (io) { io.disconnect(); io = null; }
+      // Clear the emphasis attribute so a torn-down rail (mobile/reduced-motion)
+      // never leaves scenes dimmed.
+      document.querySelectorAll<HTMLElement>("[data-chapter]").forEach((n) => { delete n.dataset.sceneActive; });
     };
 
     build();

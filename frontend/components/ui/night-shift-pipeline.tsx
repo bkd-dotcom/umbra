@@ -1,15 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import {
-  AnimatePresence,
-  motion,
-  useMotionTemplate,
-  useMotionValueEvent,
-  useReducedMotion,
-  useScroll,
-  useTransform,
-} from "motion/react";
+import { useMemo } from "react";
+import { motion } from "motion/react";
 import { EASE } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { PROOF_SCAN } from "@/lib/proof-scan";
@@ -175,33 +167,66 @@ const STAGES: Stage[] = [
   { n: 6, rail: "Human gate", desc: "Reviewer assesses — you merge, never Umbra", time: "06:00", accent: "#5eead4" },
 ];
 
+// Semantic scenes that group the six stations into ~viewport-sized narrative
+// beats for the landing's chapter rail. No copy is duplicated — each station's
+// existing card is emitted in exactly one scene. Kept in station order.
+export const PIPELINE_SCENES: { key: string; label: string; stages: number[]; fit?: boolean }[] = [
+  { key: "pipeline-setup", label: "Shift setup", stages: [0], fit: true },              // Scan (~700px)
+  { key: "pipeline-detect", label: "Detection & evidence", stages: [1, 2], fit: true }, // Triage, Root cause (~784px)
+  { key: "pipeline-draft", label: "Draft & independent check", stages: [3, 4] },        // Draft fix, Evidence (~952px, natural flow)
+  { key: "pipeline-gate", label: "Signed receipt & human gate", stages: [5], fit: true }, // Human gate (~489px)
+];
+
 export function NightShiftPipeline({
   result,
   mode = "captured",
   className,
+  scene,
 }: {
   result?: ScanResult;
   mode?: Mode;
   className?: string;
+  /** When set, render only one semantic scene (natural document flow, no pinned
+   *  scroll track). The landing uses this to compose viewport-sized chapters that
+   *  scroll continuously under Lenis. The intro rides on scene 0. */
+  scene?: number;
 }) {
   const scan = useMemo(() => result ?? (PROOF_SCAN as unknown as ScanResult), [result]);
   const D = useMemo(() => deriveScan(scan, mode), [scan, mode]);
 
-  const reduce = useReducedMotion();
-  const [isDesktop, setIsDesktop] = useState(false);
-  useEffect(() => {
-    const check = () => setIsDesktop(window.innerWidth >= 1024);
-    check();
-    window.addEventListener("resize", check);
-    return () => window.removeEventListener("resize", check);
-  }, []);
+  // Scene mode: a single narrative beat rendered as a natural, non-pinned stack.
+  if (typeof scene === "number") {
+    const def = PIPELINE_SCENES[scene];
+    if (!def) return null;
+    return (
+      <div className={cn("relative", className)}>
+        {scene === 0 && <Intro mode={mode} />}
+        <div className="flex flex-col gap-5">
+          {def.stages.map((i) => (
+            <article key={STAGES[i].n} className="rounded-2xl border p-5 shadow-[var(--shadow-card)]" style={{ borderColor: "var(--surface-border)", background: "var(--surface)" }}>
+              <div className="mb-3 flex items-baseline gap-3">
+                <span className="font-serif text-2xl leading-none" style={{ color: STAGES[i].accent }}>{String(STAGES[i].n).padStart(2, "0")}</span>
+                <div>
+                  <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-cloud">{STAGES[i].rail}</div>
+                  <div className="font-mono text-[11px] text-fog">{STAGES[i].desc}</div>
+                </div>
+                <span className="ml-auto font-mono text-[10px] tabular-nums text-fog/70">{STAGES[i].time}</span>
+              </div>
+              <StagePanel index={i} D={D} mode={mode} still />
+            </article>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
-  const pinned = isDesktop && !reduce;
-
+  // Full mode (unused by the landing now): a natural static stack of all stations.
+  // The old pinned h-[560vh] scroll-transform track was removed — it fought Lenis
+  // and forced a multi-viewport chapter. This keeps a single honest fallback.
   return (
     <div className={cn("relative", className)}>
       <Intro mode={mode} />
-      {pinned ? <PinnedTrack D={D} mode={mode} /> : <StaticStack D={D} mode={mode} />}
+      <StaticStack D={D} mode={mode} />
     </div>
   );
 }
@@ -225,116 +250,6 @@ function Intro({ mode }: { mode: Mode }) {
         Scroll a single real shift end to end — from the first OSV lookup to the diff Codex left for review.
         Nothing here is staged: every advisory, provider label and diff line is replayed from a genuine captured run.
       </p>
-    </div>
-  );
-}
-
-/* ------------------------------- Pinned track ------------------------------ */
-function PinnedTrack({ D, mode }: { D: Derived; mode: Mode }) {
-  const trackRef = useRef<HTMLDivElement>(null);
-  const { scrollYProgress } = useScroll({ target: trackRef, offset: ["start start", "end end"] });
-
-  const activeRef = useRef(0);
-  const clockRef = useRef("02:00");
-  const [active, setActive] = useState(0);
-  const [clock, setClock] = useState("02:00");
-
-  useMotionValueEvent(scrollYProgress, "change", (v) => {
-    const i = Math.min(STAGES.length - 1, Math.max(0, Math.floor(v * STAGES.length)));
-    if (i !== activeRef.current) { activeRef.current = i; setActive(i); }
-    const mins = Math.round(120 + v * 240); // 02:00 -> 06:00
-    const label = `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
-    if (label !== clockRef.current) { clockRef.current = label; setClock(label); }
-  });
-
-  const beamScaleY = useTransform(scrollYProgress, [0, 1], [0.02, 1]);
-  const beamColor = useTransform(scrollYProgress, [0, 0.5, 1], ["#22d3ee", "#a78bfa", "#fbbf24"]);
-  const beamBg = useMotionTemplate`linear-gradient(180deg, ${beamColor}, transparent)`;
-
-  return (
-    <div ref={trackRef} className="relative h-[560vh]">
-      <div className="sticky top-0 flex h-screen items-center">
-        <div className="grid w-full gap-8 lg:grid-cols-[minmax(248px,300px)_minmax(0,1fr)] xl:gap-12">
-          {/* LEFT RAIL */}
-          <div className="relative hidden lg:block">
-            <div className="mb-6 flex items-baseline gap-3">
-              <span className="font-mono text-2xl tabular-nums tracking-[-0.02em] text-cloud">{clock}</span>
-              <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-fog">night shift · calhacks-12</span>
-            </div>
-            <div className="relative pl-6">
-              {/* progress beam */}
-              <div className="absolute left-[3px] top-1 h-[calc(100%-0.5rem)] w-[2px] rounded-full bg-[color:var(--surface-2)]" aria-hidden />
-              <motion.div
-                aria-hidden
-                className="absolute left-[3px] top-1 h-[calc(100%-0.5rem)] w-[2px] origin-top rounded-full will-change-transform"
-                style={{ scaleY: beamScaleY, backgroundImage: beamBg }}
-              />
-              <ol className="flex flex-col gap-5">
-                {STAGES.map((s, i) => {
-                  const on = i === active;
-                  const done = i < active;
-                  return (
-                    <li key={s.n} className="relative">
-                      <span
-                        className="absolute -left-[1.42rem] top-1.5 h-2.5 w-2.5 rounded-full border transition-all duration-300"
-                        style={{
-                          background: on || done ? s.accent : "var(--color-ink)",
-                          borderColor: on || done ? s.accent : "var(--surface-border)",
-                          boxShadow: on ? `0 0 10px ${s.accent}` : "none",
-                        }}
-                      />
-                      <div className={cn("transition-colors duration-300", on ? "text-cloud" : done ? "text-fog" : "text-fog/80")}>
-                        <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.16em]">
-                          <span style={{ color: on ? s.accent : undefined }}>{String(s.n).padStart(2, "0")}</span>
-                          <span className="font-semibold tracking-[0.06em]">{s.rail}</span>
-                        </div>
-                        <p className="mt-0.5 text-[12px] leading-snug">{s.desc}</p>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ol>
-            </div>
-          </div>
-
-          {/* RIGHT CONSOLE */}
-          <Console accent={STAGES[active].accent}>
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={active}
-                tabIndex={0}
-                role="group"
-                aria-label={`Stage ${active + 1} of ${STAGES.length}: ${STAGES[active].rail} — ${STAGES[active].desc}`}
-                className="absolute inset-0 overflow-y-auto p-5 sm:p-6"
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.42, ease: EASE }}
-              >
-                <StagePanel index={active} D={D} mode={mode} />
-              </motion.div>
-            </AnimatePresence>
-          </Console>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Console({ accent, children }: { accent: string; children: ReactNode }) {
-  return (
-    <div
-      className="relative flex h-[56vh] max-h-[620px] min-h-[440px] flex-col overflow-hidden rounded-2xl border shadow-[var(--shadow-card)]"
-      style={{ background: "var(--surface)", borderColor: "var(--surface-border)" }}
-    >
-      <div className="flex items-center gap-2 border-b px-4 py-2.5" style={{ borderColor: "var(--surface-border)", background: "var(--surface-2)" }}>
-        <span className="h-2.5 w-2.5 rounded-full" style={{ background: "#fb7185" }} />
-        <span className="h-2.5 w-2.5 rounded-full" style={{ background: "#fbbf24" }} />
-        <span className="h-2.5 w-2.5 rounded-full" style={{ background: "#5eead4" }} />
-        <span className="ml-2 font-mono text-[10.5px] tracking-[0.08em] text-fog">umbra · night shift · calhacks-12</span>
-        <span className="ml-auto h-1.5 w-1.5 rounded-full" style={{ background: accent, boxShadow: `0 0 8px ${accent}` }} />
-      </div>
-      <div className="relative flex-1">{children}</div>
     </div>
   );
 }

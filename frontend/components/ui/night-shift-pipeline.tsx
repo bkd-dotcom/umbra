@@ -162,9 +162,9 @@ const STAGES: Stage[] = [
   { n: 1, rail: "Scan", desc: "Watchman reads the resolved lockfile against OSV.dev", time: "02:00", accent: "#22d3ee" },
   { n: 2, rail: "Triage", desc: "Scored, grouped by package, ranked by severity", time: "02:45", accent: "#a78bfa" },
   { n: 3, rail: "Root cause", desc: "Detective traces how it got in — git blame", time: "03:30", accent: "#fbbf24" },
-  { n: 4, rail: "Draft fix", desc: "Codex proposes a branch-only diff", time: "04:20", accent: "#5eead4" },
-  { n: 5, rail: "Evidence", desc: "Provider ledger + hashable evidence pack", time: "05:15", accent: "#5eead4" },
-  { n: 6, rail: "Human gate", desc: "Reviewer assesses — you merge, never Umbra", time: "06:00", accent: "#5eead4" },
+  { n: 4, rail: "Draft fix", desc: "Codex proposes a branch-only diff", time: "04:10", accent: "#5eead4" },
+  { n: 5, rail: "Evidence", desc: "Provider ledger + hashable evidence pack", time: "04:45", accent: "#5eead4" },
+  { n: 6, rail: "Human gate", desc: "Reviewer assesses — you merge, never Umbra", time: "05:15", accent: "#5eead4" },
 ];
 
 // Semantic scenes — ONE dominant station per scene, so a desktop viewport never
@@ -198,26 +198,37 @@ export function NightShiftPipeline({
   const D = useMemo(() => deriveScan(scan, mode), [scan, mode]);
 
   // Scene mode: a single narrative beat rendered as a natural, non-pinned stack.
+  // A left timeline column gives editorial "where in the night shift am I" context
+  // (time · NN/06 · a restrained 6-dot vertical line marking the current station).
+  // Purely informational — it never controls scroll.
   if (typeof scene === "number") {
     const def = PIPELINE_SCENES[scene];
     if (!def) return null;
+    const i = def.stages[0];
+    const stage = STAGES[i];
     return (
       <div className={cn("relative", className)}>
         {scene === 0 && <Intro mode={mode} />}
-        <div className="flex flex-col gap-5">
-          {def.stages.map((i) => (
-            <article key={STAGES[i].n} className="rounded-2xl border p-5 shadow-[var(--shadow-card)]" style={{ borderColor: "var(--surface-border)", background: "var(--surface)" }}>
-              <div className="mb-3 flex items-baseline gap-3">
-                <span className="font-serif text-2xl leading-none" style={{ color: STAGES[i].accent }}>{String(STAGES[i].n).padStart(2, "0")}</span>
-                <div>
-                  <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-cloud">{STAGES[i].rail}</div>
-                  <div className="font-mono text-[11px] text-fog">{STAGES[i].desc}</div>
+        <div className="grid gap-5 sm:grid-cols-[minmax(0,1fr)] lg:grid-cols-[168px_minmax(0,1fr)] lg:gap-8">
+          {/* Editorial shift timeline — time, position, and a static 6-station line.
+              The active station is emphasized by color/opacity only (no motion). */}
+          <ShiftTimeline current={i} accent={stage.accent} />
+          {/* The one dominant station card for this scene. */}
+          <div className="flex flex-col gap-5">
+            {def.stages.map((s) => (
+              <article key={STAGES[s].n} className="rounded-2xl border p-5 shadow-[var(--shadow-card)]" style={{ borderColor: "var(--surface-border)", background: "var(--surface)" }}>
+                <div className="mb-3 flex items-baseline gap-3">
+                  <span className="font-serif text-2xl leading-none" style={{ color: STAGES[s].accent }}>{String(STAGES[s].n).padStart(2, "0")}</span>
+                  <div>
+                    <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-cloud">{STAGES[s].rail}</div>
+                    <div className="font-mono text-[11px] text-fog">{STAGES[s].desc}</div>
+                  </div>
+                  <span className="ml-auto font-mono text-[10px] tabular-nums text-fog/70">{STAGES[s].time}</span>
                 </div>
-                <span className="ml-auto font-mono text-[10px] tabular-nums text-fog/70">{STAGES[i].time}</span>
-              </div>
-              <StagePanel index={i} D={D} mode={mode} still />
-            </article>
-          ))}
+                <StagePanel index={s} D={D} mode={mode} still />
+              </article>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -253,6 +264,54 @@ function Intro({ mode }: { mode: Mode }) {
         Scroll a single real shift end to end — from the first OSV lookup to the diff Codex left for review.
         Nothing here is staged: every advisory, provider label and diff line is replayed from a genuine captured run.
       </p>
+    </div>
+  );
+}
+
+/* --------------------------- Shift timeline (editorial) -------------------- */
+/* Static, informational per-scene context: the simulated clock, the station's
+   position in the six-station shift (NN / 06), the station name, and a restrained
+   vertical line with one dot per station. The current station's timestamp + dot
+   are emphasized by color/opacity only — no motion, no scroll coupling. On mobile
+   it sits above the card in normal flow; nothing is pinned or height-forced. */
+function ShiftTimeline({ current, accent }: { current: number; accent: string }) {
+  return (
+    <div className="lg:self-start">
+      <div className="flex items-baseline gap-2.5 lg:flex-col lg:items-start lg:gap-1">
+        <span className="font-mono text-[26px] leading-none tabular-nums tracking-[-0.02em] text-cloud">{STAGES[current].time}</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-fog">
+          <span style={{ color: accent }}>{String(current + 1).padStart(2, "0")}</span> / 06 · {STAGES[current].rail}
+        </span>
+      </div>
+      {/* Six-station vertical line. Past = dim filled, current = accent, future = hollow. */}
+      <ol className="mt-4 hidden lg:block" aria-label="Night shift progress">
+        {STAGES.map((s, i) => {
+          const state = i < current ? "past" : i === current ? "current" : "future";
+          return (
+            <li key={s.n} className="relative flex items-center gap-3 pb-3 last:pb-0">
+              {/* connector line segment (not after the last dot) */}
+              {i < STAGES.length - 1 && (
+                <span aria-hidden className="absolute left-[5px] top-3 h-full w-px" style={{ background: "var(--surface-2)" }} />
+              )}
+              <span
+                aria-hidden
+                className="relative z-10 h-[11px] w-[11px] shrink-0 rounded-full border"
+                style={{
+                  background: state === "current" ? accent : state === "past" ? "var(--surface-2)" : "transparent",
+                  borderColor: state === "current" ? accent : "var(--surface-border)",
+                  boxShadow: state === "current" ? `0 0 8px ${accent}` : "none",
+                }}
+              />
+              <span
+                className={`font-mono text-[10px] tabular-nums ${state === "current" ? "text-cloud" : "text-fog/70"}`}
+              >
+                <span className="tabular-nums">{s.time}</span>
+                <span className={state === "current" ? "" : "opacity-70"}> · {s.rail}</span>
+              </span>
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }

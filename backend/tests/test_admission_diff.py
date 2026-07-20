@@ -41,6 +41,11 @@ class _FakeCodex:
         self.model = None
         self.reasoning_effort = None
 
+    def model_identity(self, executor):
+        return {"executor": executor, "codex_cli_version": "unavailable",
+                "model_configured": "codex-default", "model_resolved": "unavailable",
+                "model_evidence": "unavailable"}
+
     def propose(self, prompt, files=None, repo_path=None, read_only=False):
         # The agent edits the manifest (allowed) AND the README (must be rejected).
         (repo_path / "package.json").write_text('{"dependencies": {"next": "14.2.33"}}\n')
@@ -53,7 +58,7 @@ def test_codex_change_recomputes_diff_and_rejects_instruction_edit(repo, monkeyp
     dep = {"name": "next", "version": "14.2.5", "ecosystem": "npm"}
     advisories = [{"id": "GHSA-x", "affected": [{"ranges": [{"events": [{"introduced": "0"}, {"fixed": "14.2.33"}]}]}]}]
 
-    file_changes, proposed, diff, cfg = admission._codex_change(repo, dep, advisories, None)
+    file_changes, proposed, diff, cfg, model_identity, context_manifest = admission._codex_change(repo, dep, advisories, None)
 
     # The manifest change survives; the README (instruction file) change is dropped.
     assert "package.json" in file_changes
@@ -68,6 +73,12 @@ def test_codex_change_recomputes_diff_and_rejects_instruction_edit(repo, monkeyp
 
     # And the manifest content reflects the final state.
     assert "14.2.33" in file_changes["package.json"]
+    # Model provenance is present for the codex-cli executor; the context manifest
+    # carries the trust-boundary invariant. (tb_result is None here, so manifest
+    # exclusions are empty; the on-disk redaction is tracked in cfg.)
+    assert model_identity["executor"] == "codex-cli"
+    assert context_manifest["invariant"]
+    assert "README.md" in cfg["context_files_redacted"]
 
 
 def test_codex_change_diff_excludes_redaction_when_no_instruction_edit(repo, monkeypatch):
@@ -80,7 +91,7 @@ def test_codex_change_diff_excludes_redaction_when_no_instruction_edit(repo, mon
     dep = {"name": "next", "version": "14.2.5", "ecosystem": "npm"}
     advisories = [{"id": "GHSA-x", "affected": [{"ranges": [{"events": [{"introduced": "0"}, {"fixed": "14.2.33"}]}]}]}]
 
-    file_changes, proposed, diff, cfg = admission._codex_change(repo, dep, advisories, None)
+    file_changes, proposed, diff, cfg, model_identity, context_manifest = admission._codex_change(repo, dep, advisories, None)
     # README was restored byte-for-byte → not in the changeset, no redaction in diff.
     assert set(file_changes) == {"package.json"}
     assert cfg["instruction_file_change_rejected"] is None

@@ -40,7 +40,7 @@ from typing import Any, Callable
 from backend.checks import ChecksReport, run_required_checks
 from backend.contract import Contract, evaluate_contract, load_contract
 from backend.remediation import bump_manifest, pick_fixed_version
-from backend.trust_boundary import UNTRUSTED_SOURCES, sanitize_text, scan_repository_text
+from backend.trust_boundary import UNTRUSTED_SOURCES, build_context_manifest, sanitize_text, scan_repository_text
 from backend.verifier import verify_change
 
 # The set of untrusted instruction files the agent must never be credited with
@@ -94,6 +94,8 @@ class AdmissionReport:
     diff_hash: str | None = None
     advisory_hash: str | None = None
     codex_config: dict[str, Any] | None = None
+    model_identity: dict[str, Any] | None = None
+    context_manifest: dict[str, Any] | None = None
     context_quarantined: int = 0
 
     def to_public(self) -> dict[str, Any]:
@@ -120,6 +122,8 @@ class AdmissionReport:
             "diff_hash": self.diff_hash,
             "advisory_hash": self.advisory_hash,
             "codex_config": self.codex_config,
+            "model_identity": self.model_identity,
+            "context_manifest": self.context_manifest,
             "context_quarantined": self.context_quarantined,
             "auto_merge": False,  # invariant, surfaced explicitly
             "human_review_required": True,
@@ -277,7 +281,7 @@ def _codex_change(
     dep: dict[str, str],
     advisories: list[dict[str, Any]],
     tb_result,
-) -> tuple[dict[str, str], dict[str, Any] | None, str, dict[str, Any]]:
+) -> tuple[dict[str, str], dict[str, Any] | None, str, dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Run a genuine bounded Codex task to remediate ``dep`` in the checkout.
 
     The trust boundary is made real for a workspace-access agent: the untrusted
@@ -285,7 +289,7 @@ def _codex_change(
     *on disk* before Codex runs, so it cannot read the manipulation — then restored
     before the diff is captured, so the redaction never appears as a change. The
     mission also embeds only sanitized context. Returns (file_changes,
-    proposed_change, diff, codex_config)."""
+    proposed_change, diff, codex_config, model_identity, context_manifest)."""
     from backend.codex_client import CodexClient
     from backend.trust_boundary import restore_checkout, sanitize_checkout
 
@@ -357,7 +361,18 @@ def _codex_change(
         "context_files_redacted": sorted(redacted.keys()),
         "instruction_file_change_rejected": instruction_violation,
     }
-    return file_changes, proposed, diff_text, codex_config
+    # Truthful model provenance for the signed receipt (never inferred).
+    model_identity = client.model_identity("codex-cli")
+    # Provenance-aware context manifest: what the agent was allowed to trust.
+    included_evidence = []
+    if context:
+        included_evidence.append({"source": "README.md", "class": "repo_docs", "treatment": "quoted-evidence (sanitized)"})
+    context_manifest = build_context_manifest(
+        trusted_policy=["umbra.mission", "contract:.umbra/admission.yaml"],
+        included_evidence=included_evidence,
+        tb_result=tb_result,
+    )
+    return file_changes, proposed, diff_text, codex_config, model_identity, context_manifest
 
 
 def run_admission_on_checkout(
@@ -400,6 +415,8 @@ def run_admission_on_checkout(
     executor = "deterministic"
     diff = None
     codex_config = None
+    model_identity: dict[str, Any] | None = None
+    context_manifest: dict[str, Any] | None = None
     file_changes: dict[str, str] = {}
     proposed: dict[str, Any] | None = None
     baseline_checks: ChecksReport | None = None
@@ -416,7 +433,7 @@ def run_admission_on_checkout(
             baseline_checks = _run_baseline_checks_isolated(root, base_commit, list(contract.required_checks))
         if want_codex:
             executor = "codex-cli"
-            file_changes, proposed, diff, codex_config = _codex_change(root, dep, advisories, tb)
+            file_changes, proposed, diff, codex_config, model_identity, context_manifest = _codex_change(root, dep, advisories, tb)
         else:
             file_changes, proposed = _deterministic_change(root, dep, advisories)
             diff = _synth_diff(file_changes)
@@ -429,6 +446,10 @@ def run_admission_on_checkout(
                     (root / rel).write_text(content)
                 except OSError:
                     pass
+            # Honest provenance for the offline path: NO coding model ran.
+            from backend.codex_client import CodexClient as _CC
+            model_identity = _CC(model=None, reasoning_effort=None).model_identity("deterministic")
+            context_manifest = build_context_manifest(trusted_policy=["umbra.policy-evaluation"], included_evidence=[], tb_result=tb)
 
     # 4. Evaluate the changeset against the executable contract.
     contract_result = evaluate_contract(list(file_changes), contract)
@@ -473,6 +494,8 @@ def run_admission_on_checkout(
         diff_hash=_sha256(diff) if diff else None,
         advisory_hash=_sha256(json.dumps(advisories, sort_keys=True, default=str)) if advisories else None,
         codex_config=codex_config,
+        model_identity=model_identity,
+        context_manifest=context_manifest,
         context_quarantined=tb.quarantined_count,
         providers={
             "advisories": provider_hint,

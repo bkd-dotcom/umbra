@@ -195,3 +195,40 @@ def test_baseline_side_effects_do_not_appear_in_candidate_diff_or_receipt():
     assert report.baseline_checks and report.baseline_checks["all_passed"] is True
     assert report.checks and report.checks["all_passed"] is False
     assert report.authority_level == 1
+
+
+def test_deterministic_run_states_no_model_and_a_context_manifest():
+    """The offline executor invokes NO coding model; model_identity must say so
+    (never infer a model) and a context manifest must be present and signed."""
+    report = run_admission_on_fixture(FIXTURES / "permitted-dependency-fix", "eval/permitted-dependency-fix")
+    pub = report.to_public()
+    mi = pub["model_identity"]
+    assert mi["executor"] == "deterministic"
+    assert mi["model_configured"] is None and mi["model_resolved"] is None
+    assert mi["model_evidence"] == "no-model"
+    cm = pub["context_manifest"]
+    assert cm and "invariant" in cm and "quoted evidence" in cm["invariant"]
+    assert cm["included_evidence"] == []  # deterministic path passes no repo text to a model
+    # Both objects must be inside the signed receipt payload.
+    from backend.orchestrator import _sign_admission_receipt
+    env = _sign_admission_receipt(pub)
+    assert "model_identity" in env["receipt"] and "context_manifest" in env["receipt"]
+    assert env["receipt"]["model_identity"]["model_evidence"] == "no-model"
+
+
+def test_context_manifest_records_redacted_untrusted_files():
+    """The adversarial fixture's injected README lines are redacted; the context
+    manifest must record the exclusion (source + count) — auditable, not silent."""
+    report = run_admission_on_fixture(FIXTURES / "adversarial-readme-injection", "eval/adversarial-readme-injection")
+    cm = report.to_public()["context_manifest"]
+    assert cm["redaction_count"] >= 1
+    assert "README.md" in cm["excluded"]
+    assert cm["excluded_categories"]  # at least one manipulation category recorded
+
+
+def test_admission_report_exposes_policy_status():
+    report = run_admission_on_fixture(FIXTURES / "permitted-dependency-fix", "eval/permitted-dependency-fix")
+    contract = report.to_public()["contract"]
+    # Fixtures declare no owner/version → fail-safe 'incomplete' (never 'signed').
+    assert contract["policy_status"]["status"] == "incomplete"
+    assert "policy_owner" in contract and "policy_version" in contract

@@ -153,6 +153,92 @@ Umbra states what it actually enforces, never more:
 The landing page's **Night-Shift pipeline** walks this end-to-end (Scan → Triage → Root-cause →
 Draft fix → Evidence → Human gate), replaying a real captured scan.
 
+## Threat model, privacy & enforcement labels
+
+Umbra states plainly what it guarantees, what it merely mitigates, and what it does not attempt — so
+its claims survive a skeptical read.
+
+### What each enforcement label means (recorded truthfully in every report/receipt)
+
+- **`enforced · sandboxed`** — required checks ran under a **bubblewrap** filesystem+network sandbox
+  (read-only OS, writable bind only on the disposable checkout, private HOME/tmp, all namespaces
+  unshared, no network). Preflighted with `… true` before the tier is claimed.
+- **`network-isolated`** — Linux `unshare -rn` (network cut, host filesystem — **not** a full sandbox).
+- **`host-restricted`** — no working isolation wrapper (e.g. macOS dev): allowlist + secret-stripped
+  env only. We do **not** call this "sandboxed."
+- **`declared / unavailable`** — a required check could not run here (tool absent). Authority is
+  **capped at analyze (L1)** — branch-PR (L2) requires the contract's checks to have actually run and
+  passed. A missing/failing/blocked check never earns L2.
+
+### Trust boundary — threat model and non-goals
+
+- **Treated as untrusted (data, not instructions):** repository-derived text that **Umbra
+  supplies in its constructed context** — README / AGENTS.md / CLAUDE.md / .cursorrules /
+  CONTRIBUTING and other scanned instruction files, plus repo docs passed as context. Only
+  **Umbra-owned policy** (the mission + contract) is treated as an instruction. Every run records a
+  signed **context manifest** naming what was trusted-as-policy vs supplied-as-quoted-evidence vs
+  redacted.
+- **What is enforced:** known agent-directed manipulation patterns (policy override, secret access,
+  scope expansion, agent directives, command injection) are **redacted on disk** in the disposable
+  checkout before a Codex run, and any agent edit to an instruction file is dropped and recorded.
+- **Non-goals (explicitly not guaranteed):** Umbra does **not** claim to defeat all prompt injection,
+  and the context manifest does **not** enumerate every file the agent may independently read (a
+  workspace-access agent can open files itself; the CLI exposes no complete read log). Untrusted text
+  can live beyond the scanned set; novel phrasings may evade the pattern detector. The boundary catches
+  *tested* patterns and treats Umbra-supplied repository text as evidence — it is a mitigation, not a
+  proof of safety. Required checks prove only what the contract **declared**, not that the whole
+  repository is safe.
+
+### Model provenance (Codex + GPT-5.6), stated only when observable
+
+Each receipt carries a signed `model_identity`: `executor`, observed `codex_cli_version`, the
+`model_configured` (what Umbra **requested** via `-m`, e.g. `gpt-5.6-luna`/`terra`/`sol`), a
+`model_resolved` value that stays **`unavailable`** unless a provider/CLI explicitly attests the model
+that ran (passing `-m` proves the model was *requested*, not that it was confirmed — we never promote
+configured to resolved), and a `model_evidence` source (`cli-argument` for a `-m` request,
+`codex-default` when unset, `no-model` for the deterministic offline path). We never infer the model
+the CLI selected.
+
+### Policy ownership & change control
+
+A contract hash proves **which** rules ran; the receipt's `policy_status` states **who authorized**
+them, honestly. Declared owner/version metadata is **not** a cryptographic signature, so the status is
+`declared` when a `policy_owner` + `policy_version` are set in `.umbra/admission.yaml`, `incomplete`
+when they are missing (fail-safe default), and `cryptographically-signed` **only** for a policy
+carrying a verifiable signature (a scheme Umbra does not assert today — the value exists so the field
+stays truthful). Authority is always additionally gated by the deterministic contract, independent
+verifier, and required checks, so a permissive policy cannot by itself grant more than those allow.
+Production teams should own and version their policy.
+
+### Privacy & data handling (what Umbra controls)
+
+Umbra states only what it technically controls — not behavior owned by Cloud Run, platform logs,
+GitHub, OSV, or other providers:
+
+- **Disposable checkout:** live repos are cloned into a temp checkout with the `origin` remote removed;
+  Codex is never given GitHub write credentials. Umbra deletes the checkout when the run ends.
+- **No auto-merge, ever:** `auto_merge` is false at every authority level and in the signed receipt;
+  PRs are branch-only and a human merges.
+- **Secret-stripped execution:** required-check subprocesses run with a minimal env — OpenAI / GitHub /
+  cloud / session secrets are stripped.
+- **Receipt contents:** the receipt binds hashes (base commit, diff, advisory) and provider labels;
+  the Evidence Pack is **path-sanitized** (the server's temp paths are stripped from free text). Diffs
+  are recomputed from `git` on the final tree, so the redaction never appears in the receipt.
+- **Private repos:** supported for signed-in users; findings run server-side. Live Codex on the server
+  is hard-gated to the founder account (`UMBRA_FOUNDER_IDS`); other users see findings plus an honest
+  "Codex runs on your machine" label.
+- **What Umbra does not control / promise:** it cannot guarantee the retention or deletion behavior of
+  the hosting platform, its request/stdout logs, GitHub, OSV, or any external provider; it is not a
+  data-processing agreement or a compliance certification. Treat the hosted demo as a demo; self-host
+  for control over the surrounding infrastructure.
+
+### Production limitations
+
+- On environments without Linux isolation, checks are `host-restricted`, not sandboxed (correctly
+  labelled; L2 still requires checks to run and pass).
+- The prompt-injection boundary catches tested patterns only (see non-goals above).
+- Live Codex runs can take minutes; the captured-proof path is the instant, offline judge route.
+
 ## Supported platforms
 
 macOS, Linux, Windows (Python 3.11+, Node 20+). Any public GitHub repository. The ChatGPT plugin /

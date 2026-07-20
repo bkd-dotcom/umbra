@@ -9,7 +9,7 @@ import tempfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 logger = logging.getLogger("umbra.codex")
 
@@ -68,6 +68,64 @@ class CodexClient:
     @staticmethod
     def enabled() -> bool:
         return os.getenv("UMBRA_ENABLE_CODEX_CLI", "false").lower() == "true"
+
+    @staticmethod
+    def cli_version(runner: Runner = subprocess.run) -> str | None:
+        """Best-effort ``codex --version`` string, or None if unobservable.
+
+        Honesty rule: we return exactly what the CLI reports (trimmed), and None
+        when the binary is absent or the probe fails — we never fabricate a version.
+        """
+        try:
+            r = runner(["codex", "--version"], text=True, capture_output=True, timeout=15, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if r is None:
+            return None
+        out = ((getattr(r, "stdout", "") or "") + (getattr(r, "stderr", "") or "")).strip()
+        return out.splitlines()[0].strip() if out else None
+
+    def model_identity(self, executor: str) -> dict[str, Any]:
+        """Truthful model provenance for the signed receipt.
+
+        - ``executor``          — who produced the change (``codex-cli`` / ``deterministic``).
+        - ``codex_cli_version`` — observed ``codex --version`` or ``unavailable``.
+        - ``model_configured``  — the model Umbra explicitly requested via ``-m`` (validated
+          allowlist), or ``codex-default`` when we passed no ``-m`` flag (we did NOT pin a
+          model and Codex used its own default — we do not guess which).
+        - ``model_resolved``    — the model a provider/CLI **explicitly reported** as the one
+          that ran. Passing ``-m`` proves the model was *requested*, NOT that the provider
+          confirmed it ran, so this stays ``unavailable`` unless a provider response or CLI
+          output attests the resolved model. We never promote a configured value to resolved.
+        - ``model_evidence``    — how ``model_configured`` is known: ``cli-argument`` when we
+          set it via ``-m`` (a request, not attestation), ``codex-default`` when unset, or
+          ``no-model`` for the deterministic path. A ``provider-attested`` value would only
+          appear if a provider actually returned the resolved model (not the CLI path today).
+
+        For the deterministic executor no model runs, so every model field is stated as
+        such — we never imply a model participated when one did not.
+        """
+        if executor != "codex-cli":
+            return {
+                "executor": executor,
+                "codex_cli_version": None,
+                "model_configured": None,
+                "model_resolved": None,
+                "model_evidence": "no-model",
+                "note": "Deterministic policy evaluation — no coding model was invoked.",
+            }
+        pinned = self.model  # validated against _CODEX_MODELS in __init__, or None
+        return {
+            "executor": "codex-cli",
+            "codex_cli_version": self.cli_version(self.runner) or "unavailable",
+            "model_configured": pinned or "codex-default",
+            # A configured (-m) model is REQUESTED, not attested-as-run. The CLI does
+            # not report the model it resolved, so we honestly leave this unavailable
+            # until a provider/CLI explicitly attests it. Never inferred.
+            "model_resolved": "unavailable",
+            "model_evidence": "cli-argument" if pinned else "codex-default",
+            "reasoning_effort": self.reasoning_effort or "codex-default",
+        }
 
     @staticmethod
     def resolve_model(value: str | None) -> str | None:

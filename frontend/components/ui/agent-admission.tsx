@@ -25,13 +25,15 @@ type AdmissionReport = {
   repo: string;
   task_type: string;
   executor: string;
-  contract: { task_type: string; allowed_paths: string[]; forbidden_paths: string[]; max_files_changed: number; required_checks: string[]; network: string; source: string };
+  contract: { task_type: string; allowed_paths: string[]; forbidden_paths: string[]; max_files_changed: number; required_checks: string[]; network: string; source: string; policy_owner?: string; policy_version?: string; policy_approved_at?: string; policy_status?: { status: string; owner: string | null; version: string | null; approved_at: string | null; note: string } };
   contract_result: ContractResult;
   trust_boundary: TrustBoundary;
   verifier: Verifier | null;
   checks: ChecksT | null;
   baseline_checks: ChecksT | null;
   check_diagnosis: DiagnosisT | null;
+  model_identity?: { executor: string; codex_cli_version: string | null; model_configured: string | null; model_resolved: string | null; model_evidence: string; reasoning_effort?: string; note?: string } | null;
+  context_manifest?: { trusted_policy: string[]; included_evidence: { source: string; class: string; treatment: string }[]; excluded: string[]; redaction_count: number; excluded_categories: string[]; invariant: string } | null;
   changed_files: string[];
   proposed_change: ProposedChange | null;
   authority_level: number;

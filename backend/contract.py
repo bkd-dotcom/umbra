@@ -82,6 +82,11 @@ class Contract:
     network: str = "deny"
     authority_on_success: str = "branch_pr_only"
     source: str = "default"  # "repo" when loaded from .umbra/admission.yaml, else "default"
+    # Policy ownership / change-control provenance. Optional in the file; absent →
+    # the policy is treated as UNSIGNED (fail-safe: surfaced, never silently trusted).
+    policy_owner: str = ""
+    policy_version: str = ""
+    policy_approved_at: str = ""
 
     def to_public(self) -> dict[str, Any]:
         """Serializable view for API responses / receipts."""
@@ -95,12 +100,54 @@ class Contract:
             "network": self.network,
             "authority_on_success": self.authority_on_success,
             "source": self.source,
+            "policy_owner": self.policy_owner,
+            "policy_version": self.policy_version,
+            "policy_approved_at": self.policy_approved_at,
+            "policy_status": self.policy_status(),
+        }
+
+    def policy_status(self) -> dict[str, Any]:
+        """Human-owned change-control status of this policy.
+
+        A contract hash proves *which* rules ran; this states *who authorized* them.
+        Honest wording: declared owner/version metadata is NOT a cryptographic
+        signature, so we never call metadata "signed". Fail-safe default is
+        ``incomplete``. Values:
+          - ``declared``               — a human owner AND version are declared (change-
+                                         controlled metadata, but not cryptographically proven).
+          - ``incomplete``             — owner or version missing (default posture).
+          - ``cryptographically-signed`` — reserved for a policy carrying a verifiable
+                                         signature; not asserted here (no policy-signature
+                                         scheme is verified yet), stated so the field is honest.
+        Expiry/approval timestamps are advisory metadata surfaced for review; they do
+        not by themselves widen authority (authority is still gated by the deterministic
+        contract + verifier + checks).
+        """
+        declared = bool(self.policy_owner and self.policy_version)
+        status = "declared" if declared else "incomplete"
+        return {
+            "status": status,
+            "owner": self.policy_owner or None,
+            "version": self.policy_version or None,
+            "approved_at": self.policy_approved_at or None,
+            "note": (
+                "Policy declares a human owner and version (change-controlled metadata). "
+                "This is declared provenance, not a cryptographic signature."
+                if declared else
+                "Policy metadata is incomplete (no declared owner/version). Authority still "
+                "requires the deterministic contract, independent verifier, and required "
+                "checks; production teams should own and version the policy."
+            ),
         }
 
     def hash(self) -> str:
         """Stable content hash of the contract — binds a receipt to the exact
-        rules that applied. Excludes ``source`` (provenance, not a rule)."""
-        payload = {k: v for k, v in self.to_public().items() if k != "source"}
+        rules that applied. Excludes provenance (``source`` and policy ownership/
+        version/approval + derived ``policy_status``), which describe *who* authored
+        the rules, not the rules themselves — so the rules-hash stays stable while
+        policy identity is bound separately via the signed receipt payload."""
+        _provenance = {"source", "policy_owner", "policy_version", "policy_approved_at", "policy_status"}
+        payload = {k: v for k, v in self.to_public().items() if k not in _provenance}
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -208,6 +255,9 @@ def contract_from_dict(data: dict[str, Any], source: str = "repo") -> Contract:
         network=str(d.get("network", "deny")).lower(),
         authority_on_success=str(d.get("authority_on_success", "branch_pr_only")),
         source=source,
+        policy_owner=str(d.get("policy_owner", "")).strip(),
+        policy_version=str(d.get("policy_version", "")).strip(),
+        policy_approved_at=str(d.get("policy_approved_at", "")).strip(),
     )
 
 
@@ -242,6 +292,9 @@ def load_contract(repo_path: Path | str | None) -> Contract:
                     network=contract.network,
                     authority_on_success=contract.authority_on_success,
                     source="repo",
+                    policy_owner=contract.policy_owner,
+                    policy_version=contract.policy_version,
+                    policy_approved_at=contract.policy_approved_at,
                 )
             return contract
     except OSError:

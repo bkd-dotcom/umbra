@@ -204,3 +204,50 @@ def restore_checkout(repo_path, originals: dict[str, str]) -> None:
             (root / rel).write_text(text)
         except OSError:
             continue
+
+
+# --- Provenance-aware context manifest --------------------------------------
+# Classes of context by source trust level. Only ``trusted_policy`` is ever
+# treated as executable instruction; everything derived from the repository is
+# passed as *quoted evidence* the model may read but must not obey.
+CONTEXT_CLASSES = ("trusted_policy", "repo_code", "repo_docs", "third_party", "user_input")
+
+
+def build_context_manifest(
+    *,
+    trusted_policy: list[str] | None = None,
+    included_evidence: list[dict[str, Any]] | None = None,
+    tb_result: "TrustBoundaryResult | None" = None,
+) -> dict[str, Any]:
+    """Record, for the signed receipt, exactly what the coding agent was allowed to
+    trust while deciding — not only what it changed.
+
+    - ``trusted_policy``    — Umbra-owned instruction sources (the mission/contract).
+      These are the ONLY inputs treated as instructions.
+    - ``included_evidence`` — repository-derived context **Umbra supplied to the model**
+      as QUOTED EVIDENCE (never as instructions). Each entry: ``{source, class, treatment}``.
+    - ``excluded`` / ``redaction_count`` — untrusted instruction files that were
+      redacted on disk before the agent ran (from the trust-boundary scan), with the
+      count of quarantined lines and the categories seen.
+
+    Scoped honestly: this records the context **Umbra constructs and supplies**. A
+    workspace-access agent may independently read files in the checkout, and the CLI
+    does not expose a complete read log, so this is not a claim to enumerate everything
+    the model saw, nor a guarantee against all prompt injection.
+    """
+    excluded_sources = sorted({f.source for f in (tb_result.findings if tb_result else [])})
+    categories = sorted({f.category for f in (tb_result.findings if tb_result else [])})
+    return {
+        "trusted_policy": list(trusted_policy or []),
+        "included_evidence": list(included_evidence or []),
+        "excluded": excluded_sources,
+        "redaction_count": (tb_result.quarantined_count if tb_result else 0),
+        "excluded_categories": categories,
+        "invariant": (
+            "Repository text that Umbra supplies in its constructed context is passed to "
+            "the coding agent as quoted evidence, never as executable instructions. Only "
+            "Umbra-owned policy is treated as instruction. Untrusted instruction files are "
+            "redacted on disk before the agent runs. This does not enumerate every file the "
+            "agent may independently read, nor guarantee against all prompt injection."
+        ),
+    }

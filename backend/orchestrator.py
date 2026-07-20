@@ -641,6 +641,8 @@ def _sign_admission_receipt(report: dict[str, Any]) -> dict[str, Any]:
         baseline_checks=report.get("baseline_checks"),
         check_diagnosis=report.get("check_diagnosis"),
         codex_config=report.get("codex_config"),
+        model_identity=report.get("model_identity"),
+        context_manifest=report.get("context_manifest"),
         executor=report.get("executor"),
         outcome=report.get("outcome"),
     )

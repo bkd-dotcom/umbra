@@ -123,3 +123,52 @@ def test_mini_yaml_fallback_parses_without_pyyaml(monkeypatch):
     assert parsed["allowed_paths"] == ["package.json"]
     assert parsed["max_files_changed"] == 2
     assert parsed["network"] == "deny"
+
+
+def test_policy_status_incomplete_when_owner_or_version_missing():
+    """Fail-safe: a contract with no declared owner/version is 'incomplete' —
+    surfaced, never silently trusted, and never called 'signed'."""
+    c = contract_from_dict({"allowed_paths": ["package.json"]})
+    st = c.policy_status()
+    assert st["status"] == "incomplete"
+    assert st["owner"] is None and st["version"] is None
+    # Partial metadata (owner but no version) is still incomplete.
+    c2 = contract_from_dict({"allowed_paths": ["package.json"], "policy_owner": "sec@acme"})
+    assert c2.policy_status()["status"] == "incomplete"
+
+
+def test_policy_status_declared_with_owner_and_version_not_signed():
+    """Owner+version metadata yields 'declared' (NOT 'signed') — metadata is not a
+    cryptographic signature, so the honest state is 'declared'."""
+    c = contract_from_dict({
+        "allowed_paths": ["package.json"],
+        "policy_owner": "sec-team@acme.com",
+        "policy_version": "2026.07.1",
+        "policy_approved_at": "2026-07-20T00:00:00Z",
+    })
+    st = c.policy_status()
+    assert st["status"] == "declared"
+    assert "not a cryptographic signature" in st["note"]
+    assert st["owner"] == "sec-team@acme.com" and st["version"] == "2026.07.1"
+    assert st["approved_at"] == "2026-07-20T00:00:00Z"
+
+
+def test_policy_provenance_excluded_from_rules_hash():
+    """The rules-hash binds WHICH rules ran, not WHO authored them: adding policy
+    ownership metadata must not change the contract hash (provenance, not a rule)."""
+    base = contract_from_dict({"allowed_paths": ["package.json"], "max_files_changed": 2})
+    withmeta = contract_from_dict({
+        "allowed_paths": ["package.json"], "max_files_changed": 2,
+        "policy_owner": "o@x", "policy_version": "1", "policy_approved_at": "2026-01-01",
+    })
+    assert base.hash() == withmeta.hash()
+    # But a real rule change DOES change the hash.
+    changed = contract_from_dict({"allowed_paths": ["package.json"], "max_files_changed": 3})
+    assert base.hash() != changed.hash()
+
+
+def test_policy_status_present_in_to_public():
+    c = default_contract()
+    pub = c.to_public()
+    for k in ("policy_owner", "policy_version", "policy_approved_at", "policy_status"):
+        assert k in pub

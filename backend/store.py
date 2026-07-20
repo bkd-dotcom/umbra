@@ -43,6 +43,7 @@ class _MemoryStore:
         self._installations: dict[str, dict[str, Any]] = {}  # installation_id -> {account_login, account_type, repos, user_key}
         self._schedules: dict[str, dict[str, Any]] = {}  # schedule_id -> {user_key, repo_full_name, hour, minute, timezone, cadence, email, enabled, next_run_at, ...}
         self._triage: dict[str, dict[str, dict[str, Any]]] = {}  # user_key -> {finding_key -> {status, reason, repo, updated_at}}
+        self._authority: dict[str, dict[str, Any]] = {}  # "user_key|repo" -> earned-authority passport
         self._lock = threading.Lock()
 
     def get_or_create_user(self, key: str, profile: dict[str, Any]) -> dict[str, Any]:
@@ -186,6 +187,29 @@ class _MemoryStore:
     def list_triage(self, user_key: str) -> list[dict[str, Any]]:
         with self._lock:
             return sorted([dict(r) for r in self._triage.get(user_key, {}).values()], key=lambda r: r.get("updated_at", ""), reverse=True)
+
+    # --- Earned-authority passport (Agent Admission) ---
+    # One passport per (user, repo): the authority an agent EARNED by passing this
+    # repo's admission test. Durable + revocable — re-running admission upserts it;
+    # a failed run downgrades it. auto_merge is never stored as true (it's an
+    # invariant of the product, not a per-repo setting).
+    def save_authority(self, user_key: str, repo: str, passport: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            rec = {**passport, "user_key": user_key, "repo": repo, "updated_at": _now(), "auto_merge": False}
+            self._authority[f"{user_key}|{repo}"] = rec
+            return dict(rec)
+
+    def get_authority(self, user_key: str, repo: str) -> dict[str, Any] | None:
+        with self._lock:
+            rec = self._authority.get(f"{user_key}|{repo}")
+            return dict(rec) if rec else None
+
+    def list_authority(self, user_key: str) -> list[dict[str, Any]]:
+        with self._lock:
+            return sorted(
+                [dict(r) for r in self._authority.values() if r.get("user_key") == user_key],
+                key=lambda r: r.get("updated_at", ""), reverse=True,
+            )
 
     # --- Remediation-queue dismissals ---
     # A per-user set of dismissed advisory keys (repo:package@version:cve). The
@@ -413,6 +437,25 @@ class _FirestoreStore:
 
     def list_triage(self, user_key: str) -> list[dict[str, Any]]:
         query = self._triage_col().where("user_key", "==", user_key)
+        return sorted(({**(doc.to_dict() or {}), "id": doc.id} for doc in query.stream()), key=lambda r: r.get("updated_at", ""), reverse=True)
+
+    # --- Earned-authority passport (Agent Admission) ---
+    def _authority_col(self):
+        return self._db.collection("authority")
+
+    def save_authority(self, user_key: str, repo: str, passport: dict[str, Any]) -> dict[str, Any]:
+        doc_id = hashlib.sha256(f"{user_key}::{repo}".encode()).hexdigest()
+        rec = {**passport, "user_key": user_key, "repo": repo, "updated_at": _now(), "auto_merge": False}
+        self._authority_col().document(doc_id).set(rec, merge=True)
+        return {**rec, "id": doc_id}
+
+    def get_authority(self, user_key: str, repo: str) -> dict[str, Any] | None:
+        doc_id = hashlib.sha256(f"{user_key}::{repo}".encode()).hexdigest()
+        snap = self._authority_col().document(doc_id).get()
+        return (snap.to_dict() or {}) if snap.exists else None
+
+    def list_authority(self, user_key: str) -> list[dict[str, Any]]:
+        query = self._authority_col().where("user_key", "==", user_key)
         return sorted(({**(doc.to_dict() or {}), "id": doc.id} for doc in query.stream()), key=lambda r: r.get("updated_at", ""), reverse=True)
 
     # --- Remediation-queue dismissals ---

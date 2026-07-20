@@ -174,13 +174,19 @@ async def agent_admission(request: AdmissionRequest, http: Request) -> dict[str,
     _validate_repo(request.repo_url)
     ctx = _user_context(http)
     try:
-        return await orchestrator.admit(request.repo_url, token=ctx["github_token"])
+        report = await orchestrator.admit(request.repo_url, token=ctx["github_token"])
     except RuntimeError as exc:  # live repos disabled on this server
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Admission test failed: {exc}") from exc
+    # Persist the earned-authority passport for a signed-in user so it durably
+    # gates that repo's PR capability (and is revoked/downgraded on a later run).
+    user = http.session.get("user")
+    if user:
+        _persist_authority(user, report)
+    return report
 
 
 class EvidencePackRequest(BaseModel):
@@ -233,6 +239,24 @@ class PullRequestRequest(BaseModel):
     diffs: list[str] | None = Field(default=None, description="For mode='combine': the reviewed diffs to consolidate into one PR")
     model: str | None = Field(default=None, description="For mode='codex': Codex model; invalid values fall back to the default")
     reasoning_effort: str | None = Field(default=None, description="For mode='codex': reasoning effort; invalid values fall back to the default")
+
+
+def _persist_authority(user: dict | None, report: dict[str, object]) -> None:
+    """Record the earned-authority passport from an admission run, keyed by repo.
+    Best-effort; never raises."""
+    try:
+        if not user or not report.get("repo"):
+            return
+        get_store().save_authority(_user_key(user), str(report["repo"]), {
+            "authority_level": report.get("authority_level", 0),
+            "authority": report.get("authority", "observe"),
+            "authority_label": report.get("authority_label", ""),
+            "outcome": report.get("outcome", ""),
+            "contract_hash": (report.get("contract_result") or {}).get("contract_hash"),
+            "task_type": report.get("task_type"),
+        })
+    except Exception:  # noqa: BLE001 - authority persistence is best-effort
+        logging.getLogger("umbra.authority").exception("Failed to persist authority passport")
 
 
 def _persist_opened_pr(user: dict | None, request: PullRequestRequest, opened: dict[str, object]) -> None:
@@ -309,6 +333,16 @@ async def my_prs(http: Request) -> list[dict[str, object]]:
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return get_store().list_prs(_user_key(user))
+
+
+@app.get("/api/my/authority", tags=["agents"])
+async def my_authority(http: Request) -> list[dict[str, object]]:
+    """The signed-in user's earned-authority passports (one per repo that has run
+    the Agent Admission Test). auto_merge is always false."""
+    user = http.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return get_store().list_authority(_user_key(user))
 
 
 @app.post("/api/investigate", tags=["agents"])

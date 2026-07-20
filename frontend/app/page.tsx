@@ -22,6 +22,7 @@ import { HeroParallax } from "@/components/ui/hero-parallax";
 import { SectionFX } from "@/components/ui/section-fx";
 import { Spotlight } from "@/components/ui/spotlight";
 import { ChapterRail } from "@/components/ui/chapter-rail";
+import { UmbraLogo } from "@/components/ui/umbra-logo";
 import { fadeUp, scaleIn, slideLeft, slideRight, blurRise, EASE } from "@/lib/motion";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -68,9 +69,9 @@ export default function Landing() {
         transition={{ duration: 0.6 }}
         className={`sticky top-3 z-40 mt-3 flex items-center justify-between rounded-2xl px-5 py-3 transition-all duration-300 ${scrolled ? "glass shadow-[var(--shadow-card)]" : ""}`}
       >
-        <div className="flex items-center gap-2 text-[15px] font-extrabold tracking-[0.35em]">
-          <span className="text-2xl text-cyan tracking-normal">◐</span> UMBRA
-        </div>
+        <a href="/" aria-label="Umbra home" className="flex items-center rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-cyan">
+          <UmbraLogo size={22} />
+        </a>
         {/* Center nav — simple hover-underline links (Aceternity-style). */}
         <div className="hidden items-center gap-1 md:flex">
           {([["Proof", "#evidence-locker"], ["Report", "#report"], ["Crew", "#crew"], ["Shift", "#pipeline-scan"], ["OpenAI", "#openai"]] as const).map(([label, href]) => (
@@ -102,12 +103,10 @@ export default function Landing() {
             initial={false}
             className="mb-7 flex flex-wrap items-center gap-2.5 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog"
           >
-            <span className="h-1.5 w-1.5 rounded-full bg-cyan shadow-[0_0_10px_#22d3ee] animate-pulse-glow" />
-            <span className="text-cyan">Live</span>
-            <span className="text-fog/40">·</span>
+            <span className="h-1.5 w-1.5 rounded-full bg-cyan/70" aria-hidden />
             <span>Autonomous night shift</span>
             <span className="text-fog/40">·</span>
-            <span className="text-violet">OpenAI reasoning</span>
+            <span className="text-violet">OpenAI reasoning — when enabled</span>
           </motion.div>
 
           {/* Hero headline is deliberately visible on first paint — a plain <h1>,
@@ -573,8 +572,8 @@ export default function Landing() {
 
       {/* Footer */}
       <footer className="mt-16 flex flex-wrap items-center justify-between gap-4 border-t border-line py-10">
-        <div className="flex items-center gap-2 text-sm font-extrabold tracking-[0.35em]">
-          <span className="text-xl text-cyan tracking-normal">◐</span> UMBRA
+        <div className="flex items-center">
+          <UmbraLogo size={20} />
         </div>
         <small className="text-[11px] leading-relaxed text-fog">
           Findings are real and grounded. Live Codex runs on your own account or the founder&apos;s.<br />

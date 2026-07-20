@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { GlowCard } from "@/components/ui/glow-card";
+import { UmbraLogo } from "@/components/ui/umbra-logo";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
 import { StatefulButton } from "@/components/ui/stateful-button";
 import { Spotlight } from "@/components/ui/spotlight";
@@ -1115,7 +1116,7 @@ function JudgePath({ onOpenCaptured }: { onOpenCaptured: () => void }) {
   const steps = [
     ["01", "Run a public repo scan", "Live, OSV-grounded findings from any open-source repo — or open a captured scan below for instant proof."],
     ["02", "Read the Provider Ledger", "Every output labelled live / cache / unavailable — never fabricated."],
-    ["03", "Open a reasoning replay", "After a scan, open any agent below for its Codex CLI prompt + diff and GPT‑5.6 reasoning — shown when enabled."],
+    ["03", "Open an agent replay", "Open any agent replay to inspect its recorded prompt, provider, and proposed diff when available."],
   ] as const;
   return (
     <GlowCard className="mt-4 mb-5 p-5">
@@ -1253,7 +1254,10 @@ function CommandHeader({ me, repo, phase, onLogout }: { me: User | null; repo: s
   const color = phase === "scanning" ? "#22d3ee" : phase === "done" ? "#5eead4" : "#8b90a6";
   return (
     <header className="sticky top-0 z-30 -mx-6 flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-[color:var(--surface-border)] bg-ink/85 px-6 py-3 backdrop-blur-md md:-mx-10 md:px-10">
-      <span className="font-mono text-[13px] font-bold tracking-[0.18em] text-cloud"><span className="text-cyan">◐</span> UMBRA <span className="text-fog/40">//</span> <span className="text-fog">MISSION CONTROL</span></span>
+      <a href="/" aria-label="Umbra home" className="flex items-center gap-2 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-cyan">
+        <UmbraLogo size={20} />
+        <span className="hidden font-mono text-[11px] tracking-[0.14em] text-fog sm:inline"><span className="text-fog/40">//</span> MISSION CONTROL</span>
+      </a>
       <div className="order-3 flex w-full min-w-0 items-center gap-x-4 gap-y-1 font-mono text-[10.5px] uppercase tracking-[0.12em] text-fog md:order-none md:w-auto">
         <span className="inline-flex min-w-0 items-center gap-1.5"><span className="shrink-0 text-fog/50">repo</span> <span className="min-w-0 max-w-[52vw] truncate text-cloud md:max-w-[220px]">{repo}</span></span>
         <span className="text-fog/30">·</span>

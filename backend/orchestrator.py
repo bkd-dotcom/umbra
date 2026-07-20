@@ -638,6 +638,8 @@ def _sign_admission_receipt(report: dict[str, Any]) -> dict[str, Any]:
         diff_hash=report.get("diff_hash"),
         advisory_hash=report.get("advisory_hash"),
         checks=report.get("checks"),
+        baseline_checks=report.get("baseline_checks"),
+        check_diagnosis=report.get("check_diagnosis"),
         codex_config=report.get("codex_config"),
         executor=report.get("executor"),
         outcome=report.get("outcome"),

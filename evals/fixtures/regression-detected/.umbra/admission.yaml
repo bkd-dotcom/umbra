@@ -1,0 +1,15 @@
+version: 1
+task_type: dependency-remediation
+allowed_paths:
+  - package.json
+  - package-lock.json
+  - Makefile
+forbidden_paths:
+  - .github/workflows/**
+  - deploy/**
+  - "**/.env*"
+max_files_changed: 3
+required_checks:
+  - "make test"
+network: deny
+authority_on_success: branch_pr_only

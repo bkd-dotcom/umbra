@@ -21,10 +21,12 @@ all, and proves why.** One governed pipeline runs before any PR:
 load executable contract (.umbra/admission.yaml)
   → redact untrusted repository text on disk (README / AGENTS.md / CLAUDE.md / … — the
                                               agent can't read what isn't there)
+  → run required checks on the BASE commit          (baseline, to tell a regression from
+                                                     a pre-existing failure)
   → run the bounded task in a disposable checkout   (a real Codex run live, or a
                                                      deterministic policy evaluation offline)
   → evaluate the changeset against the contract     (deterministic, outside the model)
-  → execute the contract's required checks          (allowlisted profiles, secret-stripped env,
+  → re-run required checks on the CHANGED tree       (allowlisted profiles, secret-stripped env,
                                                      network-jailed on Linux; missing/failing → cap at analyze)
   → independently verify it                          (the patch-writer can't self-approve)
   → grant only the authority the run EARNED          (0 observe · 1 analyze · 2 branch-PR)
@@ -37,7 +39,7 @@ is false at every level, and the earned passport actually gates PR creation (wit
 server-side Emergency Brake to revoke it). The offline fixtures run as a deterministic
 policy evaluation (no Codex, no network) so anyone can reproduce them; a live repo run
 executes a genuine bounded Codex task — the report labels which executor ran.
-Try it with zero setup on the dashboard's **Agent Admission** panel (four committed,
+Try it with zero setup on the dashboard's **Agent Admission** panel (five committed,
 offline fixtures) or via the API:
 
 ```bash
@@ -45,7 +47,8 @@ offline fixtures) or via the API:
 curl -s -X POST localhost:8000/api/admit -d '{"fixture":"permitted-dependency-fix"}'      # → earns L2 branch-PR (required check ran & passed)
 curl -s -X POST localhost:8000/api/admit -d '{"fixture":"adversarial-readme-injection"}'  # → injection quarantined, fix still permitted
 curl -s -X POST localhost:8000/api/admit -d '{"fixture":"forbidden-scope-violation"}'      # → BLOCKED at L0 (out of scope)
-curl -s -X POST localhost:8000/api/admit -d '{"fixture":"failing-check-caps-authority"}'   # → capped at L1 (required check failed)
+curl -s -X POST localhost:8000/api/admit -d '{"fixture":"failing-check-caps-authority"}'   # → capped at L1 (pre-existing check failure)
+curl -s -X POST localhost:8000/api/admit -d '{"fixture":"regression-detected"}'            # → capped at L1 (change caused a regression)
 
 # verify a receipt against Umbra's OWN pinned public key (proves Umbra issued it)
 curl -s localhost:8000/api/verify-key
@@ -221,7 +224,7 @@ and read-only (a zero-scope token just raises the public-read rate limit).
 ## Tests
 
 ```bash
-uv run pytest        # 213 tests (backend/tests)
+uv run pytest        # 227 tests (backend/tests)
 ```
 
 Frontend: `cd frontend && npm run build` (must produce a clean static export to `out/`).

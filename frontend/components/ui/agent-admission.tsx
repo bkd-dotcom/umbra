@@ -18,6 +18,7 @@ type Verifier = { status: "reviewable" | "blocked"; blocked: boolean; evidence_c
 type ProposedChange = { package?: string; current?: string; fixed?: string; cve?: string | null; manifest?: string; ecosystem?: string };
 type CheckRowT = { command: string; status: "passed" | "failed" | "blocked" | "unavailable"; exit_code: number | null; output_hash: string | null; detail: string };
 type ChecksT = { ran: boolean; all_passed: boolean; enforcement: string; results: CheckRowT[] };
+type DiagnosisT = { status: string; summary: string };
 type CodexConfig = { provider: string; model: string; reasoning_effort: string; config_hash: string; tests_passed_self_report: boolean | null };
 type ReceiptEnvelope = { receipt: Record<string, unknown>; canonical_hash: string; signature: string; public_key: string; algorithm: string; key_ephemeral: boolean };
 type AdmissionReport = {
@@ -29,6 +30,8 @@ type AdmissionReport = {
   trust_boundary: TrustBoundary;
   verifier: Verifier | null;
   checks: ChecksT | null;
+  baseline_checks: ChecksT | null;
+  check_diagnosis: DiagnosisT | null;
   changed_files: string[];
   proposed_change: ProposedChange | null;
   authority_level: number;
@@ -48,9 +51,11 @@ type AdmissionReport = {
 };
 
 const FIXTURES = [
-  { id: "permitted-dependency-fix", label: "Permitted fix", hint: "in-scope dependency bump" },
-  { id: "adversarial-readme-injection", label: "Adversarial README", hint: "prompt-injection attempt" },
-  { id: "forbidden-scope-violation", label: "Forbidden scope", hint: "out-of-bounds change" },
+  { id: "permitted-dependency-fix", label: "Permitted fix", hint: "in-scope bump → earns L2" },
+  { id: "adversarial-readme-injection", label: "Adversarial README", hint: "prompt-injection quarantined" },
+  { id: "forbidden-scope-violation", label: "Forbidden scope", hint: "out-of-bounds → blocked L0" },
+  { id: "failing-check-caps-authority", label: "Failing check", hint: "pre-existing failure → cap L1" },
+  { id: "regression-detected", label: "Regression", hint: "change broke a green check → cap L1" },
 ];
 
 // Earned-authority ladder. The run lights up the rung it earned; nothing above is granted.
@@ -350,7 +355,23 @@ export function AgentAdmission({ repo = "", signedIn = false }: { repo?: string;
                         {report.checks.results.map((r, i) => (
                           <CheckRow key={i} ok={r.status === "unavailable" || r.status === "blocked" ? null : r.status === "passed"} name={r.command} detail={r.detail + (r.exit_code !== null ? ` · exit ${r.exit_code}` : "")} muted={r.status === "unavailable"} />
                         ))}
-                        {!report.checks.all_passed && report.authority_level < 2 && (
+                        {/* Baseline comparison: regression vs pre-existing failure. */}
+                        {report.check_diagnosis && report.baseline_checks && (
+                          <div className="mt-2 flex items-center gap-2">
+                            <span className="font-mono text-[9px] text-fog/60">base commit:</span>
+                            <span className={`font-mono text-[9px] ${report.baseline_checks.all_passed ? "text-teal" : "text-amber"}`}>
+                              checks {report.baseline_checks.all_passed ? "passed" : "failed"}
+                            </span>
+                            <span className="font-mono text-[9px] text-fog/40">→</span>
+                            <Chip tone={report.check_diagnosis.status === "regression" ? "rose" : report.check_diagnosis.status === "clean" || report.check_diagnosis.status === "fixed_suite" ? "teal" : "amber"}>
+                              {report.check_diagnosis.status.replace(/_/g, " ")}
+                            </Chip>
+                          </div>
+                        )}
+                        {report.check_diagnosis && report.check_diagnosis.status !== "clean" && (
+                          <p className="mt-1 text-[10.5px] text-amber">{report.check_diagnosis.summary}</p>
+                        )}
+                        {!report.checks.all_passed && report.authority_level < 2 && !report.check_diagnosis && (
                           <p className="mt-1 text-[10.5px] text-amber">Required checks did not all pass — branch-PR authority withheld (capped at analyze).</p>
                         )}
                       </div>

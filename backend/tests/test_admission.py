@@ -64,6 +64,27 @@ def test_failing_required_check_caps_authority_at_analyze():
     assert report.authority_level == 1 and report.authority == "analyze"
     assert report.checks["ran"] is True and report.checks["all_passed"] is False
     assert any(c["status"] == "failed" for c in report.checks["results"])
+    # Baseline comparison diagnoses this as a PRE-EXISTING failure (suite was
+    # already red), not a regression caused by the change.
+    assert report.check_diagnosis and report.check_diagnosis["status"] == "preexisting_failure"
+    assert report.baseline_checks and report.baseline_checks["all_passed"] is False
+
+
+def test_regression_is_diagnosed_distinctly_from_preexisting_failure():
+    report = run_admission_on_fixture(FIXTURES / "regression-detected", "eval/regression-detected")
+    # The check passes on the base commit and fails after the change → regression.
+    assert report.authority_level == 1 and report.authority == "analyze"
+    assert report.baseline_checks["all_passed"] is True   # green before the change
+    assert report.checks["all_passed"] is False           # red after the change
+    assert report.check_diagnosis["status"] == "regression"
+    assert "regression" in (report.blocked_reason or "").lower()
+
+
+def test_permitted_fix_diagnoses_clean():
+    report = run_admission_on_fixture(FIXTURES / "permitted-dependency-fix", "eval/permitted-dependency-fix")
+    assert report.authority_level == 2
+    assert report.check_diagnosis and report.check_diagnosis["status"] == "clean"
+    assert report.baseline_checks["all_passed"] is True and report.checks["all_passed"] is True
 
 
 def test_committed_fixtures_are_not_mutated():
@@ -78,5 +99,21 @@ def test_report_is_json_serializable_and_states_invariants():
     report = run_admission_on_fixture(FIXTURES / "permitted-dependency-fix", "eval/permitted-dependency-fix")
     pub = report.to_public()
     assert pub["human_review_required"] is True and pub["auto_merge"] is False
-    for key in ("repo", "executor", "contract", "contract_result", "trust_boundary", "verifier", "checks", "authority_level", "outcome", "providers", "base_commit", "diff_hash"):
+    for key in ("repo", "executor", "contract", "contract_result", "trust_boundary", "verifier", "checks", "baseline_checks", "check_diagnosis", "authority_level", "outcome", "providers", "base_commit", "diff_hash"):
         assert key in pub
+
+
+def test_diagnose_checks_states():
+    from backend.admission import _diagnose_checks
+    from backend.checks import ChecksReport
+
+    def rep(ran, ok):
+        return ChecksReport(results=[], ran=ran, all_passed=ok)
+
+    assert _diagnose_checks(rep(True, True), rep(True, True), has_change=True)["status"] == "clean"
+    assert _diagnose_checks(rep(True, True), rep(True, False), has_change=True)["status"] == "regression"
+    assert _diagnose_checks(rep(True, False), rep(True, False), has_change=True)["status"] == "preexisting_failure"
+    assert _diagnose_checks(rep(True, False), rep(True, True), has_change=True)["status"] == "fixed_suite"
+    # No baseline / no change → nothing to compare.
+    assert _diagnose_checks(None, rep(True, True), has_change=True) is None
+    assert _diagnose_checks(rep(True, True), rep(True, True), has_change=False) is None

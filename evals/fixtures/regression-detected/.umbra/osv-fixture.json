@@ -1,0 +1,18 @@
+{
+  "next": [
+    {
+      "id": "GHSA-fr5h-rqp8-mj6g",
+      "aliases": ["CVE-2024-46982"],
+      "summary": "Next.js Server-Side Request Forgery in Server Actions",
+      "affected": [
+        {
+          "package": { "name": "next", "ecosystem": "npm" },
+          "ranges": [
+            { "type": "SEMVER", "events": [ { "introduced": "0" }, { "fixed": "14.2.33" } ] }
+          ]
+        }
+      ],
+      "severity": [ { "type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" } ]
+    }
+  ]
+}

@@ -78,6 +78,8 @@ class AdmissionReport:
     trust_boundary: dict[str, Any]
     verifier: dict[str, Any] | None
     checks: dict[str, Any] | None = None
+    baseline_checks: dict[str, Any] | None = None
+    check_diagnosis: dict[str, Any] | None = None
     changed_files: list[str] = field(default_factory=list)
     proposed_change: dict[str, Any] | None = None  # {package, current, fixed, cve, manifest}
     authority_level: int = 0
@@ -104,6 +106,8 @@ class AdmissionReport:
             "trust_boundary": self.trust_boundary,
             "verifier": self.verifier,
             "checks": self.checks,
+            "baseline_checks": self.baseline_checks,
+            "check_diagnosis": self.check_diagnosis,
             "changed_files": list(self.changed_files),
             "proposed_change": self.proposed_change,
             "authority_level": self.authority_level,
@@ -343,8 +347,15 @@ def run_admission_on_checkout(
     codex_config = None
     file_changes: dict[str, str] = {}
     proposed: dict[str, Any] | None = None
+    baseline_checks: ChecksReport | None = None
 
     if dep is not None:
+        # 3a. BASELINE: run the contract's required checks on the PRISTINE tree
+        #     (before any change) so we can tell "this patch caused a regression"
+        #     from "the repo's test suite was already failing". Only meaningful
+        #     when the contract declares checks.
+        if contract.required_checks:
+            baseline_checks = run_required_checks(root, list(contract.required_checks))
         if want_codex:
             executor = "codex-cli"
             file_changes, proposed, diff, codex_config = _codex_change(root, dep, advisories, tb)
@@ -364,8 +375,11 @@ def run_admission_on_checkout(
     # 4. Evaluate the changeset against the executable contract.
     contract_result = evaluate_contract(list(file_changes), contract)
 
-    # 5. Run the contract's required checks in the checkout (real execution).
+    # 5. Run the contract's required checks on the CHANGED tree (post-change).
     checks_report: ChecksReport = run_required_checks(root, list(contract.required_checks)) if file_changes else ChecksReport()
+
+    # 5a. Diagnose the check outcome by comparing baseline (pre-change) to post.
+    check_diagnosis = _diagnose_checks(baseline_checks, checks_report, has_change=bool(file_changes))
 
     # 6. Independently verify (only meaningful when there is a change).
     verifier_report = None
@@ -392,6 +406,8 @@ def run_admission_on_checkout(
         trust_boundary=tb.to_public(),
         verifier=verifier_report.to_public() if verifier_report else None,
         checks=checks_report.to_public(),
+        baseline_checks=baseline_checks.to_public() if baseline_checks else None,
+        check_diagnosis=check_diagnosis,
         changed_files=list(file_changes),
         proposed_change=proposed,
         base_commit=base_commit,
@@ -409,6 +425,33 @@ def run_admission_on_checkout(
     )
     _decide_authority(report, contract_result, verifier_report, checks_report, contract, has_change=bool(file_changes))
     return report
+
+
+def _diagnose_checks(baseline: ChecksReport | None, post: ChecksReport, has_change: bool) -> dict[str, Any] | None:
+    """Compare pre-change (baseline) vs post-change required-check results to
+    distinguish a regression from a pre-existing failure. Returns a small dict
+    ``{status, summary}`` or None when there was nothing to compare.
+
+    status:
+      - ``clean``               — no baseline failure, post passed.
+      - ``regression``          — baseline passed, post failed (the patch broke it).
+      - ``preexisting_failure`` — baseline already failed (not the patch's fault).
+      - ``fixed_suite``         — baseline failed, post passed (patch fixed the suite).
+      - ``no_checks``           — the contract declared no checks / none ran.
+    """
+    if not has_change or baseline is None:
+        return None
+    if not baseline.ran and not post.ran:
+        return {"status": "no_checks", "summary": "The contract's required checks did not run in this environment."}
+    base_ok = baseline.all_passed
+    post_ok = post.all_passed
+    if base_ok and post_ok:
+        return {"status": "clean", "summary": "Required checks passed both before and after the change."}
+    if base_ok and not post_ok:
+        return {"status": "regression", "summary": "Required checks passed on the base commit but FAILED after the change — the patch introduced a regression."}
+    if not base_ok and not post_ok:
+        return {"status": "preexisting_failure", "summary": "Required checks already failed on the base commit — the failure pre-dates this change, not caused by it."}
+    return {"status": "fixed_suite", "summary": "Required checks failed on the base commit but passed after the change — the patch fixed the suite."}
 
 
 def _synth_diff(file_changes: dict[str, str]) -> str:
@@ -444,14 +487,22 @@ def _decide_authority(report: AdmissionReport, contract_result, verifier_report,
         report.outcome = "ADMITTED (analyze) — clean scan, but no safe in-scope change was available to propose."
     elif contract.required_checks and not checks_report.all_passed:
         # In scope and verified, but the contract's required checks did not all run
-        # and pass — cap at analyze, do NOT grant branch-PR authority.
+        # and pass — cap at analyze, do NOT grant branch-PR authority. The baseline
+        # diagnosis distinguishes a regression from a pre-existing failure.
         report.authority_level = 1
-        if checks_report.ran:
-            report.blocked_reason = "Required checks ran but did not all pass."
-            report.outcome = "ADMITTED (analyze) — in scope, but a required check failed, so branch-PR authority is withheld pending human validation."
-        else:
+        diag = report.check_diagnosis or {}
+        if not checks_report.ran:
             report.blocked_reason = "Required checks could not be run in this environment."
             report.outcome = "ADMITTED (analyze) — in scope, but the contract's required checks did not run here, so branch-PR authority is withheld pending validation."
+        elif diag.get("status") == "regression":
+            report.blocked_reason = "Required checks passed on the base commit but failed after the change — the patch caused a regression."
+            report.outcome = "ADMITTED (analyze) — the change introduced a check regression, so branch-PR authority is withheld. Human validation required."
+        elif diag.get("status") == "preexisting_failure":
+            report.blocked_reason = "Required checks already failed on the base commit (pre-existing failure, not caused by this change)."
+            report.outcome = "ADMITTED (analyze) — the repository's required checks were already failing before the change, so branch-PR authority is withheld pending a green baseline."
+        else:
+            report.blocked_reason = "Required checks ran but did not all pass."
+            report.outcome = "ADMITTED (analyze) — in scope, but a required check failed, so branch-PR authority is withheld pending human validation."
     else:
         report.authority_level = 2
         report.outcome = "ADMITTED (branch PR) — the agent stayed in scope, required checks passed, and the change was independently verified; it may prepare a branch-only PR. Human approval is still required to merge."

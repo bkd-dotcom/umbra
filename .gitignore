@@ -16,3 +16,11 @@ Screenshot_20250524_215913_Gallery.jpg
 .claude/
 skills-lock.json
 ImprovisingPlan.md
+
+# Secrets & provenance material — never commit signing keys or captured receipts
+*.key
+*.pem
+umbra-signing-key*
+*signing-key*
+umbra-receipt*.json
+live-*-receipt.json

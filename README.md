@@ -1,12 +1,51 @@
 # Umbra — The AI engineer that works the night shift
 
-Umbra is an autonomous AI engineering team for your GitHub repo. Five agents run
-without prompting — hunting CVEs, reviewing PRs, tracing incidents, and killing
-tech debt — then draft pull requests you review in the morning. **Codex does the
-engineering; GPT-5.6 does the reasoning; you approve the merge.**
+Umbra is a **change-control plane for coding agents**. Before an agent is trusted
+*with* authority in your repo, Umbra tests whether it can be trusted *in* your
+repo: an **executable contract** bounds the change, untrusted repository text is
+**quarantined**, an **independent verifier** checks the result, and only the
+**authority the run earns** is granted — every action sealed in a **signed,
+independently verifiable receipt**. **Codex proposes patches in a disposable
+clone; Umbra never merges.**
 
 Built for **OpenAI Build Week 2026**. Recommended submission category: **Developer
 Tools / Agents** (see [SUBMISSION.md](SUBMISSION.md)).
+
+## The Agent Admission Test (what makes Umbra different)
+
+"AI finds a CVE and opens a PR" is a crowded category. Umbra's defensible wedge is
+one layer up: **it decides whether an agent should be allowed to make a change at
+all, and proves why.** One governed pipeline runs before any PR:
+
+```
+load executable contract (.umbra/admission.yaml)
+  → quarantine untrusted repository text (README / issues / PR bodies)
+  → run the bounded task in a disposable checkout
+  → evaluate the changeset against the contract   (deterministic, outside the model)
+  → independently verify it                        (the patch-writer can't self-approve)
+  → grant only the authority the run EARNED         (0 observe · 1 analyze · 2 branch-PR)
+  → seal it in an Ed25519-signed Remediation Receipt
+```
+
+Authority is a **result of evidence**, never a checkbox — a forbidden-path attempt
+or a verifier block caps it at *observe*. `auto_merge` is false at every level.
+Try it with zero setup on the dashboard's **Agent Admission** panel (three committed,
+offline fixtures) or via the API:
+
+```bash
+# offline, deterministic — no auth, no network (judges/CI reproduce it)
+curl -s -X POST localhost:8000/api/admit -d '{"fixture":"permitted-dependency-fix"}'      # → earns L2 branch-PR
+curl -s -X POST localhost:8000/api/admit -d '{"fixture":"adversarial-readme-injection"}'  # → injection quarantined, fix still permitted
+curl -s -X POST localhost:8000/api/admit -d '{"fixture":"forbidden-scope-violation"}'      # → BLOCKED at L0
+
+# verify a receipt's signature independently against the public key
+curl -s localhost:8000/api/verify-key
+```
+
+Fixtures live in [`evals/fixtures/`](evals/fixtures/); the modules are
+[`backend/contract.py`](backend/contract.py), [`backend/verifier.py`](backend/verifier.py),
+[`backend/trust_boundary.py`](backend/trust_boundary.py), [`backend/admission.py`](backend/admission.py),
+and [`backend/receipt.py`](backend/receipt.py).
 
 ## Test it (no rebuild required)
 
@@ -58,6 +97,14 @@ finding and fix as an **auditable receipt**, not a claim to take on faith:
 - **Evidence Pack + verify** — any run exports to a portable, path-sanitized Markdown pack stamped
   with a canonical `sha256`; `POST /api/evidence-pack/verify` **recomputes** that hash so anyone can
   confirm the report wasn't altered (tamper-evident). See [`backend/evidence.py`](backend/evidence.py).
+- **Signed Remediation Receipt** — every admission run seals its accountability chain (contract,
+  trust-boundary, verifier, earned authority, proposed change) into an **Ed25519-signed** envelope.
+  `POST /api/receipt/verify` checks the signature against the public key served at `GET /api/verify-key`,
+  so a receipt is *independently* verifiable — not just a hash anyone could recompute. The receipt
+  honestly flags whether the signing key is the managed production key or a dev fallback. See
+  [`backend/receipt.py`](backend/receipt.py).
+- **Earned-authority passport** — the authority an agent earned per repo is persisted and revocable;
+  re-running admission upserts it, a failed run downgrades it. `auto_merge` is never stored true.
 - **Activity / audit timeline** — the shift, in order, from real durations and provider labels.
 
 The landing page's **Night-Shift pipeline** walks this end-to-end (Scan → Triage → Root-cause →
@@ -134,7 +181,7 @@ and read-only (a zero-scope token just raises the public-read rate limit).
 ## Tests
 
 ```bash
-uv run pytest        # 146 tests (backend/tests)
+uv run pytest        # 195 tests (backend/tests)
 ```
 
 Frontend: `cd frontend && npm run build` (must produce a clean static export to `out/`).

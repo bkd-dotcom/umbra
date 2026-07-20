@@ -20,6 +20,7 @@ import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { ShiftDossier } from "@/components/ui/shift-dossier";
 import { AuditTimeline } from "@/components/ui/audit-timeline";
 import { DiffView } from "@/components/ui/diff-view";
+import { AgentAdmission } from "@/components/ui/agent-admission";
 import { PROOF_SCAN, PROOF_REPO, PROOF_CAPTURED_AT } from "@/lib/proof-scan";
 import { EASE } from "@/lib/motion";
 
@@ -628,10 +629,18 @@ export default function Dashboard() {
         )}
       </section>
 
-      {/* ── Zone 02 · Findings ──────────────────────────────────────────────── */}
+      {/* ── Zone 02 · Agent Admission ───────────────────────────────────────── */}
+      {!scanning && (
+        <section className="relative mt-14">
+          <ZoneLabel n="02" title="Agent Admission" hint="does the agent obey this repo's rules?" />
+          <AgentAdmission />
+        </section>
+      )}
+
+      {/* ── Zone 03 · Findings ──────────────────────────────────────────────── */}
       {shift && !scanning && (
         <section className="relative mt-14">
-          <ZoneLabel n="02" title="Findings" hint={showingDemo ? "sample" : captured ? `captured ${capturedAt}` : shift.source} />
+          <ZoneLabel n="03" title="Findings" hint={showingDemo ? "sample" : captured ? `captured ${capturedAt}` : shift.source} />
           <div className="grid gap-5 lg:grid-cols-[1.5fr_1fr]">
             <div className="flex flex-col gap-5">
               <FindingsLedger vulns={shiftVulns} canPr={canPr && !showingDemo && !captured} demo={showingDemo} onOpenPr={(v) => setPrTarget({ mode: "bump", vuln: v })} onOpenPrAll={() => setPrTarget({ mode: "bump_all" })} repo={shiftRepo} canTriage={canTriage} triage={triageMap} onTriage={applyTriage} />
@@ -670,7 +679,7 @@ export default function Dashboard() {
       {/* ── Zone 03 · Operations & actions ──────────────────────────────────── */}
       {targetRepo && !scanning && (
         <section id="operations" className="relative mt-14">
-          <ZoneLabel n="03" title="Operations" hint={repoFullName(targetRepo)} />
+          <ZoneLabel n="04" title="Operations" hint={repoFullName(targetRepo)} />
           <div className="grid gap-5 lg:grid-cols-2">
             <AskPanel repo={targetRepo} />
             <DetectivePanel repo={targetRepo} />

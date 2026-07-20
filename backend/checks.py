@@ -12,10 +12,15 @@ declare an arbitrary command — so execution is constrained on three axes and t
    executed. This is the primary control — a repo cannot run ``curl … | sh``.
 2. **Scrubbed environment.** The child gets a minimal env with every Umbra/OpenAI/
    GitHub/cloud secret stripped, so a check can't read credentials.
-3. **Network isolation (best-effort, recorded).** On Linux with user namespaces we
-   run under ``unshare -rn`` (no network). Where that isn't available (e.g. macOS
-   dev), we cannot technically cut the network, so we record enforcement as
-   ``host-restricted`` — allowlisted + secret-stripped, network *declared* not cut.
+3. **Isolation, by the strongest tier that actually preflights.** A repo's build
+   scripts (``npm install``) are hostile code, so we run them under the strongest
+   available sandbox and record the tier truthfully — each wrapper is probed with
+   ``… true`` first so we never label an isolation that didn't initialize:
+     - ``sandboxed``        — bubblewrap: read-only OS, writable bind only on the
+                              disposable checkout, private HOME/tmp, no network.
+     - ``network-isolated`` — Linux ``unshare -rn`` (network cut; host filesystem —
+                              not a full sandbox).
+     - ``host-restricted``  — no working wrapper; allowlist + scrubbed env only.
    The report's ``enforcement`` field is the truthful status the UI/receipt shows.
 
 CPU/memory/time limits are applied via a bounded timeout and (on POSIX) an
@@ -115,15 +120,61 @@ def _scrubbed_env() -> dict[str, str]:
     return env
 
 
-def _network_sandbox_prefix() -> tuple[list[str], str]:
-    """Return (argv-prefix, enforcement-level) for network isolation.
+def _probe(argv: list[str]) -> bool:
+    """Return True iff running ``argv`` (a sandbox wrapper around ``true``) actually
+    exits 0. This is the preflight that prevents mislabeling: a wrapper that can't
+    initialize (restricted namespaces, missing kernel support) exits non-zero, and
+    we must NOT claim its enforcement tier."""
+    try:
+        r = subprocess.run(argv, capture_output=True, timeout=15, check=False)
+        return r.returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        return False
 
-    Linux user namespaces (``unshare -rn``) give a real no-network jail with no
-    root. Where unavailable (macOS/dev), we return no prefix and ``host-restricted``
-    — we do NOT pretend the network was cut."""
-    if shutil.which("unshare"):
-        # -r map current user to root in the new ns; -n new (empty) network ns.
-        return (["unshare", "-r", "-n"], "sandboxed")
+
+def _bwrap_prefix(repo_path: Path) -> list[str]:
+    """A bubblewrap filesystem sandbox: read-only OS, a writable bind only on the
+    disposable checkout, a private/empty HOME and /tmp, and no network. This is the
+    only tier we call a true 'sandbox' — the repo's own build scripts (npm install)
+    cannot read the host home or write outside the checkout."""
+    return [
+        "bwrap",
+        "--ro-bind", "/usr", "/usr",
+        "--ro-bind", "/bin", "/bin",
+        "--ro-bind", "/lib", "/lib",
+        *(["--ro-bind", "/lib64", "/lib64"] if Path("/lib64").exists() else []),
+        *(["--ro-bind", "/etc", "/etc"] if Path("/etc").exists() else []),
+        "--bind", str(repo_path), str(repo_path),
+        "--tmpfs", "/tmp",
+        "--tmpfs", str(Path.home()) if str(Path.home()) not in ("/", "") else "/root",
+        "--dev", "/dev",
+        "--proc", "/proc",
+        "--unshare-all",           # new user/net/pid/ipc/uts/cgroup namespaces
+        "--die-with-parent",
+        "--chdir", str(repo_path),
+    ]
+
+
+def _resolve_enforcement(repo_path: Path) -> tuple[list[str], str]:
+    """Pick the strongest isolation that PREFLIGHTS successfully, and return
+    (argv-prefix, honest-enforcement-tier):
+
+    - ``sandboxed``       — bubblewrap filesystem+network sandbox (probed).
+    - ``network-isolated``— Linux ``unshare -rn`` (network cut; host filesystem).
+    - ``host-restricted`` — no working wrapper; allowlist + scrubbed env only.
+
+    Each candidate is probed with ``… true`` first, so we never label a tier whose
+    wrapper doesn't actually initialize in this environment.
+    """
+    if shutil.which("bwrap"):
+        # Probe with a trivial sandbox (don't bind the repo for the probe).
+        if _probe(["bwrap", "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin",
+                   *(["--ro-bind", "/lib", "/lib"] if Path("/lib").exists() else []),
+                   *(["--ro-bind", "/lib64", "/lib64"] if Path("/lib64").exists() else []),
+                   "--tmpfs", "/tmp", "--unshare-all", "--die-with-parent", "true"]):
+            return _bwrap_prefix(repo_path), "sandboxed"
+    if shutil.which("unshare") and _probe(["unshare", "-r", "-n", "true"]):
+        return (["unshare", "-r", "-n"], "network-isolated")
     return ([], "host-restricted")
 
 
@@ -139,18 +190,21 @@ def _preexec_limits():  # pragma: no cover - POSIX-only, exercised at runtime
 
 
 def run_required_checks(repo_path: Path | str, commands: list[str]) -> ChecksReport:
-    """Run each declared check under the allowlist + scrubbed env + network jail.
+    """Run each declared check under the allowlist + scrubbed env + the strongest
+    isolation tier that preflights successfully.
 
     ``ran`` is True iff at least one command executed; ``all_passed`` is True iff
     every declared command ran and passed (a blocked/unavailable/failed check makes
-    it False). ``enforcement`` records the isolation actually achieved. Never raises.
+    it False). ``enforcement`` records the isolation *actually achieved and probed*
+    — ``sandboxed`` (bubblewrap fs+net), ``network-isolated`` (unshare net only), or
+    ``host-restricted``. Never raises.
     """
-    root = Path(repo_path)
+    root = Path(repo_path).resolve()
     report = ChecksReport()
     if not commands:
         return report
 
-    net_prefix, enforcement = _network_sandbox_prefix()
+    prefix, enforcement = _resolve_enforcement(root)
     report.enforcement = enforcement
     env = _scrubbed_env()
     preexec = _preexec_limits if os.name == "posix" else None
@@ -173,23 +227,13 @@ def run_required_checks(repo_path: Path | str, commands: list[str]) -> ChecksRep
             continue
         try:
             completed = subprocess.run(
-                [*net_prefix, *argv], cwd=root, text=True, capture_output=True,
+                [*prefix, *argv], cwd=root, text=True, capture_output=True,
                 timeout=_CHECK_TIMEOUT_S, check=False, env=env, preexec_fn=preexec,
             )
         except (subprocess.SubprocessError, OSError) as exc:
-            # unshare can fail where namespaces are restricted — fall back honestly.
-            if net_prefix:
-                try:
-                    completed = subprocess.run(argv, cwd=root, text=True, capture_output=True, timeout=_CHECK_TIMEOUT_S, check=False, env=env, preexec_fn=preexec)
-                    report.enforcement = "host-restricted"
-                except (subprocess.SubprocessError, OSError) as exc2:
-                    report.results.append(CheckResult(cmd, "unavailable", None, None, f"Could not run `{cmd}`: {exc2}"))
-                    every_ok = False
-                    continue
-            else:
-                report.results.append(CheckResult(cmd, "unavailable", None, None, f"Could not run `{cmd}`: {exc}"))
-                every_ok = False
-                continue
+            report.results.append(CheckResult(cmd, "unavailable", None, None, f"Could not run `{cmd}`: {exc}"))
+            every_ok = False
+            continue
         executed_any = True
         combined = (completed.stdout or "") + (completed.stderr or "")
         passed = completed.returncode == 0

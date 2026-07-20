@@ -19,8 +19,8 @@ def test_allowlisted_passing_command_runs(tmp_path: Path):
     assert report.ran is True and report.all_passed is True
     r = report.results[0]
     assert r.status == "passed" and r.exit_code == 0 and r.output_hash.startswith("sha256:")
-    # Enforcement is recorded honestly (sandboxed on Linux ns, else host-restricted).
-    assert report.enforcement in ("sandboxed", "host-restricted")
+    # Enforcement is one of the honest tiers, and only what actually preflighted.
+    assert report.enforcement in ("sandboxed", "network-isolated", "host-restricted")
 
 
 def test_allowlisted_failing_command_is_recorded(tmp_path: Path):
@@ -79,3 +79,24 @@ def test_output_hash_is_deterministic(tmp_path: Path):
     a = run_required_checks(tmp_path, ["true"]).results[0].output_hash
     b = run_required_checks(tmp_path, ["true"]).results[0].output_hash
     assert a == b
+
+
+def test_probe_gates_the_enforcement_tier(monkeypatch, tmp_path):
+    """A wrapper is only labelled if it actually preflights — no mislabeling."""
+    from backend import checks
+
+    # Pretend unshare exists but its wrapper always fails to initialize.
+    monkeypatch.setattr(checks.shutil, "which", lambda name: "/usr/bin/unshare" if name == "unshare" else None)
+    monkeypatch.setattr(checks, "_probe", lambda argv: False)
+    prefix, tier = checks._resolve_enforcement(tmp_path)
+    # Probe failed → we must fall back to host-restricted, not claim isolation.
+    assert tier == "host-restricted" and prefix == []
+
+
+def test_probe_success_selects_network_isolated(monkeypatch, tmp_path):
+    from backend import checks
+
+    monkeypatch.setattr(checks.shutil, "which", lambda name: "/usr/bin/unshare" if name == "unshare" else None)
+    monkeypatch.setattr(checks, "_probe", lambda argv: argv[:1] == ["unshare"])
+    prefix, tier = checks._resolve_enforcement(tmp_path)
+    assert tier == "network-isolated" and prefix[:1] == ["unshare"]

@@ -40,8 +40,13 @@ from typing import Any, Callable
 from backend.checks import ChecksReport, run_required_checks
 from backend.contract import Contract, evaluate_contract, load_contract
 from backend.remediation import bump_manifest, pick_fixed_version
-from backend.trust_boundary import sanitize_text, scan_repository_text
+from backend.trust_boundary import UNTRUSTED_SOURCES, sanitize_text, scan_repository_text
 from backend.verifier import verify_change
+
+# The set of untrusted instruction files the agent must never be credited with
+# changing (a change to one is dropped from the changeset and recorded as a
+# violation). Mirrors the trust-boundary source list.
+_UNTRUSTED_FILES = set(UNTRUSTED_SOURCES)
 
 # Authority ladder for admission outcomes. Mirrors the evidence.AUTONOMY_LADDER
 # spirit but is *earned* per-run. auto_merge is False at every level, always.
@@ -125,6 +130,29 @@ def _base_commit(repo_path: Path) -> str | None:
         return sha or None
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def _git(repo_path: Path, args: list[str]) -> str:
+    try:
+        r = subprocess.run(["git", *args], cwd=repo_path, text=True, capture_output=True, check=False)
+        return r.stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _final_changeset(repo_path: Path) -> tuple[dict[str, str], str]:
+    """Read the working-tree changeset from git AS IT STANDS NOW — used *after*
+    redacted instruction files are restored, so the diff/changed-files reflect only
+    the agent's real, final changes (never the temporary redaction). Returns
+    (file_changes, unified_diff)."""
+    diff = _git(repo_path, ["diff", "--binary"])
+    changed = [ln for ln in _git(repo_path, ["diff", "--name-only"]).splitlines() if ln.strip()]
+    file_changes: dict[str, str] = {}
+    for rel in changed:
+        p = repo_path / rel
+        if p.is_file():
+            file_changes[rel] = p.read_text(errors="replace")
+    return file_changes, diff
 
 
 def _load_osv_fixture(repo_path: Path) -> dict[str, list[dict[str, Any]]] | None:
@@ -227,19 +255,39 @@ def _codex_change(
         full_mission = mission + (f"\n\n--- repository context (sanitized) ---\n{context}" if context else "")
         # 2. Run Codex against the redacted checkout.
         op = client.propose(full_mission, files=None, repo_path=repo_path, read_only=False)
-        changed = [f for f in (op.files or []) if f]
-        # 3. Restore the redacted files BEFORE reading changed contents / diff, so
-        #    the redaction never counts as part of the proposed change.
-        restore_checkout(repo_path, redacted)
-        diff_text = op.diff or ""
+        # 2a. BEFORE restoring, note which untrusted instruction files the agent
+        #     itself modified (i.e. differ from the redaction we wrote). This lets
+        #     us *record the attempt*; the restore below then discards it.
+        instruction_violation = None
+        for rel in _UNTRUSTED_FILES:
+            if rel in redacted:
+                p = repo_path / rel
+                try:
+                    # We wrote the sanitized text; if it now differs, the agent edited it.
+                    from backend.trust_boundary import sanitize_text as _st
+                    expected, _ = _st(redacted[rel], rel)
+                    if p.is_file() and p.read_text(errors="replace") != expected:
+                        instruction_violation = rel
+                except OSError:
+                    continue
     finally:
-        restore_checkout(repo_path, redacted)  # belt-and-suspenders on any failure
+        # 3. ALWAYS restore the redacted files, so the diff we compute next reflects
+        #    only the agent's real changes — never the redaction, and never a
+        #    surviving edit to an instruction file (the original is written back).
+        restore_checkout(repo_path, redacted)
 
-    file_changes: dict[str, str] = {}
-    for rel in changed:
-        p = repo_path / rel
-        if p.is_file() and rel not in redacted:  # never treat a restored untrusted file as a change
-            file_changes[rel] = p.read_text(errors="replace")
+    # 4. Recompute the changeset from git on the FINAL (restored) tree. This is the
+    #    single source of truth for the receipt, contract, and verifier — not the
+    #    mid-redaction op.diff/op.files.
+    file_changes, diff_text = _final_changeset(repo_path)
+
+    # 5. Defense in depth: any instruction file that still shows as changed is
+    #    dropped from the changeset (restore should have neutralized it).
+    for rel in list(file_changes):
+        if rel in _UNTRUSTED_FILES:
+            file_changes.pop(rel, None)
+            instruction_violation = instruction_violation or rel
+
     proposed = {"package": package, "current": current, "fixed": fixed, "cve": cve, "manifest": (next(iter(file_changes), None)), "ecosystem": ecosystem} if file_changes else None
     codex_config = {
         "provider": op.provider,
@@ -248,6 +296,7 @@ def _codex_change(
         "config_hash": _sha256(json.dumps({"model": client.model, "effort": client.reasoning_effort, "provider": op.provider}, sort_keys=True)),
         "tests_passed_self_report": op.tests_passed,
         "context_files_redacted": sorted(redacted.keys()),
+        "instruction_file_change_rejected": instruction_violation,
     }
     return file_changes, proposed, diff_text, codex_config
 

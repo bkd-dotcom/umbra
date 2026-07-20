@@ -29,8 +29,11 @@ export function HoverBorderGradient({
     </span>
   );
 
+  // Press feedback: on :active, drop the hover lift and scale down slightly so the
+  // primary CTA feels like it physically responds to the click (Emil Kowalski's
+  // rule — any pressable element should confirm the press). Snappy 200ms transform.
   const shell =
-    "group relative inline-flex w-fit items-center justify-center overflow-hidden rounded-full border border-[color:var(--surface-border)] bg-[color:var(--surface-2)] p-px transition-transform duration-300 hover:-translate-y-0.5";
+    "group relative inline-flex w-fit items-center justify-center overflow-hidden rounded-full border border-[color:var(--surface-border)] bg-[color:var(--surface-2)] p-px transition-transform duration-200 ease-out hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.97]";
 
   const sweep = (
     <motion.span

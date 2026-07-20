@@ -48,6 +48,19 @@ export default function Privacy() {
         </section>
 
         <section>
+          <h2 className="font-serif text-xl text-cloud">Scheduled reports &amp; email</h2>
+          <p className="mt-2 text-fog">
+            If you schedule a morning report, Umbra stores the schedule (repo, time, timezone,
+            cadence) and the email address you choose, and runs the scan on that schedule the same
+            way as a manual scan — into a <b className="text-cloud">disposable checkout</b> that is
+            deleted afterward. The resulting report is saved to your history and emailed to you via
+            our email provider. Every email includes a <b className="text-cloud">one-click
+            unsubscribe</b>, and you can pause or delete any schedule and turn notifications off from
+            the dashboard at any time.
+          </p>
+        </section>
+
+        <section>
           <h2 className="font-serif text-xl text-cloud">Third parties</h2>
           <p className="mt-2 text-fog">
             Findings are grounded in real data from OSV.dev (advisories), GitHub (repository and PR

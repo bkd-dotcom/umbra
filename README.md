@@ -39,6 +39,30 @@ Tools / Agents** (see [SUBMISSION.md](SUBMISSION.md)).
   fabricated. See [docs/live-mode.md](docs/live-mode.md).
 - **Where Codex accelerated the build & the `/feedback` session ID:** see [SUBMISSION.md](SUBMISSION.md).
 
+## The accountability layer (what makes Umbra different)
+
+An autonomous crew is only useful if you can trust what it did overnight. Umbra treats every
+finding and fix as an **auditable receipt**, not a claim to take on faith:
+
+- **Provider ledger** — every half of every run is labelled with what actually served it
+  (`codex-cli` / `osv.dev` / `local-git` / `responses-api` / `cache-fallback` / `unavailable`).
+  A non-live provider is never dressed up as live; a stage the crew didn't run is chipped `SAMPLE`.
+- **In-app PR review** — the Codex-drafted patch renders as a real diff (per-file, hunk headers,
+  ±line gutters) with the deterministic **Reviewer** risk verdict beside it, so you review the exact
+  change *before* opening it. PRs are **branch-only** — Umbra never merges. See
+  [`frontend/components/ui/diff-view.tsx`](frontend/components/ui/diff-view.tsx).
+- **PR ledger** — every branch-only PR Umbra opens becomes a durable receipt (PR #, branch, the
+  advisory it remediates, the recorded Reviewer verdict, opened-at), grouped by repo.
+- **Triage with reasons** — snoozing or accepting-risk on a finding requires a reason and is recorded
+  server-side, so a suppression is an auditable act surfaced in the activity timeline — never a silent hide.
+- **Evidence Pack + verify** — any run exports to a portable, path-sanitized Markdown pack stamped
+  with a canonical `sha256`; `POST /api/evidence-pack/verify` **recomputes** that hash so anyone can
+  confirm the report wasn't altered (tamper-evident). See [`backend/evidence.py`](backend/evidence.py).
+- **Activity / audit timeline** — the shift, in order, from real durations and provider labels.
+
+The landing page's **Night-Shift pipeline** walks this end-to-end (Scan → Triage → Root-cause →
+Draft fix → Evidence → Human gate), replaying a real captured scan.
+
 ## Supported platforms
 
 macOS, Linux, Windows (Python 3.11+, Node 20+). Any public GitHub repository. The ChatGPT plugin /
@@ -110,7 +134,7 @@ and read-only (a zero-scope token just raises the public-read rate limit).
 ## Tests
 
 ```bash
-uv run pytest        # 111 tests (backend/tests)
+uv run pytest        # 146 tests (backend/tests)
 ```
 
 Frontend: `cd frontend && npm run build` (must produce a clean static export to `out/`).

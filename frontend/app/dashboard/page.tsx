@@ -16,13 +16,18 @@ import { GitHubIcon, LockIcon } from "@/components/ui/icons";
 import { Reveal } from "@/components/ui/reveal";
 import { scrollToTop } from "@/components/ui/smooth-scroll";
 import { LocalWeather } from "@/components/ui/local-weather";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { ShiftDossier } from "@/components/ui/shift-dossier";
+import { AuditTimeline } from "@/components/ui/audit-timeline";
+import { DiffView } from "@/components/ui/diff-view";
 import { PROOF_SCAN, PROOF_REPO, PROOF_CAPTURED_AT } from "@/lib/proof-scan";
-import { EASE, fadeUp, stagger } from "@/lib/motion";
+import { EASE } from "@/lib/motion";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const creds: RequestInit = { credentials: "include" };
 
-type User = { name?: string; email?: string; avatar?: string; provider: string; login?: string; sub: string; github_connected?: boolean; github_login?: string; has_openai_key?: boolean; is_founder?: boolean };
+type User = { name?: string; email?: string; avatar?: string; provider: string; login?: string; sub: string; github_connected?: boolean; github_login?: string; has_openai_key?: boolean; is_founder?: boolean; scheduling_enabled?: boolean; email_enabled?: boolean; notifications_opt_out?: boolean };
+type Schedule = { id: string; repo_full_name: string; hour: number; minute: number; timezone: string; cadence: string; email: string; enabled: boolean; next_run_at?: string | null; last_run_at?: string | null };
 type Repo = { name: string; full_name: string; url: string; private: boolean; stars: number };
 type Vuln = { package: string; version: string; cve: string; severity: string; owasp?: string; summary?: string };
 type Replay = { agent: string; prompt: string; codex_diff: string; tests: string; reasoning: string; timings: Record<string, number>; providers?: Record<string, string> };
@@ -31,6 +36,10 @@ type Autonomy = { level: number; label: string; auto_merge: boolean; human_revie
 type Policy = { loaded: boolean; path?: string; summary: string };
 type ScanResult = { umbra_score?: number; vulnerabilities?: Vuln[]; dependencies?: Dep[]; source?: string; live_agents?: string[]; agent_results?: AgentRun[]; reasoning_summary?: string; repo_url?: string; run_id?: string; evidence_hash?: string; autonomy?: Autonomy; policy?: Policy };
 type Scan = { scan_id?: string; repo_full_name: string; umbra_score?: number; source?: string; vuln_count?: number; ran_at?: string; report?: ScanResult };
+type TriageRec = { finding_key: string; status?: string; reason?: string; repo?: string; updated_at?: string };
+// A durable receipt for a branch-only PR Umbra opened (the PR ledger). `Review` is
+// declared lower in the file; TS type aliases are hoisted, so the reference is fine.
+type PrRecord = { repo_url?: string; number: number; url: string; branch?: string; base?: string; mode?: string; package?: string; cve?: string; review?: Review; opened_at?: string };
 type Reference = { file: string; lines?: string; note?: string };
 type AskAnswer = { answer: string; references: Reference[]; blast_radius?: string; source?: string; reasoning?: string };
 type Postmortem = { incident: string; root_cause_commit: string; confidence: number; timeline: string[]; explanation: string; blast_radius: string; suggested_fix: string; reasoning_chain: string[]; source?: string };
@@ -53,7 +62,7 @@ function providerTone(v: string): string {
   // not "live" and not a plain failure. Violet, matching the FOUNDER badge.
   if (v === "founder-gated") return "text-violet border-violet/40 bg-violet/10";
   if (v.includes("cache")) return "text-amber border-amber/40 bg-amber/10";
-  return "text-fog border-[color:var(--surface-border)] bg-white/5";
+  return "text-fog border-[color:var(--surface-border)] bg-[color:var(--surface-2)]";
 }
 
 // Affirmative provenance pill for reports — LIVE vs SAMPLE (and cache/unavailable),
@@ -61,12 +70,24 @@ function providerTone(v: string): string {
 function StatusPill({ kind }: { kind: "live" | "sample" | "cache" | "captured" | "unavailable" }) {
   const map = {
     live: { label: "LIVE SCAN RESULT", cls: "text-teal border-teal/40 bg-teal/10" },
-    sample: { label: "SAMPLE SHIFT", cls: "text-fog/80 border-[color:var(--surface-border)] bg-white/5" },
+    sample: { label: "SAMPLE SHIFT", cls: "text-fog/80 border-[color:var(--surface-border)] bg-[color:var(--surface-2)]" },
     cache: { label: "CACHE", cls: "text-amber border-amber/40 bg-amber/10" },
     captured: { label: "CAPTURED SCAN", cls: "text-amber border-amber/40 bg-amber/10" },
-    unavailable: { label: "UNAVAILABLE", cls: "text-fog border-[color:var(--surface-border)] bg-white/5" },
+    unavailable: { label: "UNAVAILABLE", cls: "text-fog border-[color:var(--surface-border)] bg-[color:var(--surface-2)]" },
   }[kind];
   return <span className={`rounded-full border px-2.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] ${map.cls}`}>{map.label}</span>;
+}
+
+// Provenance derived from the run's ACTUAL source — never hardcoded. Live scans
+// set source "live-*"/"live" (see orchestrator); demo-cache / cache-fallback /
+// empty is CACHE; an explicit unavailable stays UNAVAILABLE. Mirrors the honest
+// ProviderLedger map so the loud hero pill can't claim LIVE on a cached result.
+// (honesty invariant: never label a non-live provider as LIVE.)
+function scanPillKind(source?: string): "live" | "cache" | "unavailable" {
+  const s = (source ?? "").toLowerCase();
+  if (s.includes("unavailable")) return "unavailable";
+  if (s.startsWith("live")) return "live";
+  return "cache";
 }
 
 // Minimal SSE reader over fetch's ReadableStream — lets the Ask + Detective
@@ -126,29 +147,11 @@ function estimateEta(model: ModelId, effort: Effort, crew: Crew): { label: strin
 function scoreVerdict(score: number): { label: string; tone: string; note: string } {
   if (score >= 80) return { label: "Low risk", tone: "text-teal", note: "Clean — nothing pressing." };
   if (score >= 60) return { label: "Needs attention", tone: "text-amber", note: "Fixable risks remain." };
-  return { label: "Elevated risk", tone: "text-rose-300", note: "Address the advisories below." };
+  if (score >= 30) return { label: "Elevated risk", tone: "text-amber", note: "Address the advisories below." };
+  // A floored score (many advisories) is a deliberate, severe rating — label it as
+  // such so it reads as a real finding, not a missing value.
+  return { label: "Critical risk", tone: "text-[color:var(--sev-critical)]", note: "Multiple unpatched advisories — patch before shipping." };
 }
-
-// The five agents, identical identity to the homepage crew. Colour is used only
-// as status: an agent lights in its identity colour when working this shift, and
-// stays fog when idle. Detective = amber, Ask = pink (aligned with the homepage).
-const CREW = [
-  { key: "watchman", letter: "W", name: "WATCHMAN", role: "Dependency sentinel", working: "ON WATCH", idle: "STANDBY", doing: "scanning dependencies", color: "#22d3ee" },
-  { key: "detective", letter: "D", name: "DETECTIVE", role: "Incident tracer", working: "REASONING", idle: "STANDBY", doing: "tracing incident history", color: "#fbbf24" },
-  { key: "reviewer", letter: "R", name: "REVIEWER", role: "PR risk analyst", working: "REVIEWING", idle: "WAITING", doing: "PR risk analysis", color: "#a78bfa" },
-  { key: "janitor", letter: "J", name: "JANITOR", role: "Tech-debt sweeper", working: "CLEANING", idle: "IDLE", doing: "dead-code sweep", color: "#5eead4" },
-  { key: "ask", letter: "A", name: "ASK UMBRA", role: "Codebase oracle", working: "ANSWERING", idle: "READY", doing: "grounded code answers", color: "#f472b6" },
-] as const;
-
-// Short filed-action lines for the sample shift, so the guest preview reads like
-// the homepage dispatch (real per-agent work, not just a status dot).
-const DEMO_DETAIL: Record<string, string> = {
-  watchman: "1 advisory · patch prepared",
-  detective: "incident traced to a9c31f",
-  reviewer: "PR #128 · low blast-radius",
-  janitor: "4 dead exports swept",
-  ask: "3 answers · grounded",
-};
 
 // A labelled sample shift — shown in the logged-out preview and never passed off
 // as live. Same canonical incident as the homepage (express CVE-2024-29041 / a9c31f).
@@ -201,7 +204,7 @@ export default function Dashboard() {
   const [selectedScans, setSelectedScans] = useState<Set<string>>(new Set());
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
   const [activeReplay, setActiveReplay] = useState<Replay | null>(null);
-  const [prTarget, setPrTarget] = useState<{ mode: "bump" | "codex"; vuln?: Vuln } | null>(null);
+  const [prTarget, setPrTarget] = useState<{ mode: "bump" | "codex" | "bump_all" | "combine"; vuln?: Vuln } | null>(null);
   // A PR that was just opened — surfaced as a persistent toast so the "it's ready"
   // signal survives after the dialog closes. Umbra never merges; this is advisory.
   const [prOpened, setPrOpened] = useState<{ url: string; number: number; branch: string; base: string } | null>(null);
@@ -211,10 +214,37 @@ export default function Dashboard() {
   // When set, the dashboard is showing the bundled real-but-captured proof scan
   // (instant, no wait) rather than a live run — labelled CAPTURED SCAN, never live.
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [triageList, setTriageList] = useState<TriageRec[]>([]);
+  const [prList, setPrList] = useState<PrRecord[]>([]);
+  const [onboardDismissed, setOnboardDismissed] = useState(false);
   const stepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Onboarding guide dismissal persists across reloads (client-only; read after
+  // mount so there's no hydration mismatch).
+  useEffect(() => { try { if (localStorage.getItem("umbra-onboarding-dismissed") === "1") setOnboardDismissed(true); } catch {} }, []);
+  const dismissOnboarding = useCallback(() => { setOnboardDismissed(true); try { localStorage.setItem("umbra-onboarding-dismissed", "1"); } catch {} }, []);
 
   const loadHistory = useCallback(() => {
     fetch(`${API}/api/my/scans`, creds).then((r) => (r.ok ? r.json() : [])).then((d: Scan[]) => Array.isArray(d) && setHistory(d)).catch(() => {});
+  }, []);
+
+  // The PR ledger — every branch-only PR Umbra opened for this user (durable
+  // receipts: PR #, branch, the advisory it fixes, the Reviewer verdict). Refreshed
+  // after any open so a just-created PR appears without a reload.
+  const loadPrs = useCallback(() => {
+    fetch(`${API}/api/my/prs`, creds).then((r) => (r.ok ? r.json() : [])).then((d: PrRecord[]) => Array.isArray(d) && setPrList(d)).catch(() => {});
+  }, []);
+
+  const loadSchedules = useCallback(() => {
+    fetch(`${API}/api/my/schedules`, creds).then((r) => (r.ok ? r.json() : [])).then((d: Schedule[]) => Array.isArray(d) && setSchedules(d)).catch(() => {});
+  }, []);
+
+  // Turn report emails on/off from the dashboard (inverse of the opt-out flag the
+  // email unsubscribe link sets). Optimistic; refetch not needed.
+  const setNotifications = useCallback(async (enabled: boolean) => {
+    setUser((u) => (u && u !== "loading" ? { ...u, notifications_opt_out: !enabled } : u));
+    await fetch(`${API}/api/my/notifications`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ enabled }) }).catch(() => {});
   }, []);
 
   // PR auto-review is an install-once GitHub App: the user installs it (and picks
@@ -230,6 +260,31 @@ export default function Dashboard() {
   const loadDismissals = useCallback(() => {
     fetch(`${API}/api/my/remediation-dismissals`, creds).then((r) => (r.ok ? r.json() : { keys: [] })).then((d) => setDismissedKeys(new Set(d?.keys ?? []))).catch(() => {});
   }, []);
+
+  // Persisted per-user finding triage (open / snoozed / accepted_risk). Suppressions
+  // carry a reason, so the activity timeline + evidence show WHY a finding was set aside.
+  const loadTriage = useCallback(() => {
+    fetch(`${API}/api/my/triage`, creds).then((r) => (r.ok ? r.json() : [])).then((d: TriageRec[]) => Array.isArray(d) && setTriageList(d)).catch(() => {});
+  }, []);
+
+  const applyTriage = useCallback(async (findingKey: string, status: string, reason?: string, repo?: string) => {
+    // Optimistic: reopen removes the record; snooze/accept upserts it to the top.
+    // Snapshot the prior list so a failed POST can be rolled back — the ledger +
+    // audit timeline must NEVER assert a suppression the store didn't record.
+    let snapshot: TriageRec[] = [];
+    setTriageList((list) => {
+      snapshot = list;
+      const rest = list.filter((t) => t.finding_key !== findingKey);
+      return status === "open" ? rest : [{ finding_key: findingKey, status, reason, repo, updated_at: new Date().toISOString() }, ...rest];
+    });
+    try {
+      const res = await fetch(`${API}/api/my/triage`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ finding_key: findingKey, status, reason, repo }) });
+      if (!res.ok) throw new Error(`triage ${res.status}`);
+    } catch {
+      setTriageList(snapshot); // revert the optimistic change
+      loadTriage(); // reconcile with server truth
+    }
+  }, [loadTriage]);
 
   const loadRepos = useCallback(() => {
     setRepoError(null);
@@ -265,6 +320,9 @@ export default function Dashboard() {
         loadApp();
         loadHistory();
         loadDismissals();
+        loadSchedules();
+        loadTriage();
+        loadPrs();
       })
       .catch(() => { setUser(null); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -318,6 +376,18 @@ export default function Dashboard() {
     if (params.get("proof")) {
       booted.current = true;
       if (user === null) openCaptured();
+      return;
+    }
+    // `/dashboard?scan=<id>` opens a specific saved report — the target of the
+    // morning-report email's "View report" link. Logged-in only (it's the user's
+    // own report); lands them on the loaded shift with the remediation actions.
+    const scanId = params.get("scan");
+    if (scanId && user) {
+      booted.current = true;
+      fetch(`${API}/api/my/scans/${encodeURIComponent(scanId)}`, creds)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((s: Scan | null) => { if (s?.report) { setResult(s.report); setViewingSaved(s.ran_at ? new Date(s.ran_at).toLocaleString() : s.repo_full_name); scrollToTop(); } })
+        .catch(() => {});
       return;
     }
     const raw = params.get("repo");
@@ -409,6 +479,12 @@ export default function Dashboard() {
   // Watchman's proposed patch from the current scan — reused to open a PR in
   // seconds (no second Codex run) instead of re-deriving the fix from scratch.
   const watchmanDiff = useMemo(() => result?.agent_results?.find((a) => a.agent === "watchman")?.replay?.codex_diff ?? "", [result]);
+  // Janitor's cleanup diff from the same scan — paired with Watchman's for the
+  // optional "combine crew changes into one PR" action.
+  const janitorDiff = useMemo(() => result?.agent_results?.find((a) => a.agent === "janitor")?.replay?.codex_diff ?? "", [result]);
+  // Finding_key → triage record, for O(1) status lookup in the ledger. Kept here
+  // (above the early return) so hook order is stable.
+  const triageMap = useMemo(() => new Map(triageList.map((t) => [t.finding_key, t] as const)), [triageList]);
 
   if (user === "loading") return <AuthLoading />;
 
@@ -423,6 +499,9 @@ export default function Dashboard() {
   const shiftVulns = shift?.vulnerabilities ?? [];
   const shiftDeps = shift?.dependencies ?? [];
   const shiftRepo = shift?.repo_url ? repoFullName(shift.repo_url) : repoUrl ? repoFullName(repoUrl) : "no target";
+  // Triage is a real, persisted, logged-in action — hidden on demo/captured views
+  // (which also disable PR actions) so it never implies persistence a guest lacks.
+  const canTriage = !!me && !showingDemo && !captured;
   // Phase drives the command header + crew board. The guest sample preview reads
   // as a *filed* shift (matching its sample score/findings); a real logged-in
   // dashboard with no scan yet reads "standing by". Live scans progress normally.
@@ -444,6 +523,19 @@ export default function Dashboard() {
         <ZoneLabel n="01" title="Current shift" hint={guest ? "public preview" : undefined} />
 
         {guest && <JudgePath onOpenCaptured={openCaptured} />}
+
+        {/* First-run guide — shown until the essentials (connect GitHub + first
+            scan) are done, or dismissed. Reflects real account state only. */}
+        {me && !onboardDismissed && !(me.github_connected && history.length > 0) && (
+          <OnboardingChecklist
+            me={me}
+            hasScanned={history.length > 0 || !!result}
+            hasPr={prList.length > 0}
+            hasSchedule={schedules.length > 0}
+            onScan={scrollToTop}
+            onDismiss={dismissOnboarding}
+          />
+        )}
 
         {/* Command bar — issue the scan */}
         {me ? (
@@ -467,7 +559,7 @@ export default function Dashboard() {
         <ScanOptions model={model} setModel={setModel} effort={effort} setEffort={setEffort} crew={crew} setCrew={setCrew} />
         <ApiStatus up={apiUp} />
         {me && <AutoReviewPanel appInfo={appInfo} installs={appInstalls} />}
-        {scanError && <p className="mt-3 font-mono text-xs text-rose-300">Scan unavailable: {scanError}{guest ? " — showing the sample shift below." : ""}</p>}
+        {scanError && <p className="mt-3 font-mono text-xs text-[color:var(--sev-critical)]">Scan unavailable: {scanError}{guest ? " — showing the sample shift below." : ""}</p>}
 
         {/* Scan progress */}
         <AnimatePresence>
@@ -505,15 +597,32 @@ export default function Dashboard() {
         )}
 
         {/* Shift at a glance — a filed shift reads as the cinematic Shift Report
-            (hero score + filed dispatch); an idle dashboard keeps the compact
-            score + crew status while it waits for the next scan. */}
+            (hero score) followed by the live Crew Dossier (each agent's real
+            operational artifact, honest per-agent status). An idle logged-in
+            dashboard shows the awaiting score + a standby dossier so it still
+            reads as mission control while it waits for the next scan. */}
         {!scanning && (
-          phase === "done" && shift ? (
-            <ShiftReport result={shift} repo={shiftRepo} demo={showingDemo} capturedAt={capturedAt} />
+          shift ? (
+            <>
+              <ShiftReport result={shift} repo={shiftRepo} demo={showingDemo} capturedAt={capturedAt} />
+              <ShiftDossier
+                result={shift}
+                mode={showingDemo ? "sample" : captured ? "captured" : "live"}
+                founder={!!me?.is_founder}
+                onOpenReplay={setActiveReplay}
+                onGotoOperations={() => document.getElementById("operations")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              />
+            </>
           ) : (
-            <div className="mt-5 grid gap-5 lg:grid-cols-[1.35fr_1fr]">
-              <ScorePanel result={shift} demo={showingDemo} capturedAt={capturedAt} />
-              <CrewStatusBoard phase={phase} crew={crew} result={shift} demo={showingDemo} />
+            <div className="mt-5 flex flex-col gap-5">
+              <ScorePanel result={null} demo={false} capturedAt={null} />
+              <ShiftDossier
+                result={{}}
+                mode="live"
+                founder={!!me?.is_founder}
+                onOpenReplay={setActiveReplay}
+                onGotoOperations={() => document.getElementById("operations")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              />
             </div>
           )
         )}
@@ -525,10 +634,15 @@ export default function Dashboard() {
           <ZoneLabel n="02" title="Findings" hint={showingDemo ? "sample" : captured ? `captured ${capturedAt}` : shift.source} />
           <div className="grid gap-5 lg:grid-cols-[1.5fr_1fr]">
             <div className="flex flex-col gap-5">
-              <FindingsLedger vulns={shiftVulns} canPr={canPr && !showingDemo && !captured} demo={showingDemo} onOpenPr={(v) => setPrTarget({ mode: "bump", vuln: v })} />
-              {me?.is_founder && canPr && !showingDemo && !captured && shiftVulns.length > 0 && (
-                <button onClick={() => setPrTarget({ mode: "codex" })} className="self-start rounded-full border border-violet/40 bg-violet/10 px-3.5 py-1.5 font-mono text-[11px] text-violet transition-colors hover:bg-violet/20">Open a Codex fix PR →</button>
-              )}
+              <FindingsLedger vulns={shiftVulns} canPr={canPr && !showingDemo && !captured} demo={showingDemo} onOpenPr={(v) => setPrTarget({ mode: "bump", vuln: v })} onOpenPrAll={() => setPrTarget({ mode: "bump_all" })} repo={shiftRepo} canTriage={canTriage} triage={triageMap} onTriage={applyTriage} />
+              <div className="flex flex-wrap gap-2">
+                {canPr && !showingDemo && !captured && watchmanDiff.trim() && janitorDiff.trim() && (
+                  <button onClick={() => setPrTarget({ mode: "combine" })} className="self-start rounded-full border border-cyan/40 bg-cyan/10 px-3.5 py-1.5 font-mono text-[11px] text-cyan transition-colors hover:bg-cyan/20">Combine crew changes → one PR</button>
+                )}
+                {me?.is_founder && canPr && !showingDemo && !captured && shiftVulns.length > 0 && (
+                  <button onClick={() => setPrTarget({ mode: "codex" })} className="self-start rounded-full border border-violet/40 bg-violet/10 px-3.5 py-1.5 font-mono text-[11px] text-violet transition-colors hover:bg-violet/20">Open a Codex fix PR →</button>
+                )}
+              </div>
             </div>
             <div className="flex flex-col gap-5">
               <DependencyRiskMap deps={shiftDeps} />
@@ -539,21 +653,23 @@ export default function Dashboard() {
               <EvidencePackButton result={shift} mode={showingDemo ? "demo" : captured ? "captured" : "live"} />
             </div>
           </div>
-          {/* Reasoning replays — keep the honest per-agent replay reachable */}
-          {result?.agent_results && result.agent_results.length > 0 && (
-            <div className="mt-5">
-              <p className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.16em] text-fog">Reasoning replays · this run</p>
-              <div className="flex flex-col gap-2.5">
-                {result.agent_results.map((run) => <AgentRunRow key={run.agent} run={run} onOpen={() => setActiveReplay(run.replay)} />)}
-              </div>
-            </div>
-          )}
+          {/* Activity / audit trail — what actually ran this shift, in order, from
+              real data; logged-in users also see their triage decisions + history. */}
+          <div className="mt-6">
+            <AuditTimeline
+              shift={shift}
+              history={me && !captured ? history : []}
+              triage={me && !captured ? triageList : []}
+              mode={showingDemo ? "sample" : captured ? "captured" : "live"}
+              onOpenReplay={setActiveReplay}
+            />
+          </div>
         </section>
       )}
 
       {/* ── Zone 03 · Operations & actions ──────────────────────────────────── */}
       {targetRepo && !scanning && (
-        <section className="relative mt-14">
+        <section id="operations" className="relative mt-14">
           <ZoneLabel n="03" title="Operations" hint={repoFullName(targetRepo)} />
           <div className="grid gap-5 lg:grid-cols-2">
             <AskPanel repo={targetRepo} />
@@ -582,10 +698,20 @@ export default function Dashboard() {
             <ByoKeyPanel user={me} keyInput={keyInput} setKeyInput={setKeyInput} onSave={saveKey} onRemove={removeKey} saving={savingKey} />
           </section>
 
+          <section className="mt-10">
+            <ScheduledReportsPanel user={me} schedules={schedules} defaultRepo={targetRepo ? repoFullName(targetRepo) : ""} onRefresh={loadSchedules} onSetNotifications={setNotifications} />
+          </section>
+
+          {prList.length > 0 && (
+            <section className="mt-10">
+              <PrLedger prs={prList} />
+            </section>
+          )}
+
           {history.length > 0 && (
             <section className="mt-10 grid gap-6">
               <RepoRollup history={history} onView={viewSaved} />
-              <RemediationQueue history={history} canPr={canPr} dismissed={dismissedKeys} onDismiss={dismissRemediation} onRestore={restoreRemediation} />
+              <RemediationQueue history={history} canPr={canPr} dismissed={dismissedKeys} onDismiss={dismissRemediation} onRestore={restoreRemediation} onOpened={loadPrs} />
             </section>
           )}
 
@@ -603,9 +729,9 @@ export default function Dashboard() {
                       </button>
                     )}
                     {selectedScans.size > 0 && (
-                      <button onClick={clearSelectedScans} className="rounded-xl border border-rose-400/40 px-3.5 py-2 font-mono text-[11px] text-rose-300 transition-colors hover:bg-rose-400/10">Clear selected ({selectedScans.size})</button>
+                      <button onClick={clearSelectedScans} className="rounded-xl border border-rose-400/40 px-3.5 py-2 font-mono text-[11px] text-[color:var(--sev-critical)] transition-colors hover:bg-rose-400/10">Clear selected ({selectedScans.size})</button>
                     )}
-                    <button onClick={clearHistory} disabled={clearingHistory} className="rounded-xl border border-[color:var(--surface-border)] px-3.5 py-2 font-mono text-[11px] text-fog transition-colors hover:border-rose-400/50 hover:text-rose-300 disabled:opacity-50">
+                    <button onClick={clearHistory} disabled={clearingHistory} className="rounded-xl border border-[color:var(--surface-border)] px-3.5 py-2 font-mono text-[11px] text-fog transition-colors hover:border-rose-400/50 hover:text-[color:var(--sev-critical)] disabled:opacity-50">
                       {clearingHistory ? "Clearing…" : "Clear all"}
                     </button>
                   </div>
@@ -641,7 +767,7 @@ export default function Dashboard() {
       <ReplayModal replay={activeReplay} onClose={() => setActiveReplay(null)} />
 
       {/* Pull-request confirm dialog (explicit, branch-only, never merges) */}
-      {me && <PrDialog target={prTarget} repo={targetRepo} diff={watchmanDiff} model={model} effort={effort} onClose={() => setPrTarget(null)} onOpened={setPrOpened} />}
+      {me && <PrDialog target={prTarget} repo={targetRepo} diff={watchmanDiff} diffs={[watchmanDiff, janitorDiff]} model={model} effort={effort} onClose={() => setPrTarget(null)} onOpened={(pr) => { setPrOpened(pr); loadPrs(); }} />}
 
       {/* PR-ready toast — the shift produced something you can act on */}
       <PrReadyToast pr={prOpened} onDismiss={() => setPrOpened(null)} />
@@ -760,7 +886,7 @@ function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery
       ) : repoError ? (
         <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-semibold text-rose-300">Couldn&apos;t load your repositories</p>
+            <p className="text-sm font-semibold text-[color:var(--sev-critical)]">Couldn&apos;t load your repositories</p>
             <p className="mt-1 max-w-[60ch] text-[13px] text-fog">{repoError.msg} You can still scan any repo from the <b className="text-cloud">Public repo</b> tab.</p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -819,7 +945,7 @@ function RepoPicker({ user, repos, repoError, onRetry, filtered, query, setQuery
                         <button
                           key={r.full_name}
                           onClick={() => { setRepoUrl(r.url); setQuery(""); setOpen(false); }}
-                          className={`flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-[13px] transition-colors hover:bg-white/5 ${r.url === repoUrl ? "bg-cyan/10 text-cyan" : ""}`}
+                          className={`flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-[13px] transition-colors hover:bg-[color:var(--surface-2)] ${r.url === repoUrl ? "bg-cyan/10 text-cyan" : ""}`}
                         >
                           <span className="flex min-w-0 items-center gap-2 font-mono">
                             {r.private && <LockIcon className="h-3 w-3 shrink-0 text-amber" />}
@@ -965,7 +1091,7 @@ function ApiStatus({ up }: { up: boolean | null }) {
       {local && (
         <>
           <p className="mt-1.5 font-mono text-[11px] leading-relaxed text-fog">Scans, Ask, and Detective need the local API. In a second terminal:</p>
-          <pre className="mt-1.5 overflow-x-auto rounded-lg border border-[color:var(--surface-border)] bg-black/30 px-3 py-2 font-mono text-[10.5px] leading-relaxed text-cloud">uv run uvicorn backend.main:app --reload   # http://localhost:8000</pre>
+          <pre className="mt-1.5 overflow-x-auto rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-3 py-2 font-mono text-[10.5px] leading-relaxed text-cloud">uv run uvicorn backend.main:app --reload   # http://localhost:8000</pre>
         </>
       )}
     </div>
@@ -1009,6 +1135,68 @@ function JudgePath({ onOpenCaptured }: { onOpenCaptured: () => void }) {
           ▶ Open a captured scan <span className="text-teal/70">· instant, no wait</span>
         </button>
         <span className="font-mono text-[10.5px] leading-snug text-fog/70">A real scan of {PROOF_REPO} — 26 live OSV advisories + Codex-proposed diffs, captured {PROOF_CAPTURED_AT}.</span>
+      </div>
+    </GlowCard>
+  );
+}
+
+// First-run guide for a signed-in user. Every step reflects REAL account state
+// (never a fabricated checkmark) and links to the exact action. It disappears once
+// the essentials (connect GitHub + run a scan) are done, so return users aren't
+// nagged; the "next steps" are nudges toward the deeper product, not blockers.
+function OnboardingChecklist({ me, hasScanned, hasPr, hasSchedule, onScan, onDismiss }: {
+  me: User; hasScanned: boolean; hasPr: boolean; hasSchedule: boolean; onScan: () => void; onDismiss: () => void;
+}) {
+  const connected = !!me.github_connected;
+  const essentials = [
+    { key: "signin", title: "Sign in", body: `Signed in as ${me.github_login || me.name || me.email || "you"}.`, done: true },
+    { key: "github", title: "Connect GitHub", body: connected ? `Connected as @${me.github_login || "github"} — private repos & branch-only PRs unlocked.` : "Link GitHub to scan private repos and open branch-only fix PRs.", done: connected, cta: connected ? undefined : { label: "Connect GitHub →", href: `${API}/auth/connect/github` } },
+    { key: "scan", title: "Run your first scan", body: hasScanned ? "First shift filed — your report is saved to history." : "Pick a repository and launch a scan to compute the Umbra Score.", done: hasScanned, cta: hasScanned ? undefined : { label: "Pick a repo below ↓", onClick: onScan } },
+  ];
+  const next = [
+    { key: "pr", title: "Open a branch-only fix PR", body: hasPr ? "You've opened a fix PR — it's in the ledger below." : "After a scan, open a dependency-bump PR. Umbra never merges.", done: hasPr },
+    { key: "key", title: "Add your OpenAI key", body: me.has_openai_key ? "Live reasoning enabled with your key." : "Optional — unlock live GPT-5.6 reasoning, billed to you.", done: !!me.has_openai_key },
+    { key: "schedule", title: "Schedule a morning report", body: hasSchedule ? "A scheduled scan will email you a morning report." : "Optional — auto-scan on a schedule and get an emailed report.", done: hasSchedule },
+  ];
+  const doneCount = essentials.filter((s) => s.done).length;
+
+  const Dot = ({ done, n }: { done: boolean; n: number }) => (
+    <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full border text-[10px] ${done ? "border-teal/50 bg-teal/15 text-teal" : "border-cyan/50 text-cyan"}`}>{done ? "✓" : n}</span>
+  );
+
+  return (
+    <GlowCard className="mt-4 mb-5 p-5">
+      <div className="mb-3.5 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded-full border border-cyan/40 bg-cyan/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-cyan">Get set up</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-fog">{doneCount} of {essentials.length} essentials done</span>
+        </div>
+        <button onClick={onDismiss} className="font-mono text-[11px] text-fog/70 transition-colors hover:text-cloud" title="Dismiss this guide">Dismiss ×</button>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        {essentials.map((s, i) => (
+          <div key={s.key} className={`rounded-xl border bg-[color:var(--surface)] p-3.5 ${s.done ? "border-teal/25" : "border-[color:var(--surface-border)]"}`}>
+            <div className="flex items-center gap-2">
+              <Dot done={s.done} n={i + 1} />
+              <span className="font-mono text-[11.5px] font-semibold text-cloud">{s.title}</span>
+            </div>
+            <p className="mt-1.5 text-[12px] leading-relaxed text-fog">{s.body}</p>
+            {s.cta && ("href" in s.cta ? (
+              <a href={s.cta.href} className="mt-2 inline-block font-mono text-[11px] text-cyan hover:underline">{s.cta.label}</a>
+            ) : (
+              <button onClick={s.cta.onClick} className="mt-2 font-mono text-[11px] text-cyan hover:underline">{s.cta.label}</button>
+            ))}
+          </div>
+        ))}
+      </div>
+      <div className="mt-3.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-[color:var(--surface-border)] pt-3">
+        <span className="font-mono text-[9.5px] uppercase tracking-[0.16em] text-fog/60">Next</span>
+        {next.map((s) => (
+          <span key={s.key} className="inline-flex items-center gap-1.5 text-[11.5px]">
+            <span className={`text-[11px] ${s.done ? "text-teal" : "text-fog/40"}`}>{s.done ? "✓" : "○"}</span>
+            <span className={s.done ? "text-fog" : "text-fog/80"} title={s.body}>{s.title}</span>
+          </span>
+        ))}
       </div>
     </GlowCard>
   );
@@ -1069,6 +1257,7 @@ function CommandHeader({ me, repo, phase, onLogout }: { me: User | null; repo: s
       </div>
       <div className="flex items-center gap-3">
         <LocalWeather />
+        <ThemeToggle variant="inline" />
         {me?.is_founder && <span className="hidden rounded-full border border-violet/40 bg-violet/10 px-2.5 py-1 font-mono text-[10px] text-violet sm:inline">FOUNDER · LIVE CODEX</span>}
         {me ? (
           <>
@@ -1126,7 +1315,7 @@ function ScorePanel({ result, demo, capturedAt }: { result: ScanResult | null; d
           </span>
         ) : has ? (
           <span className="flex items-center gap-2">
-            <StatusPill kind="live" />
+            <StatusPill kind={scanPillKind(result?.source)} />
             {result?.source && <span className="font-mono text-[9px] text-fog/55">{result.source}</span>}
           </span>
         ) : null}
@@ -1152,75 +1341,9 @@ function ScorePanel({ result, demo, capturedAt }: { result: ScanResult | null; d
   );
 }
 
-function CrewStatusBoard({ phase, crew, result, demo }: { phase: Phase; crew: Crew; result: ScanResult | null; demo?: boolean }) {
-  // Truth source for completion is the actual run: an agent reads DONE only if it
-  // filed a result this shift (result.agent_results) — never the crew toggle. During
-  // a live scan we light the agents that will participate. Detective + Ask are
-  // on-demand tools with their own flows, so they sit standby/ready, not in the scan.
-  const runs = new Map((result?.agent_results ?? []).map((r) => [r.agent, r] as const));
-  return (
-    <GlowCard className="p-5">
-      <div className="mb-3 flex items-center justify-between">
-        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-fog">Crew status</p>
-        <span className="font-mono text-[10px] text-fog">{phase === "scanning" ? "shift active" : phase === "done" ? "shift filed" : "standing by"}</span>
-      </div>
-      <div className="flex flex-col divide-y divide-[color:var(--surface-border)]">
-        {CREW.map((a) => {
-          const isAsk = a.key === "ask";
-          const run = runs.get(a.key);
-          // Watchman always scans; Reviewer + Janitor join a full crew. Detective is
-          // incident-triggered (Operations zone), never part of a dependency scan.
-          const scanCrew = a.key === "watchman" || (crew === "full" && (a.key === "reviewer" || a.key === "janitor"));
-          let state: "idle" | "working" | "done" | "ready";
-          let status: string;
-          if (isAsk) { state = "ready"; status = a.idle; }
-          // Sample preview: the whole crew filed the shift (matches sample findings).
-          else if (demo) { state = "done"; status = "DONE"; }
-          // Filed this shift — the agent actually ran and returned a result.
-          else if (run) { state = "done"; status = "DONE"; }
-          else if (phase === "scanning" && scanCrew) { state = "working"; status = a.working; }
-          else { state = "idle"; status = a.idle; }
-          // Prefer the agent's own filed summary (parity with the homepage dispatch).
-          const detail = run?.summary?.trim() || (demo ? DEMO_DETAIL[a.key] : "") || a.doing;
-          const lit = state !== "idle";
-          const color = lit ? a.color : "#8b90a6";
-          return (
-            <div key={a.key} className="flex items-center gap-3 py-2.5">
-              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md border font-mono text-[11px] font-semibold" style={lit ? { color: a.color, borderColor: `${a.color}55`, background: `${a.color}12` } : { color: "#8b90a6", borderColor: "var(--surface-border)" }}>{a.letter}</span>
-              <div className="min-w-0 flex-1">
-                <div className="font-mono text-[11px] font-semibold tracking-[0.08em] text-cloud">{a.name}</div>
-                <div className="truncate font-mono text-[10px] text-fog">{detail}</div>
-              </div>
-              <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em]" style={{ color }}>
-                {state === "working" ? (
-                  <span className="h-1.5 w-1.5 rounded-full animate-pulse-glow" style={{ background: color, boxShadow: `0 0 8px ${color}` }} />
-                ) : state === "done" ? (
-                  <span className="text-[11px] leading-none text-teal">✓</span>
-                ) : state === "ready" ? (
-                  <span className="h-1.5 w-1.5 rounded-full" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
-                ) : (
-                  <span className="h-1.5 w-1.5 rounded-full border" style={{ borderColor: color }} />
-                )}
-                {status}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </GlowCard>
-  );
-}
-
 // Dawn palette — shared with the homepage Morning Report so a filed shift here
 // reads with the same cinematic conclusion, driven by the real scan.
 const DAWN = { risk: "#fb7185", amber: "#fbbf24", resolve: "#5eead4", fog: "#8b90a6" };
-
-// Highlight grounded references (CVE, short commit, pkg@ver, PR #) inside a filed
-// summary so the dispatch reads like the homepage's grounded signatures.
-function groundRefs(text: string): React.ReactNode {
-  const re = /(CVE-\d{4}-\d+|PR #\d+|\b[0-9a-f]{6,40}\b|[a-z0-9][a-z0-9/._-]*@[\d][\w.]*)/gi;
-  return text.split(re).map((p, i) => (i % 2 === 1 ? <span key={i} className="font-mono text-cloud">{p}</span> : <span key={i}>{p}</span>));
-}
 
 // Per-agent signature metadata for the filed dispatch (unit, state arc, colour).
 const DISPATCH_META: Record<string, { letter: string; unit: string; from: string; to: string; toColor: string }> = {
@@ -1269,7 +1392,7 @@ function ShiftReport({ result, repo, demo, capturedAt }: { result: ScanResult; r
               </span>
             ) : (
               <span className="flex items-center gap-2">
-                <StatusPill kind="live" />
+                <StatusPill kind={scanPillKind(result.source)} />
                 {result.source && <span className="font-mono text-[9px] text-fog/55">{result.source}</span>}
               </span>
             )}
@@ -1300,32 +1423,9 @@ function ShiftReport({ result, repo, demo, capturedAt }: { result: ScanResult; r
           </div>
         </div>
 
-        {/* The night's work — one filed signature per unit that actually ran. */}
-        {runs.length > 0 && (
-          <>
-            <div className="mt-8 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-fog/70">
-              <span className="h-px w-6" style={{ background: "var(--surface-border)" }} /> The night&rsquo;s work
-            </div>
-            <motion.div
-              className="mt-2 divide-y divide-[color:var(--surface-border)]"
-              initial={reduce ? false : "hidden"} animate="show" variants={stagger(0.12, 0.08)}
-            >
-              {runs.map((r) => {
-                const m = DISPATCH_META[r.agent];
-                return (
-                  <motion.div key={r.agent} variants={fadeUp} className="py-3.5">
-                    <div className="flex items-center gap-3">
-                      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-[color:var(--surface-border)] font-mono text-[11px] font-semibold text-fog">{m.letter}</span>
-                      <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.16em] text-cloud">{m.unit}</span>
-                      <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-fog">{m.from} <span style={{ color: m.toColor }}>&rarr; {m.to}</span></span>
-                    </div>
-                    <p className="mt-1.5 pl-10 font-mono text-[12px] leading-relaxed text-fog">{groundRefs(r.summary || "filed")}</p>
-                  </motion.div>
-                );
-              })}
-            </motion.div>
-          </>
-        )}
+        {/* The per-unit filed dispatch now lives in the live Crew Dossier directly
+            below (richer, with each agent's real operational artifact), so the
+            Shift Report stays the score conclusion and doesn't repeat it here. */}
 
         {/* Signature — honest provenance, the same line as the homepage. */}
         <div className="mt-6 border-t border-[color:var(--surface-border)] pt-4 font-mono text-[10px] leading-relaxed text-fog/70">
@@ -1336,15 +1436,21 @@ function ShiftReport({ result, repo, demo, capturedAt }: { result: ScanResult; r
   );
 }
 
-function FindingsLedger({ vulns, canPr, demo, onOpenPr }: { vulns: Vuln[]; canPr: boolean; demo?: boolean; onOpenPr: (v: Vuln) => void }) {
+function FindingsLedger({ vulns, canPr, demo, onOpenPr, onOpenPrAll, repo, canTriage, triage, onTriage }: { vulns: Vuln[]; canPr: boolean; demo?: boolean; onOpenPr: (v: Vuln) => void; onOpenPrAll?: () => void; repo?: string; canTriage?: boolean; triage?: Map<string, TriageRec>; onTriage?: (findingKey: string, status: string, reason?: string, repo?: string) => void }) {
   return (
     <GlowCard className="p-5">
       <div className="mb-3 flex items-center justify-between">
         <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-fog">Findings ledger</p>
         <span className="font-mono text-[10px] text-fog">{vulns.length} {vulns.length === 1 ? "advisory" : "advisories"}</span>
       </div>
+      {!demo && canPr && vulns.length >= 2 && onOpenPrAll && (
+        <button onClick={onOpenPrAll} className="mb-3 flex w-full items-center justify-between rounded-lg border border-teal/40 bg-teal/10 px-3.5 py-2 font-mono text-[11px] text-teal transition-colors hover:bg-teal/20">
+          <span>Fix all {vulns.length} advisories → one PR</span>
+          <span className="text-fog/70">reviewer-gated · branch only</span>
+        </button>
+      )}
       {demo && vulns.length > 0 && (
-        <p className="mb-3 rounded-lg border border-[color:var(--surface-border)] bg-white/5 px-3 py-2 font-mono text-[10.5px] leading-snug text-fog/80">
+        <p className="mb-3 rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--surface-2)] px-3 py-2 font-mono text-[10.5px] leading-snug text-fog/80">
           Sample advisory — not from your repo. Run a scan for live findings.
         </p>
       )}
@@ -1358,27 +1464,143 @@ function FindingsLedger({ vulns, canPr, demo, onOpenPr }: { vulns: Vuln[]; canPr
         </div>
       ) : (
         <div className="flex flex-col divide-y divide-[color:var(--surface-border)]">
-          {vulns.map((v, i) => <FindingRow key={`${v.cve}-${i}`} v={v} canPr={canPr} onOpenPr={() => onOpenPr(v)} />)}
+          {groupVulns(vulns).map((g) => {
+            const tkey = repo ? `${repo}:${g.key}` : g.key;
+            const tstatus = triage?.get(tkey)?.status;
+            const onSet = canTriage && onTriage ? (status: string, reason?: string) => onTriage(tkey, status, reason, repo) : undefined;
+            return g.items.length === 1 ? (
+              <FindingRow key={g.key} v={g.items[0]} canPr={canPr} onOpenPr={() => onOpenPr(g.items[0])} triageStatus={tstatus} onTriage={onSet} />
+            ) : (
+              <PackageGroup key={g.key} group={g} canPr={canPr} onOpenPr={onOpenPr} triageStatus={tstatus} onTriage={onSet} />
+            );
+          })}
         </div>
       )}
     </GlowCard>
   );
 }
 
-function FindingRow({ v, canPr, onOpenPr }: { v: Vuln; canPr: boolean; onOpenPr: () => void }) {
-  const [open, setOpen] = useState(false);
+const SEVERITY_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+type VulnGroup = { key: string; package: string; version?: string; items: Vuln[] };
+
+/** Collapse a flat advisory list into one entry per package@version. A repo with
+ *  26 CVEs on a single outdated package should read as one scannable line, not a
+ *  wall of near-identical rows. Order is preserved (first-seen). */
+function groupVulns(vulns: Vuln[]): VulnGroup[] {
+  const by = new Map<string, VulnGroup>();
+  const order: VulnGroup[] = [];
+  for (const v of vulns) {
+    const key = `${v.package}@${v.version ?? ""}`;
+    let g = by.get(key);
+    if (!g) { g = { key, package: v.package, version: v.version, items: [] }; by.set(key, g); order.push(g); }
+    g.items.push(v);
+  }
+  return order;
+}
+
+function topSeverity(items: Vuln[]): string {
+  return items.reduce((top, v) => (SEVERITY_RANK[(v.severity ?? "low").toLowerCase()] ?? 1) > (SEVERITY_RANK[top] ?? 1) ? (v.severity ?? "low").toLowerCase() : top, "low");
+}
+
+/** Per-finding triage — snooze / accept-risk require a reason (an auditable act,
+ *  surfaced in the activity timeline), reopen clears it. Sits BESIDE the row's
+ *  toggle button (never nested inside it) so the interactive elements stay valid. */
+function TriageControl({ status, onTriage }: { status?: string; onTriage: (status: string, reason?: string) => void }) {
+  const [mode, setMode] = useState<null | "snoozed" | "accepted_risk">(null);
+  const [text, setText] = useState("");
+  const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
+  const commit = () => { if (text.trim()) { onTriage(mode!, text.trim()); setMode(null); setText(""); } };
+  if (mode) {
+    return (
+      <span className="flex shrink-0 items-center gap-1.5" onClick={stop}>
+        <input
+          autoFocus value={text} onChange={(e) => setText(e.target.value)} maxLength={500}
+          aria-label={mode === "snoozed" ? "Reason for snoozing this finding" : "Reason for accepting this risk"}
+          onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") { setMode(null); setText(""); } }}
+          placeholder={mode === "snoozed" ? "why snooze? (required)" : "why accept the risk?"}
+          className="w-44 rounded-md border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-2 py-1 font-mono text-[10px] text-cloud focus:border-cyan/60"
+        />
+        <button disabled={!text.trim()} onClick={commit} className="rounded-full border border-teal/40 bg-teal/10 px-2 py-0.5 font-mono text-[9.5px] text-teal disabled:opacity-40">save</button>
+        <button onClick={() => { setMode(null); setText(""); }} className="font-mono text-[9.5px] text-fog hover:text-cloud">cancel</button>
+      </span>
+    );
+  }
+  if (status === "snoozed" || status === "accepted_risk") {
+    const label = status === "snoozed" ? "Snoozed" : "Accepted";
+    const color = status === "snoozed" ? "#8b90a6" : "#fbbf24";
+    return (
+      <span className="flex shrink-0 items-center gap-1.5" onClick={stop}>
+        <span className="rounded-full border px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em]" style={{ borderColor: `${color}55`, color, background: `${color}18` }}>{label}</span>
+        <button onClick={() => onTriage("open")} className="font-mono text-[9.5px] text-fog hover:text-cloud">reopen</button>
+      </span>
+    );
+  }
   return (
-    <div>
-      <button onClick={() => setOpen((o) => !o)} className="flex w-full flex-wrap items-center gap-x-3 gap-y-1.5 py-3 text-left">
-        <SeverityChip severity={v.severity} />
-        <span className="min-w-0 break-all font-mono text-[13px] text-cloud">{v.package}<span className="text-fog">@{v.version}</span></span>
-        <span className="min-w-0 break-all font-mono text-[11px] text-fog">{v.cve}</span>
-        <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-[10px] text-fog">
-          <span className="text-cyan">◉ WATCHMAN</span>
-          <span className="text-fog/40">· osv.dev</span>
-          <span className="text-fog transition-transform" style={{ transform: open ? "rotate(90deg)" : "none" }}>›</span>
-        </span>
-      </button>
+    <span className="flex shrink-0 items-center gap-1.5 opacity-70 transition-opacity group-hover:opacity-100" onClick={stop}>
+      <button onClick={() => setMode("snoozed")} className="rounded-full border border-[color:var(--surface-border)] px-2 py-0.5 font-mono text-[9.5px] text-fog hover:text-cloud">snooze</button>
+      <button onClick={() => setMode("accepted_risk")} className="rounded-full border border-[color:var(--surface-border)] px-2 py-0.5 font-mono text-[9.5px] text-fog hover:text-cloud">accept risk</button>
+    </span>
+  );
+}
+
+/** One collapsible row for a package with multiple advisories. */
+function PackageGroup({ group, canPr, onOpenPr, triageStatus, onTriage }: { group: VulnGroup; canPr: boolean; onOpenPr: (v: Vuln) => void; triageStatus?: string; onTriage?: (status: string, reason?: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const top = topSeverity(group.items);
+  const dim = triageStatus === "snoozed" || triageStatus === "accepted_risk";
+  return (
+    <div className={`group ${dim ? "opacity-60" : ""}`}>
+      <div className="flex items-center gap-2">
+        <button onClick={() => setOpen((o) => !o)} className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5 py-3 text-left">
+          <SeverityChip severity={top} />
+          <span className="min-w-0 break-all font-mono text-[13px] text-cloud">{group.package}<span className="text-fog">@{group.version}</span></span>
+          <span className="rounded-full border border-[color:var(--surface-border)] bg-[color:var(--surface-2)] px-2 py-0.5 font-mono text-[10px] text-fog">{group.items.length} advisories</span>
+          <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-[10px] text-fog">
+            <span className="text-cyan">◉ WATCHMAN</span>
+            <span className="text-fog/40">· osv.dev</span>
+            <span className="text-fog transition-transform" style={{ transform: open ? "rotate(90deg)" : "none" }}>›</span>
+          </span>
+        </button>
+        {onTriage && <TriageControl status={triageStatus} onTriage={onTriage} />}
+      </div>
+      <AnimatePresence>
+        {open && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+            <div className="flex flex-col divide-y divide-[color:var(--surface-border)] border-l border-[color:var(--surface-border)] pb-3 pl-3">
+              {group.items.map((v, i) => (
+                <div key={`${v.cve}-${i}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
+                  <SeverityChip severity={v.severity} />
+                  <a href={`https://osv.dev/vulnerability/${encodeURIComponent(v.cve)}`} target="_blank" rel="noreferrer" className="min-w-0 break-all font-mono text-[11px] text-cyan hover:underline">{v.cve} ↗</a>
+                  {v.summary && <span className="w-full truncate text-[11.5px] text-fog sm:w-auto sm:flex-1">{v.summary}</span>}
+                  {canPr && <button onClick={() => onOpenPr(v)} className="ml-auto rounded-full border border-teal/40 bg-teal/10 px-2.5 py-0.5 font-mono text-[10px] text-teal transition-colors hover:bg-teal/20">bump →</button>}
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function FindingRow({ v, canPr, onOpenPr, triageStatus, onTriage }: { v: Vuln; canPr: boolean; onOpenPr: () => void; triageStatus?: string; onTriage?: (status: string, reason?: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const dim = triageStatus === "snoozed" || triageStatus === "accepted_risk";
+  return (
+    <div className={`group ${dim ? "opacity-60" : ""}`}>
+      <div className="flex items-center gap-2">
+        <button onClick={() => setOpen((o) => !o)} className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5 py-3 text-left">
+          <SeverityChip severity={v.severity} />
+          <span className="min-w-0 break-all font-mono text-[13px] text-cloud">{v.package}<span className="text-fog">@{v.version}</span></span>
+          <span className="min-w-0 break-all font-mono text-[11px] text-fog">{v.cve}</span>
+          <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-[10px] text-fog">
+            <span className="text-cyan">◉ WATCHMAN</span>
+            <span className="text-fog/40">· osv.dev</span>
+            <span className="text-fog transition-transform" style={{ transform: open ? "rotate(90deg)" : "none" }}>›</span>
+          </span>
+        </button>
+        {onTriage && <TriageControl status={triageStatus} onTriage={onTriage} />}
+      </div>
       <AnimatePresence>
         {open && (
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
@@ -1404,7 +1626,7 @@ function DependencyRiskMap({ deps }: { deps: Dep[] }) {
     <GlowCard className="p-5">
       <div className="mb-3 flex items-center justify-between">
         <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-fog">Dependency risk map</p>
-        <span className="font-mono text-[10px] text-fog">{deps.length} deps · <span className={vulnCount ? "text-rose-300" : "text-teal"}>{vulnCount} vulnerable</span></span>
+        <span className="font-mono text-[10px] text-fog">{deps.length} deps · <span className={vulnCount ? "text-[color:var(--sev-critical)]" : "text-teal"}>{vulnCount} vulnerable</span></span>
       </div>
       <div className="flex flex-col gap-1.5">
         {deps.slice(0, 12).map((d) => (
@@ -1536,7 +1758,7 @@ function AutonomyCard({ autonomy }: { autonomy?: Autonomy }) {
         })}
       </div>
       <p className="mt-3 flex items-center gap-2 border-t border-[color:var(--surface-border)] pt-3 font-mono text-[9.5px] leading-relaxed text-fog/70">
-        <span className="rounded-full border border-rose-400/40 bg-rose-400/10 px-2 py-0.5 text-rose-300">never auto-merges</span>
+        <span className="rounded-full border border-rose-400/40 bg-rose-400/10 px-2 py-0.5 text-[color:var(--sev-critical)]">never auto-merges</span>
         Human review is always required — Umbra opens branch-only PRs.
       </p>
     </GlowCard>
@@ -1549,7 +1771,7 @@ function PolicyCard({ policy }: { policy?: Policy }) {
     <GlowCard className="p-5">
       <div className="mb-3 flex items-center justify-between">
         <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-fog">Repository policy</p>
-        <span className={`rounded-full border px-2.5 py-0.5 font-mono text-[10px] ${loaded ? "text-teal border-teal/40 bg-teal/10" : "text-fog border-[color:var(--surface-border)] bg-white/5"}`}>{loaded ? "loaded" : "default"}</span>
+        <span className={`rounded-full border px-2.5 py-0.5 font-mono text-[10px] ${loaded ? "text-teal border-teal/40 bg-teal/10" : "text-fog border-[color:var(--surface-border)] bg-[color:var(--surface-2)]"}`}>{loaded ? "loaded" : "default"}</span>
       </div>
       <p className="font-mono text-[12px] text-cloud">
         {loaded ? <>Policy loaded: <span className="text-teal">{policy?.path ?? ".umbra/nightshift.md"}</span></> : "Default Umbra safety policy applied"}
@@ -1638,6 +1860,7 @@ function localEvidenceMarkdown(result: ScanResult, mode: string): string {
 
 function EvidencePackButton({ result, mode }: { result: ScanResult; mode: "live" | "captured" | "demo" }) {
   const [state, setState] = useState<"idle" | "working" | "copied" | "error">("idle");
+  const [verify, setVerify] = useState<{ status: "idle" | "working" | "done" | "error"; verified?: boolean; hasClaim?: boolean; computed?: string }>({ status: "idle" });
 
   const exportPack = useCallback(async () => {
     setState("working");
@@ -1656,6 +1879,20 @@ function EvidencePackButton({ result, mode }: { result: ScanResult; mode: "live"
     setTimeout(() => setState("idle"), 2600);
   }, [result, mode]);
 
+  // Independently re-compute the canonical sha256 and compare to the embedded hash.
+  // Makes the pack a receipt you can VERIFY, not just read — the "prove it" step.
+  const verifyPack = useCallback(async () => {
+    setVerify({ status: "working" });
+    try {
+      const r = await fetch(`${API}/api/evidence-pack/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ result }) });
+      if (!r.ok) throw new Error(String(r.status));
+      const d = await r.json();
+      setVerify({ status: "done", verified: !!d.verified, hasClaim: !!d.has_claim, computed: d.computed_hash });
+    } catch {
+      setVerify({ status: "error" });
+    }
+  }, [result]);
+
   return (
     <div className="flex flex-col gap-1.5">
       <button
@@ -1667,6 +1904,37 @@ function EvidencePackButton({ result, mode }: { result: ScanResult; mode: "live"
         {state === "working" ? "Building…" : state === "copied" ? "✓ Evidence pack copied." : state === "error" ? "Copy failed — try again" : "⬇ Export Evidence Pack"}
       </button>
       <p className="font-mono text-[9.5px] leading-snug text-fog/60">A hashable Markdown record — providers, Codex diff, autonomy, policy. Copied to your clipboard.</p>
+
+      {/* Verify integrity — recompute the canonical hash; prove the pack is tamper-evident. */}
+      <button
+        type="button"
+        onClick={verifyPack}
+        disabled={verify.status === "working"}
+        className="mt-0.5 inline-flex items-center justify-center gap-2 rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface-2)] px-4 py-2 font-mono text-[11px] text-fog transition-colors hover:border-teal/50 hover:text-cloud disabled:opacity-60"
+      >
+        {verify.status === "working" ? "Verifying…" : "🔒 Verify integrity"}
+      </button>
+      {verify.status === "done" && (
+        <div
+          className="rounded-lg border px-3 py-2 font-mono text-[10px] leading-snug"
+          style={{
+            borderColor: verify.hasClaim ? (verify.verified ? "color-mix(in oklab, var(--color-teal) 40%, transparent)" : "#fb718566") : "var(--surface-border)",
+            background: verify.hasClaim ? (verify.verified ? "color-mix(in oklab, var(--color-teal) 8%, transparent)" : "#fb71851a") : "var(--surface-2)",
+          }}
+        >
+          {verify.hasClaim ? (
+            verify.verified ? (
+              <span className="text-teal">✓ Verified — recomputed sha256 matches the embedded hash. Any change to a finding, diff, or provider label would change it.</span>
+            ) : (
+              <span style={{ color: "#fb7185" }}>✗ Mismatch — the contents no longer match the recorded hash (tampered or edited).</span>
+            )
+          ) : (
+            <span className="text-fog">Recomputed canonical sha256 — deterministic &amp; reproducible. This run carried no embedded hash to compare against:</span>
+          )}
+          {verify.computed && <div className="mt-1 break-all text-fog/70">{verify.computed}</div>}
+        </div>
+      )}
+      {verify.status === "error" && <p className="font-mono text-[9.5px] text-fog/60">Verify failed — is the API reachable?</p>}
       {/* Run receipt — the hard proof lives on the dashboard: a stable run id and a
           reproducible sha256 over the canonical result (computed on export when not
           yet present, e.g. the captured shift). */}
@@ -1680,66 +1948,105 @@ function EvidencePackButton({ result, mode }: { result: ScanResult; mode: "live"
   );
 }
 
-function AgentRunRow({ run, onOpen }: { run: AgentRun; onOpen: () => void }) {
-  const providers = run.replay?.providers ?? {};
+type Review = { risk_score: number; severity: string; files_changed: number; blast_radius: number; missing_tests: boolean; recommendation: string };
+type PrResult = { url: string; number: number; branch: string; base: string; review?: Review; skipped?: number };
+type PrPreview = { title?: string; files?: string[]; review?: Review; skipped?: number; bumps?: { package: string; current: string; fixed: string; advisories: number }[] };
+
+function ReviewVerdict({ review, skipped }: { review: Review; skipped?: number }) {
+  const tone = review.severity === "critical" || review.severity === "high" ? "text-[color:var(--sev-critical)] border-rose-400/40 bg-rose-400/10" : review.severity === "medium" ? "text-amber border-amber/40 bg-amber/10" : "text-teal border-teal/40 bg-teal/10";
   return (
-    <button onClick={onOpen} className="flex items-center gap-3 rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-4 py-3 text-left transition-colors hover:border-[color:var(--surface-border-hover)]">
-      <b className="w-20 shrink-0 font-mono text-[11px] uppercase tracking-[0.08em] text-cloud sm:w-24">{run.agent}</b>
-      <div className="flex min-w-0 flex-wrap gap-1.5">
-        {Object.entries(providers).map(([k, val]) => (
-          <span key={k} className={`break-all rounded-full border px-2 py-0.5 font-mono text-[9px] ${providerTone(val)}`}>{k}:{val}</span>
-        ))}
+    <div className="rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--surface-2)] p-3 text-[12px]">
+      <div className="flex items-center justify-between">
+        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fog">Reviewer assessment · deterministic</span>
+        <span className={`rounded-full border px-2 py-0.5 font-mono text-[10px] ${tone}`}>risk {review.risk_score}/100 · {review.severity}</span>
       </div>
-      <span className="ml-auto shrink-0 text-fog">↗</span>
-    </button>
+      <p className="mt-2 text-fog">{review.files_changed} file(s) · blast-radius {review.blast_radius}/5 · {review.missing_tests ? "no test paths touched" : "touches test paths"} · <span className="text-cloud">{review.recommendation}</span></p>
+      {!!skipped && <p className="mt-1 text-amber">⚠ {skipped} proposed change(s) will be skipped — they conflict; open separately.</p>}
+    </div>
   );
 }
 
-function PrDialog({ target, repo, diff, model, effort, onClose, onOpened }: { target: { mode: "bump" | "codex"; vuln?: Vuln } | null; repo: string; diff: string; model: string; effort: string; onClose: () => void; onOpened: (pr: { url: string; number: number; branch: string; base: string }) => void }) {
+function PrDialog({ target, repo, diff, diffs, model, effort, onClose, onOpened }: { target: { mode: "bump" | "codex" | "bump_all" | "combine"; vuln?: Vuln } | null; repo: string; diff: string; diffs?: string[]; model: string; effort: string; onClose: () => void; onOpened: (pr: { url: string; number: number; branch: string; base: string }) => void }) {
   const [status, setStatus] = useState<"confirm" | "working" | "done" | "error">("confirm");
-  const [result, setResult] = useState<{ url: string; number: number; branch: string; base: string } | null>(null);
+  const [result, setResult] = useState<PrResult | null>(null);
+  const [preview, setPreview] = useState<PrPreview | null>(null);
+  const [previewing, setPreviewing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => { if (target) { setStatus("confirm"); setResult(null); setErr(null); } }, [target]);
 
   // For a Codex fix, reuse the patch Watchman already produced in the scan (the
   // diff on screen): applying it opens a PR in seconds with no second Codex run.
-  // Only fall back to a fresh Codex run when there is no diff to reuse.
   const reuseDiff = target?.mode === "codex" && !!diff.trim();
+  const combineDiffs = (diffs ?? []).filter((d) => d.trim());
+  // The exact patch this PR will carry, when Umbra already has it client-side (the
+  // reviewed scan diffs). Deterministic bump/bump_all produce their edit server-side,
+  // so there's no client diff to show — we render the planned file/bump list instead.
+  const reviewDiff = reuseDiff ? diff : target?.mode === "combine" ? combineDiffs.join("\n") : "";
+
+  // The request body — identical for the pre-confirm preview and the actual open.
+  const bodyFor = useCallback(() => {
+    if (!target) return null;
+    if (target.mode === "bump") return { repo_url: repo, mode: "bump", package: target.vuln?.package, version: target.vuln?.version, cve: target.vuln?.cve };
+    if (target.mode === "bump_all") return { repo_url: repo, mode: "bump_all" };
+    if (target.mode === "combine") return { repo_url: repo, mode: "combine", diffs: combineDiffs };
+    if (reuseDiff) return { repo_url: repo, mode: "apply_diff", diff };
+    return { repo_url: repo, mode: "codex", model, reasoning_effort: effort };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, repo, reuseDiff, diff, JSON.stringify(combineDiffs), model, effort]);
+
+  // Show the Reviewer's verdict BEFORE the user confirms — but skip the preview for
+  // a fresh Codex run (mode 'codex' with no reusable diff), which would spend a
+  // Codex call just to preview. The deterministic/apply paths preview cheaply.
+  const skipPreview = target?.mode === "codex" && !reuseDiff;
+  useEffect(() => {
+    if (!target) return;
+    setStatus("confirm"); setResult(null); setErr(null); setPreview(null);
+    if (skipPreview) return;
+    const body = bodyFor();
+    if (!body) return;
+    let cancelled = false;
+    setPreviewing(true);
+    fetch(`${API}/api/my/pr/preview`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(body) })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d) setPreview(d); })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setPreviewing(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target]);
 
   const submit = useCallback(async () => {
-    if (!target) return;
+    const body = bodyFor();
+    if (!body) return;
     setStatus("working"); setErr(null);
     try {
-      const body = target.mode === "bump"
-        ? { repo_url: repo, mode: "bump", package: target.vuln?.package, version: target.vuln?.version, cve: target.vuln?.cve }
-        : reuseDiff
-          ? { repo_url: repo, mode: "apply_diff", diff }
-          : { repo_url: repo, mode: "codex", model, reasoning_effort: effort };
       const r = await fetch(`${API}/api/my/pr`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(body) });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data?.detail || `Pull-request request failed (${r.status})`);
       setResult(data); setStatus("done");
       if (data?.url && typeof data.number === "number") onOpened(data);
     } catch (e) { setErr((e as Error).message); setStatus("error"); }
-  }, [target, repo, reuseDiff, diff, model, effort, onOpened]);
+  }, [bodyFor, onOpened]);
+
+  const label = target?.mode === "bump_all" ? "Open consolidated PR" : target?.mode === "combine" ? "Open combined PR" : target?.mode === "bump" ? "Open bump PR" : reuseDiff ? "Open patch PR" : "Run Codex & open PR";
 
   return (
     <AnimatePresence>
       {target && (
         <motion.div className="fixed inset-0 z-50 grid place-items-center p-5" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose}>
-          <div className="absolute inset-0 bg-ink/80 backdrop-blur-sm" />
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
           <motion.div
-            className="relative w-[min(520px,100%)] rounded-3xl border border-[color:var(--surface-border)] bg-ink-2/95 p-7"
+            data-lenis-prevent
+            className="relative max-h-[86vh] w-[min(520px,100%)] overflow-auto rounded-3xl border border-[color:var(--surface-border)] bg-ink-2/95 p-7"
             initial={{ opacity: 0, scale: 0.95, y: 16 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96 }} transition={{ duration: 0.28, ease: EASE }}
             onClick={(e) => e.stopPropagation()}
           >
             <button onClick={onClose} className="absolute right-5 top-4 text-2xl text-fog hover:text-cloud">×</button>
             <h3 className="mb-1 font-serif text-2xl">Open a pull request</h3>
-            <p className="mb-4 text-[13px] text-fog">Umbra opens PRs only — it never merges, and only ever touches a new <span className="font-mono">umbra/…</span> branch.</p>
+            <p className="mb-4 text-[13px] text-fog">Umbra opens PRs only — it never merges, and only ever touches a new <span className="font-mono">umbra/…</span> branch. The Reviewer scores the exact change first.</p>
             {status === "done" && result ? (
               <div className="flex flex-col gap-3">
                 <p className="text-[14px] text-teal">✓ Opened PR #{result.number} on <span className="font-mono">{result.branch}</span> → {result.base}.</p>
+                {result.review && <ReviewVerdict review={result.review} skipped={result.skipped} />}
                 <a href={result.url} target="_blank" rel="noreferrer" className="break-all font-mono text-[13px] text-cyan hover:underline">{result.url} ↗</a>
                 <button onClick={onClose} className="mt-2 self-start rounded-xl border border-[color:var(--surface-border)] px-4 py-2.5 text-xs text-fog transition-colors hover:text-cloud">Close</button>
               </div>
@@ -1748,15 +2055,48 @@ function PrDialog({ target, repo, diff, model, effort, onClose, onOpened }: { ta
                 <div className="rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] p-4 text-[13px] leading-relaxed">
                   {target.mode === "bump" ? (
                     <p className="text-fog">Bump <b className="font-mono text-cloud">{target.vuln?.package}@{target.vuln?.version}</b> to its OSV-patched version in <b className="font-mono text-cloud">{repoFullName(repo)}</b>{target.vuln?.cve ? <> — remediating <span className="font-mono">{target.vuln.cve}</span></> : null}. Deterministic edit; no Codex credits used.</p>
+                  ) : target.mode === "bump_all" ? (
+                    <p className="text-fog">Open <b className="text-cloud">one PR</b> that bumps <b className="text-cloud">every vulnerable dependency</b> in <b className="font-mono text-cloud">{repoFullName(repo)}</b> to a version that clears its OSV advisories. Deterministic edits; no Codex credits used.</p>
+                  ) : target.mode === "combine" ? (
+                    <p className="text-fog">Open <b className="text-cloud">one PR</b> combining the crew&apos;s reviewed changes (Watchman&apos;s dependency fix + Janitor&apos;s cleanup) for <b className="font-mono text-cloud">{repoFullName(repo)}</b>. Any change that conflicts is skipped and noted. No new Codex run.</p>
                   ) : reuseDiff ? (
                     <p className="text-fog">Open a PR from the patch Umbra <b className="text-cloud">already proposed</b> during the scan (the diff you reviewed) for <b className="font-mono text-cloud">{repoFullName(repo)}</b> — applied on a new branch in seconds. No new Codex run, no credits used.</p>
                   ) : (
                     <p className="text-fog">Let Codex propose the smallest safe fix for <b className="font-mono text-cloud">{repoFullName(repo)}</b> in a disposable checkout, then open it as a PR on a new branch. Uses founder Codex credits.</p>
                   )}
                 </div>
-                {err && <p className="font-mono text-xs text-rose-300">{err}</p>}
+                {/* The exact change under review — the real patch when Umbra has it
+                    client-side, else the planned file/bump list from the preview. */}
+                {reviewDiff.trim() ? (
+                  <div>
+                    <p className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fog">The change under review</p>
+                    <div data-lenis-prevent className="max-h-72 overflow-auto rounded-lg border border-[color:var(--surface-border)] p-2"><DiffView diff={reviewDiff} maxLines={220} /></div>
+                  </div>
+                ) : preview?.bumps?.length ? (
+                  <div>
+                    <p className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fog">Planned bumps ({preview.bumps.length})</p>
+                    <div className="flex flex-col gap-1 rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--surface-2)] p-2.5 font-mono text-[11px]">
+                      {preview.bumps.map((b) => (
+                        <div key={b.package} className="flex items-center justify-between gap-3">
+                          <span className="truncate text-cloud">{b.package}</span>
+                          <span className="shrink-0 text-fog">{b.current} <span className="text-teal">→ {b.fixed}</span> · clears {b.advisories}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : preview?.files?.length ? (
+                  <div>
+                    <p className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fog">Files this PR will change ({preview.files.length})</p>
+                    <div className="flex flex-col gap-0.5 rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--surface-2)] p-2.5 font-mono text-[11px] text-cloud">
+                      {preview.files.map((f) => <span key={f} className="truncate">{f}</span>)}
+                    </div>
+                  </div>
+                ) : null}
+                {previewing && <p className="font-mono text-[12px] text-fog">Analyzing the change &amp; scoring risk…</p>}
+                {preview?.review && <ReviewVerdict review={preview.review} skipped={preview.skipped} />}
+                {err && <p className="font-mono text-xs text-[color:var(--sev-critical)]">{err}</p>}
                 <div className="flex items-center gap-2">
-                  <StatefulButton loading={status === "working"} onClick={submit}>{target.mode === "bump" ? "Open bump PR" : reuseDiff ? "Open patch PR" : "Run Codex & open PR"}</StatefulButton>
+                  <StatefulButton loading={status === "working"} onClick={submit}>{label}</StatefulButton>
                   <button onClick={onClose} className="rounded-xl border border-[color:var(--surface-border)] px-4 py-2.5 text-xs text-fog transition-colors hover:text-cloud">Cancel</button>
                 </div>
               </div>
@@ -1803,7 +2143,7 @@ function AskPanel({ repo }: { repo: string }) {
   return (
     <GlowCard glow="rgba(244,114,182,0.14)" className="flex flex-col overflow-hidden p-0">
       {/* Terminal chrome — Ask Umbra as an operator console. */}
-      <div className="flex items-center gap-2 border-b border-[color:var(--surface-border)] bg-black/25 px-4 py-2.5">
+      <div className="flex items-center gap-2 border-b border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-4 py-2.5">
         <span className="grid h-6 w-6 place-items-center rounded-md border font-mono text-[11px] font-semibold" style={{ color: PINK, borderColor: `${PINK}55`, background: `${PINK}12` }}>A</span>
         <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.16em] text-cloud">Ask Umbra</span>
         <span className="ml-auto truncate font-mono text-[10px] text-fog">repo: {repoFullName(repo)}</span>
@@ -1815,7 +2155,7 @@ function AskPanel({ repo }: { repo: string }) {
           <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") ask(); }} placeholder="why is checkout failing?" spellCheck={false} className="flex-1 bg-transparent text-cloud outline-none placeholder:text-fog/50" />
           <StatefulButton loading={busy} disabled={!q.trim()} onClick={ask}>Ask</StatefulButton>
         </div>
-        {err && <p className="mt-3 text-[11px] text-rose-300">{err}</p>}
+        {err && <p className="mt-3 text-[11px] text-[color:var(--sev-critical)]">{err}</p>}
         {ans && (
           <div className="mt-4 border-t border-[color:var(--surface-border)] pt-3">
             <div className="flex gap-2">
@@ -1825,7 +2165,7 @@ function AskPanel({ repo }: { repo: string }) {
             {ans.references?.length > 0 && (
               <div className="mt-3 flex flex-wrap gap-1.5">
                 {ans.references.map((rf, i) => (
-                  <a key={`${rf.file}-${i}`} href={`https://github.com/${repoFullName(repo)}/blob/HEAD/${rf.file}${rf.lines ? `#L${rf.lines}` : ""}`} target="_blank" rel="noreferrer" className="rounded-md border border-[color:var(--surface-border)] bg-black/20 px-2 py-1 text-[11px] text-cyan transition-colors hover:border-cyan/50" title="verified reference">✓ {rf.file}{rf.lines ? `:${rf.lines}` : ""} ↗</a>
+                  <a key={`${rf.file}-${i}`} href={`https://github.com/${repoFullName(repo)}/blob/HEAD/${rf.file}${rf.lines ? `#L${rf.lines}` : ""}`} target="_blank" rel="noreferrer" className="rounded-md border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-2 py-1 text-[11px] text-cyan transition-colors hover:border-cyan/50" title="verified reference">✓ {rf.file}{rf.lines ? `:${rf.lines}` : ""} ↗</a>
                 ))}
               </div>
             )}
@@ -1889,7 +2229,7 @@ function DetectivePanel({ repo }: { repo: string }) {
   const AMBER = "#fbbf24";
   return (
     <GlowCard glow="rgba(251,191,36,0.14)" className="flex flex-col overflow-hidden p-0">
-      <div className="flex items-center gap-2 border-b border-[color:var(--surface-border)] bg-black/25 px-4 py-2.5">
+      <div className="flex items-center gap-2 border-b border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-4 py-2.5">
         <span className="grid h-6 w-6 place-items-center rounded-md border font-mono text-[11px] font-semibold" style={{ color: AMBER, borderColor: `${AMBER}55`, background: `${AMBER}12` }}>D</span>
         <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.16em] text-cloud">Detective</span>
         <span className="ml-auto truncate font-mono text-[10px] text-fog">git history · {repoFullName(repo)}</span>
@@ -1899,7 +2239,7 @@ function DetectivePanel({ repo }: { repo: string }) {
         <div className="mt-2 flex justify-end">
           <StatefulButton loading={busy} disabled={!log.trim()} onClick={investigate}>Trace root cause</StatefulButton>
         </div>
-        {err && <p className="mt-3 font-mono text-[11px] text-rose-300">{err}</p>}
+        {err && <p className="mt-3 font-mono text-[11px] text-[color:var(--sev-critical)]">{err}</p>}
         {pm ? (
           <div className="relative mt-4 flex flex-col gap-3 border-t border-[color:var(--surface-border)] pt-4">
             {/* the trace beam — Detective following the error down to its origin */}
@@ -2030,7 +2370,7 @@ function RepoRollup({ history, onView }: { history: Scan[]; onView: (s: Scan) =>
 }
 
 function Stat({ label, value, tone = "ok" }: { label: string; value: string; tone?: "ok" | "warn" | "bad" }) {
-  const color = tone === "bad" ? "text-rose-300" : tone === "warn" ? "text-amber" : "text-cloud";
+  const color = tone === "bad" ? "text-[color:var(--sev-critical)]" : tone === "warn" ? "text-amber" : "text-cloud";
   return (
     <div className="rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-4 py-3">
       <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-fog">{label}</div>
@@ -2039,7 +2379,64 @@ function Stat({ label, value, tone = "ok" }: { label: string; value: string; ton
   );
 }
 
-function RemediationQueue({ history, canPr, dismissed, onDismiss, onRestore }: { history: Scan[]; canPr: boolean; dismissed: Set<string>; onDismiss: (key: string) => void; onRestore: (key: string) => void }) {
+// The PR ledger — every branch-only PR Umbra opened for this user, as durable
+// receipts grouped by repo. This is the accountability trail: a real PR #, the
+// branch it lives on, the advisory it remediates, and the deterministic Reviewer
+// verdict recorded at open time. Umbra never merges — every row says so.
+function prModeLabel(mode?: string): string {
+  return mode === "bump_all" ? "consolidated bumps" : mode === "combine" ? "combined crew changes" : mode === "apply_diff" ? "reviewed patch" : mode === "codex" ? "Codex-authored" : "dependency bump";
+}
+function PrLedger({ prs }: { prs: PrRecord[] }) {
+  const groups = useMemo(() => {
+    const by = new Map<string, PrRecord[]>();
+    for (const p of prs) {
+      const repo = repoFullName(p.repo_url ?? "") || "unknown";
+      (by.get(repo) ?? by.set(repo, []).get(repo)!).push(p);
+    }
+    return [...by.entries()];
+  }, [prs]);
+  if (prs.length === 0) return null;
+
+  return (
+    <Reveal>
+      <GlowCard glow="rgba(94,234,212,0.2)" className="p-7">
+        <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="font-serif text-2xl">Pull request ledger</h2>
+          <span className="font-mono text-[11px] text-fog">{prs.length} opened · branch-only</span>
+        </div>
+        <p className="mb-4 text-[13px] text-fog">Every fix PR Umbra opened, on its own <span className="font-mono">umbra/…</span> branch — the Reviewer&apos;s risk verdict is recorded at open time. Umbra <b className="text-cloud">never merges</b>; you review &amp; merge on GitHub.</p>
+        <div className="flex flex-col gap-4">
+          {groups.map(([repo, rows]) => (
+            <div key={repo}>
+              <p className="mb-1.5 font-mono text-[11px] uppercase tracking-[0.12em] text-cyan/90">{repo}</p>
+              <div className="flex flex-col gap-2">
+                {rows.map((p) => {
+                  const rev = p.review;
+                  const tone = rev ? (rev.severity === "critical" || rev.severity === "high" ? "text-[color:var(--sev-critical)] border-rose-400/40 bg-rose-400/10" : rev.severity === "medium" ? "text-amber border-amber/40 bg-amber/10" : "text-teal border-teal/40 bg-teal/10") : "";
+                  return (
+                    <div key={`${repo}#${p.number}`} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-4 py-3">
+                      <span className="font-mono text-[12px] font-semibold text-cloud">#{p.number}</span>
+                      <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-teal">{prModeLabel(p.mode)}</span>
+                      {p.package && <span className="font-mono text-[11px] text-fog">{p.package}{p.cve ? <> · {p.cve}</> : null}</span>}
+                      {p.branch && <span className="font-mono text-[10px] text-fog/70">{p.branch} → {p.base ?? "main"}</span>}
+                      {rev && <span className={`rounded-full border px-2 py-0.5 font-mono text-[10px] ${tone}`}>risk {rev.risk_score}/100</span>}
+                      <span className="ml-auto flex items-center gap-3">
+                        {p.opened_at && <time className="font-mono text-[10px] text-fog/70">{new Date(p.opened_at).toLocaleString()}</time>}
+                        <a href={p.url} target="_blank" rel="noreferrer" className="font-mono text-[11px] text-cyan hover:underline">open ↗</a>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </GlowCard>
+    </Reveal>
+  );
+}
+
+function RemediationQueue({ history, canPr, dismissed, onDismiss, onRestore, onOpened }: { history: Scan[]; canPr: boolean; dismissed: Set<string>; onDismiss: (key: string) => void; onRestore: (key: string) => void; onOpened?: () => void }) {
   const items = useMemo(() => {
     const out: { repo: string; v: Vuln; key: string }[] = [];
     const seenKey = new Set<string>();
@@ -2074,7 +2471,7 @@ function RemediationQueue({ history, canPr, dismissed, onDismiss, onRestore }: {
           {active.length === 0 ? (
             <p className="text-[13px] text-fog">Nothing open — every advisory here has been dismissed.</p>
           ) : (
-            active.map((it) => <RemediationRow key={it.key} repo={it.repo} v={it.v} canPr={canPr} onDismiss={() => onDismiss(it.key)} />)
+            active.map((it) => <RemediationRow key={it.key} repo={it.repo} v={it.v} canPr={canPr} onDismiss={() => onDismiss(it.key)} onOpened={onOpened} />)
           )}
         </div>
         {hidden.length > 0 && (
@@ -2094,7 +2491,7 @@ function RemediationQueue({ history, canPr, dismissed, onDismiss, onRestore }: {
   );
 }
 
-function RemediationRow({ repo, v, canPr, dismissed, onDismiss, onRestore }: { repo: string; v: Vuln; canPr: boolean; dismissed?: boolean; onDismiss?: () => void; onRestore?: () => void }) {
+function RemediationRow({ repo, v, canPr, dismissed, onDismiss, onRestore, onOpened }: { repo: string; v: Vuln; canPr: boolean; dismissed?: boolean; onDismiss?: () => void; onRestore?: () => void; onOpened?: () => void }) {
   const [status, setStatus] = useState<"idle" | "working" | "done" | "error">("idle");
   const [pr, setPr] = useState<{ url: string; number: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -2106,8 +2503,9 @@ function RemediationRow({ repo, v, canPr, dismissed, onDismiss, onRestore }: { r
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data?.detail || `PR request failed (${r.status})`);
       setPr(data); setStatus("done");
+      onOpened?.(); // refresh the PR ledger so this new receipt appears
     } catch (e) { setErr((e as Error).message); setStatus("error"); }
-  }, [repo, v]);
+  }, [repo, v, onOpened]);
 
   return (
     <div className={`flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-4 py-3 ${dismissed ? "opacity-60" : ""}`}>
@@ -2134,12 +2532,107 @@ function RemediationRow({ repo, v, canPr, dismissed, onDismiss, onRestore }: { r
             {status === "working" ? "Opening…" : "Open bump PR →"}
           </button>
           {onDismiss && (
-            <button onClick={onDismiss} title="Dismiss from the queue" className="rounded-full border border-[color:var(--surface-border)] px-2.5 py-1 font-mono text-[10px] text-fog transition-colors hover:border-rose-400/50 hover:text-rose-300">Dismiss</button>
+            <button onClick={onDismiss} title="Dismiss from the queue" className="rounded-full border border-[color:var(--surface-border)] px-2.5 py-1 font-mono text-[10px] text-fog transition-colors hover:border-rose-400/50 hover:text-[color:var(--sev-critical)]">Dismiss</button>
           )}
         </>
       )}
-      {err && <span className="w-full font-mono text-[10px] text-rose-300">{err}</span>}
+      {err && <span className="w-full font-mono text-[10px] text-[color:var(--sev-critical)]">{err}</span>}
     </div>
+  );
+}
+
+function ScheduledReportsPanel({ user, schedules, defaultRepo, onRefresh, onSetNotifications }: {
+  user: User; schedules: Schedule[]; defaultRepo: string; onRefresh: () => void; onSetNotifications: (enabled: boolean) => void;
+}) {
+  const tz = useMemo(() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; } }, []);
+  const [repo, setRepo] = useState(defaultRepo);
+  const [time, setTime] = useState("09:00");
+  const [cadence, setCadence] = useState<"daily" | "weekdays">("daily");
+  const [email, setEmail] = useState(user.email ?? "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  // Prefill the repo once the current scan target is known (empty on first paint).
+  useEffect(() => { if (defaultRepo) setRepo((r) => r || defaultRepo); }, [defaultRepo]);
+
+  const notifOn = !user.notifications_opt_out;
+
+  const create = useCallback(async () => {
+    const slug = repoFullName(repo);
+    if (!slug.includes("/")) { setErr("Enter a repository as owner/name."); return; }
+    const [h, m] = time.split(":").map((n) => parseInt(n, 10));
+    setBusy(true); setErr(null);
+    try {
+      const r = await fetch(`${API}/api/my/schedules`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo_full_name: slug, hour: h || 0, minute: m || 0, timezone: tz, cadence, email: email.trim() || undefined }) });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data?.detail || `Could not schedule (${r.status})`);
+      onRefresh();
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+  }, [repo, time, cadence, email, tz, onRefresh]);
+
+  const toggle = useCallback(async (s: Schedule) => {
+    await fetch(`${API}/api/my/schedules/${s.id}/toggle`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ enabled: !s.enabled }) }).catch(() => {});
+    onRefresh();
+  }, [onRefresh]);
+
+  const remove = useCallback(async (s: Schedule) => {
+    await fetch(`${API}/api/my/schedules/${s.id}`, { method: "DELETE", credentials: "include" }).catch(() => {});
+    onRefresh();
+  }, [onRefresh]);
+
+  return (
+    <GlowCard glow="rgba(167,139,250,0.2)" className="p-6">
+      <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="font-serif text-2xl">Scheduled morning reports</h2>
+        <span className="font-mono text-[11px] text-fog">{schedules.length} scheduled</span>
+      </div>
+      <p className="mb-4 max-w-[70ch] text-[13px] leading-relaxed text-fog">
+        Umbra scans the repos you choose at the time you pick and emails you the report — so it&apos;s waiting when you wake up. Every report is also saved to your history. {user.is_founder ? "Live Codex patches run for your founder account." : "Codex patches are founder-gated on the hosted preview; you still get live OSV findings and the full report."}
+      </p>
+
+      {!user.scheduling_enabled && <p className="mb-3 rounded-lg border border-amber/40 bg-amber/10 px-3 py-2 font-mono text-[11px] text-amber">Scheduling isn&apos;t enabled on this server yet — schedules save but won&apos;t fire until the operator configures the scheduler.</p>}
+      {user.scheduling_enabled && !user.email_enabled && <p className="mb-3 rounded-lg border border-amber/40 bg-amber/10 px-3 py-2 font-mono text-[11px] text-amber">Email delivery isn&apos;t configured on this server — scheduled scans still run and save to your history, but no email is sent.</p>}
+
+      <div className="mb-4 flex items-center justify-between rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface-2)] px-4 py-3">
+        <span className="text-[13px] text-fog">Email me when a report is ready</span>
+        <button onClick={() => onSetNotifications(!notifOn)} className={`rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-[0.12em] transition-colors ${notifOn ? "border-teal/40 bg-teal/10 text-teal" : "border-[color:var(--surface-border)] text-fog"}`}>{notifOn ? "On" : "Off"}</button>
+      </div>
+
+      <div className="grid gap-2.5 sm:grid-cols-[1fr_auto_auto] sm:items-end">
+        <label className="flex flex-col gap-1"><span className="font-mono text-[10px] uppercase tracking-[0.12em] text-fog">Repository</span>
+          <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/repo" spellCheck={false} className="rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-3 py-2 font-mono text-[13px] outline-none focus:border-cyan/50" />
+        </label>
+        <label className="flex flex-col gap-1"><span className="font-mono text-[10px] uppercase tracking-[0.12em] text-fog">Time</span>
+          <input type="time" value={time} onChange={(e) => setTime(e.target.value)} className="rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-3 py-2 font-mono text-[13px] outline-none focus:border-cyan/50" />
+        </label>
+        <label className="flex flex-col gap-1"><span className="font-mono text-[10px] uppercase tracking-[0.12em] text-fog">Cadence</span>
+          <select value={cadence} onChange={(e) => setCadence(e.target.value as "daily" | "weekdays")} className="rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-3 py-2 font-mono text-[13px] outline-none focus:border-cyan/50">
+            <option value="daily">Daily</option><option value="weekdays">Weekdays</option>
+          </select>
+        </label>
+      </div>
+      <div className="mt-2.5 flex flex-wrap items-center gap-2.5">
+        <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" className="min-w-[220px] flex-1 rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-3 py-2 font-mono text-[13px] outline-none focus:border-cyan/50" />
+        <Magnetic><StatefulButton loading={busy} onClick={create}>Schedule report</StatefulButton></Magnetic>
+      </div>
+      <p className="mt-1.5 font-mono text-[10px] text-fog/70">Timezone: {tz} · every report email includes a one-click unsubscribe.</p>
+      {err && <p className="mt-2 font-mono text-[11px] text-[color:var(--sev-critical)]">{err}</p>}
+
+      {schedules.length > 0 && (
+        <div className="mt-5 flex flex-col divide-y divide-[color:var(--surface-border)]">
+          {schedules.map((s) => (
+            <div key={s.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-3">
+              <span className="font-mono text-[12px] text-cloud">{s.repo_full_name}</span>
+              <span className="font-mono text-[11px] text-fog">{String(s.hour).padStart(2, "0")}:{String(s.minute).padStart(2, "0")} · {s.cadence} · {s.timezone}</span>
+              {s.next_run_at && <span className="font-mono text-[10px] text-fog/70">next {new Date(s.next_run_at).toLocaleString()}</span>}
+              <span className="ml-auto flex items-center gap-2">
+                <button onClick={() => toggle(s)} className={`rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] ${s.enabled ? "border-teal/40 bg-teal/10 text-teal" : "border-[color:var(--surface-border)] text-fog"}`}>{s.enabled ? "Active" : "Paused"}</button>
+                <button onClick={() => remove(s)} className="rounded-full border border-[color:var(--surface-border)] px-2.5 py-1 font-mono text-[10px] text-fog transition-colors hover:border-rose-400/50 hover:text-[color:var(--sev-critical)]">Delete</button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </GlowCard>
   );
 }
 
@@ -2177,7 +2670,7 @@ function ReplayModal({ replay, onClose }: { replay: Replay | null; onClose: () =
     <AnimatePresence>
       {replay && (
         <motion.div className="fixed inset-0 z-50 grid place-items-center p-5" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose}>
-          <div className="absolute inset-0 bg-ink/80 backdrop-blur-sm" />
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
           <motion.article
             data-lenis-prevent
             className="relative max-h-[86vh] w-[min(680px,100%)] overflow-auto rounded-3xl border border-[color:var(--surface-border)] bg-ink-2/95 p-7"
@@ -2204,7 +2697,7 @@ function ReplayModal({ replay, onClose }: { replay: Replay | null; onClose: () =
                     {isReview
                       ? <p className="text-fog">Read-only review — Umbra inspected the diff above and modified <b className="text-cloud">no files</b>. The risk assessment is in the reasoning below.</p>
                       : replay.codex_diff
-                        ? <pre className="overflow-auto rounded-lg bg-black/50 p-3 font-mono text-[12px] text-cyan/90">{replay.codex_diff}</pre>
+                        ? <DiffView diff={replay.codex_diff} maxLines={400} />
                         : codexDown
                           ? <Unavailable title="Codex didn’t complete on this run." raw={replay.tests} />
                           : <p className="text-fog">No changes proposed on this run.</p>}

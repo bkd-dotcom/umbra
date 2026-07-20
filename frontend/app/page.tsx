@@ -5,17 +5,25 @@ import { motion, type Variants } from "motion/react";
 import { Corona } from "@/components/ui/corona";
 import { OperationsBoard } from "@/components/ui/operations-board";
 import { CrewDossier } from "@/components/ui/crew-dossier";
-import { NightShiftLog } from "@/components/ui/night-shift-log";
-import { MorningReport } from "@/components/ui/morning-report";
+import { NightShiftPipeline } from "@/components/ui/night-shift-pipeline";
 import { DitherImage } from "@/components/ui/dither-image";
 import { Magnetic } from "@/components/ui/magnetic-button";
 import { GlowCard } from "@/components/ui/glow-card";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
+import { InfiniteMovingCards } from "@/components/ui/infinite-moving-cards";
 import { SignInDialog } from "@/components/ui/sign-in-dialog";
 import { FounderDialog } from "@/components/ui/founder-dialog";
 import { Reveal, RevealGroup } from "@/components/ui/reveal";
 import { LocalWeather } from "@/components/ui/local-weather";
-import { fadeUp, EASE, stagger } from "@/lib/motion";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { MacbookScroll } from "@/components/ui/macbook-scroll";
+import { ChatGptThread } from "@/components/ui/chatgpt-thread";
+import { MovingBorderCard } from "@/components/ui/moving-border";
+import { HeroParallax } from "@/components/ui/hero-parallax";
+import { CometCard } from "@/components/ui/comet-card";
+import { SectionFX } from "@/components/ui/section-fx";
+import { Spotlight } from "@/components/ui/spotlight";
+import { fadeUp, scaleIn, slideLeft, slideRight, blurRise, EASE, stagger } from "@/lib/motion";
 
 // Hero headline: a per-line mask reveal (the shift "coming online"). The outer
 // span clips; the inner slides up from below. Kept short so a judge reads the
@@ -26,6 +34,16 @@ const heroLine: Variants = {
 };
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+/* Every landing card is a GlowCard wrapped in a CometCard, so all of them get the
+   subtle 3D "comet" tilt + cursor glow — the premium feel, applied uniformly. */
+function TiltCard({ children, className, glow, ...rest }: { children: React.ReactNode; className?: string; glow?: string } & React.HTMLAttributes<HTMLDivElement>) {
+  return (
+    <CometCard>
+      <GlowCard glow={glow} className={className} {...rest}>{children}</GlowCard>
+    </CometCard>
+  );
+}
 
 export default function Landing() {
   const [signIn, setSignIn] = useState(false);
@@ -57,13 +75,23 @@ export default function Landing() {
         initial={{ y: -20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ duration: 0.6 }}
-        className={`sticky top-3 z-40 mt-3 flex items-center justify-between rounded-2xl px-5 py-3 transition-all duration-300 ${scrolled ? "glass shadow-[0_10px_40px_-12px_#000]" : ""}`}
+        className={`sticky top-3 z-40 mt-3 flex items-center justify-between rounded-2xl px-5 py-3 transition-all duration-300 ${scrolled ? "glass shadow-[var(--shadow-card)]" : ""}`}
       >
         <div className="flex items-center gap-2 text-[15px] font-extrabold tracking-[0.35em]">
           <span className="text-2xl text-cyan tracking-normal">◐</span> UMBRA
         </div>
+        {/* Center nav — simple hover-underline links (Aceternity-style). */}
+        <div className="hidden items-center gap-1 md:flex">
+          {([["Proof", "#evidence-locker"], ["Report", "#report"], ["Crew", "#crew"], ["Pipeline", "#pipeline"], ["OpenAI", "#openai"]] as const).map(([label, href]) => (
+            <a key={href} href={href} className="group relative rounded-lg px-3 py-1.5 font-mono text-[12px] text-fog transition-colors hover:text-cloud">
+              {label}
+              <span className="absolute inset-x-3 -bottom-0.5 h-px origin-left scale-x-0 bg-cyan transition-transform duration-300 group-hover:scale-x-100" />
+            </a>
+          ))}
+        </div>
         <div className="flex items-center gap-3">
           <LocalWeather />
+          <ThemeToggle variant="inline" />
           <HoverBorderGradient onClick={() => setSignIn(true)} className="px-4 py-2 text-xs">
             Sign in <span className="text-cyan">↗</span>
           </HoverBorderGradient>
@@ -73,6 +101,7 @@ export default function Landing() {
       {/* Hero — arrival: the shift begins. One massive statement, one clarifier,
           then the live operations board does the explaining. */}
       <section className="relative flex min-h-[90vh] flex-col justify-center py-16 md:py-20">
+        <Spotlight className="-left-[32rem] -top-[30rem] opacity-40" fill="#22d3ee" />
         <div className="relative z-10 max-w-[64rem]">
           <motion.div
             initial={{ opacity: 0, y: -8 }}
@@ -109,6 +138,18 @@ export default function Landing() {
             className="mt-6 max-w-[42ch] text-[clamp(17px,2.1vw,22px)] leading-snug text-cloud/75"
           >
             An autonomous engineering crew that works while you sleep.
+          </motion.p>
+
+          {/* Stable capability line — no mid-word typewriter jitter in a judge's
+              first screenshot, just the product promise in one readable pass. */}
+          <motion.p
+            variants={fadeUp}
+            initial="hidden"
+            animate="show"
+            transition={{ delay: 0.15 }}
+            className="mt-4 max-w-[68ch] font-mono text-[clamp(13px,1.55vw,15px)] leading-relaxed text-fog"
+          >
+            While you sleep, Umbra <span className="text-cyan">hunts CVEs</span>, <span className="text-amber">traces incidents</span>, <span className="text-teal">prepares reviewable diffs</span>, and <span className="text-pink">answers with file references</span>.
           </motion.p>
 
           {/* Concrete Build Week / OpenAI line — honest about what runs when. */}
@@ -165,9 +206,9 @@ export default function Landing() {
               </Magnetic>
             </div>
             <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 font-mono text-[12px]">
-              <a href="/dashboard?proof=calhacks" className="flex items-center gap-1.5 text-teal transition-colors hover:text-cyan">▶ Open captured proof scan <span className="text-teal/60">· instant</span></a>
+              <a href="/dashboard?proof=calhacks" className="flex items-center gap-1.5 text-teal transition-colors hover:text-cyan">▶ Open captured shift <span className="text-teal/60">· instant</span></a>
               <span className="text-fog/30">·</span>
-              <a href="#evidence" className="text-cloud transition-colors hover:text-cyan">View demo report ↓</a>
+              <a href="#report" className="text-cloud transition-colors hover:text-cyan">View morning report ↓</a>
               <span className="text-fog/30">·</span>
               <a href="/openapi-actions.yaml" className="text-fog transition-colors hover:text-cloud">Open GPT Action schema ↗</a>
               <span className="text-fog/30">·</span>
@@ -188,10 +229,11 @@ export default function Landing() {
       </section>
 
       {/* The Evidence Locker — proof as a product feature, not a receipts dump.
-          One captured shift, opened instantly; the heavy detail (revision, commit,
-          hash, export) lives in the dashboard, so the landing stays atmospheric. */}
-      <section id="evidence-locker" className="relative py-24">
-        <Reveal>
+          Placed immediately after the hero so judges get the high-confidence
+          proof path before the longer product story. */}
+      <section id="evidence-locker" className="relative py-20 md:py-24">
+        <SectionFX accent="#5eead4" variant="top" />
+        <Reveal variants={blurRise}>
           <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
             <span className="h-1.5 w-1.5 rounded-full bg-teal shadow-[0_0_8px_#5eead4]" /> The Evidence Locker
           </p>
@@ -201,7 +243,7 @@ export default function Landing() {
           </p>
         </Reveal>
         <Reveal className="mt-9">
-          <GlowCard glow="rgba(94,234,212,0.14)" className="p-7 sm:p-9">
+          <MovingBorderCard duration={8} className="overflow-hidden p-7 sm:p-9">
             <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5 font-mono text-[12.5px]">
               <span className="flex items-center gap-2 text-cloud"><span className="h-1.5 w-1.5 rounded-full bg-rose-400" /> 26 advisories found</span>
               <span className="text-fog/25">·</span>
@@ -218,13 +260,64 @@ export default function Landing() {
                 </HoverBorderGradient>
               </Magnetic>
             </div>
-          </GlowCard>
+            <InfiniteMovingCards
+              className="mt-7"
+              items={[
+                "captured scan · real Codex run",
+                "provider ledger · osv.dev",
+                "diff · next 14.2.5 → 14.2.33",
+                "autonomy · never auto-merges",
+                "evidence pack · exportable audit trail",
+              ].map((item) => (
+                <span key={item} className="rounded-full border border-teal/20 bg-teal/5 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-teal/80">
+                  {item}
+                </span>
+              ))}
+            />
+          </MovingBorderCard>
         </Reveal>
       </section>
 
+      {/* The handoff — the morning report inside a MacBook that opens as you scroll.
+          "You slept. They didn't." lives here and nowhere else. */}
+      <section id="report" className="relative">
+        <MacbookScroll
+          showGradient
+          title={
+            <span className="block">
+              <span className="block font-mono text-[11px] uppercase tracking-[0.24em] text-fog">The handoff</span>
+              <span className="mt-3 block font-serif text-[clamp(34px,5.2vw,64px)] font-normal leading-[1.0] tracking-[-0.03em] text-cloud">You slept. They didn&rsquo;t.</span>
+              <span className="mx-auto mt-4 block max-w-[48ch] text-[15px] leading-relaxed text-fog">
+                Every morning the report is already waiting: what broke, what Codex prepared, what still needs review, and what never got merged without you.
+              </span>
+            </span>
+          }
+        />
+      </section>
+
+      {/* What the night crew does — parallax artifact tiles. */}
+      <section className="relative -mx-6 overflow-hidden rounded-[2rem] border border-violet/10 bg-[radial-gradient(70%_80%_at_15%_0%,rgba(167,139,250,0.10),transparent_58%),linear-gradient(180deg,rgba(255,255,255,0.035),transparent)] px-6 py-20 md:-mx-10 md:px-10">
+        <div className="pointer-events-none absolute right-6 top-6 hidden font-mono text-[10px] uppercase tracking-[0.28em] text-violet/40 md:block">unit manifest</div>
+        <HeroParallax
+          heading={<h2 className="font-serif text-[clamp(28px,4vw,46px)] leading-[1.05] tracking-[-0.02em] text-cloud">Five specialists, one shift.</h2>}
+          sub="Each works a disposable clone and files a grounded artifact — no fabrication, no auto-merge."
+          items={[
+            { title: "Watchman", sub: "Hunts CVEs across resolved dependencies, live against OSV.dev.", accent: "#22d3ee" },
+            { title: "Reviewer", sub: "Scores blast-radius and merge risk on the exact diff being shipped.", accent: "#a78bfa" },
+            { title: "Detective", sub: "Traces an incident to its root-cause commit from real git history.", accent: "#fbbf24" },
+            { title: "Janitor", sub: "Clears dead code and quiet tech debt, then drafts a PR for review.", accent: "#5eead4" },
+            { title: "Ask Umbra", sub: "Answers questions about your codebase, grounded to file:line.", accent: "#f472b6" },
+            { title: "Evidence pack", sub: "Every run exports a hashable audit trail — receipts, not vibes.", accent: "#8b90a6" },
+          ]}
+        />
+      </section>
+
       {/* Evidence — "does it actually work?" answered first, with a real artifact. */}
-      <section id="evidence" className="relative py-24">
-        <Reveal>
+      <section id="evidence" className="relative -mx-6 overflow-hidden rounded-[2rem] border border-cyan/10 bg-[radial-gradient(70%_90%_at_100%_0%,rgba(34,211,238,0.10),transparent_60%),linear-gradient(180deg,rgba(34,211,238,0.035),transparent)] px-6 py-24 md:-mx-10 md:px-10">
+        <SectionFX accent="#22d3ee" variant="left" />
+        <div className="pointer-events-none absolute inset-0 grid-bg opacity-[0.035]" aria-hidden />
+        <div className="relative z-10">
+        <Reveal variants={slideLeft}>
           <p className="flex flex-wrap items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
             <span className="h-1.5 w-1.5 rounded-full bg-cyan shadow-[0_0_8px_#22d3ee]" /> Evidence · last night
             <span className="rounded-full border border-[color:var(--surface-border)] px-2 py-0.5 text-[9px] tracking-[0.16em] text-fog/80">Sample</span>
@@ -239,10 +332,10 @@ export default function Landing() {
         <div className="mt-9 grid gap-5 lg:grid-cols-[1.25fr_1fr]">
           {/* Watchman — CVE case file (the "holy crap it works" artifact) */}
           <Reveal>
-            <GlowCard glow="rgba(251,113,133,0.20)" className="h-full">
+            <TiltCard glow="rgba(251,113,133,0.20)" className="h-full">
               <div className="flex items-center justify-between border-b border-[color:var(--surface-border)] px-6 py-4">
                 <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-fog">Case file · CVE-2024-29041</span>
-                <span className="flex items-center gap-1.5 rounded-full border border-rose-400/40 bg-rose-400/10 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-rose-300">
+                <span className="flex items-center gap-1.5 rounded-full border border-rose-400/40 bg-rose-400/10 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[color:var(--sev-critical)]">
                   <span className="h-1.5 w-1.5 rounded-full bg-rose-400" /> High
                 </span>
               </div>
@@ -263,28 +356,28 @@ export default function Landing() {
                   <span className="font-mono text-[10px] text-fog">branch only · you review &amp; merge</span>
                 </div>
               </div>
-            </GlowCard>
+            </TiltCard>
           </Reveal>
 
           {/* Detective root-cause + Reviewer verdict — breadth beyond security */}
           <Reveal delay={0.05}>
             <div className="flex h-full flex-col gap-5">
-              <GlowCard glow="rgba(251,191,36,0.18)" className="p-6">
+              <TiltCard glow="rgba(251,191,36,0.18)" className="p-6">
                 <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-fog">Incident · root cause</span>
                 <p className="mt-3 text-[13px] leading-relaxed text-cloud">
                   <span className="text-amber">⌁ DETECTIVE</span> traced <span className="text-cloud">500s on /checkout</span> to one commit — reasoned over real git history, not guessed.
                 </p>
-                <div className="mt-4 rounded-lg border border-[color:var(--surface-border)] bg-black/20 px-3 py-2.5 font-mono text-[11px] text-fog">
+                <div className="mt-4 rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-3 py-2.5 font-mono text-[11px] text-fog">
                   <span className="text-amber">commit a9c31f</span> — “refactor cart totals”<br />
                   <span className="text-cloud">3 days ago · @dev</span>
                 </div>
-              </GlowCard>
-              <GlowCard glow="rgba(167,139,250,0.18)" className="p-6">
+              </TiltCard>
+              <TiltCard glow="rgba(167,139,250,0.18)" className="p-6">
                 <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-fog">PR review · verdict</span>
                 <p className="mt-3 text-[13px] leading-relaxed text-cloud">
                   <span className="text-violet">◈ REVIEWER</span> scored the fix: <span className="text-teal">blast-radius low · safe to merge</span>.
                 </p>
-              </GlowCard>
+              </TiltCard>
             </div>
           </Reveal>
         </div>
@@ -300,7 +393,7 @@ export default function Landing() {
                 ["Codex", "patch diff"],
                 ["GPT‑5.6", "reasoning"],
               ] as const).map(([src, out]) => (
-                <span key={src} className="rounded-full border border-[color:var(--surface-border)] bg-black/20 px-2.5 py-1 font-mono text-[10px] text-fog">
+                <span key={src} className="rounded-full border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-2.5 py-1 font-mono text-[10px] text-fog">
                   <span className="text-cloud">{src}</span> · {out}
                 </span>
               ))}
@@ -308,11 +401,14 @@ export default function Landing() {
             <span className="font-mono text-[10px] text-fog/70">grounded, never fabricated · your own scan shows live / cache / unavailable</span>
           </div>
         </Reveal>
+        </div>
       </section>
 
       {/* Night crew — the main character: a classified ops file, one unit on station. */}
       <section id="crew" className="relative py-24">
-        <Reveal>
+        <SectionFX accent="#a78bfa" variant="right" />
+        <div className="pointer-events-none absolute left-1/2 top-16 h-56 w-56 -translate-x-1/2 rounded-full bg-violet/10 blur-[90px]" aria-hidden />
+        <Reveal variants={scaleIn}>
           <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
             <span className="h-1.5 w-1.5 rounded-full bg-cyan shadow-[0_0_8px_#22d3ee]" /> The night crew
           </p>
@@ -324,25 +420,18 @@ export default function Landing() {
         </Reveal>
       </section>
 
-      {/* How the night unfolds — a shift log, not step cards. The beam is the
-          night; each entry ignites in its status colour as you scroll through. */}
-      <section id="how" className="relative py-24">
-        <Reveal>
-          <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
-            <span className="h-1.5 w-1.5 rounded-full bg-cyan shadow-[0_0_8px_#22d3ee]" /> How the night unfolds
-          </p>
-          <h2 className="mt-3 max-w-[18ch] font-serif text-[clamp(30px,4.2vw,52px)] leading-[1.02] tracking-[-0.03em]">One night, start to sunrise.</h2>
-          <p className="mt-4 max-w-[56ch] text-[15px] leading-relaxed text-fog">Connect a repo and the shift begins. Follow the beam down — every entry is a real thing that happened, grounded and timestamped.</p>
-        </Reveal>
-        <Reveal className="mt-12 max-w-[680px]">
-          <NightShiftLog />
-        </Reveal>
+      {/* The night shift, replayed — one real captured shift scrolled end to end,
+          from the first OSV lookup to the diff Codex left for review. A sibling
+          `relative` section (NO overflow-hidden ancestor) so the console pins. */}
+      <section id="pipeline" className="relative py-16 md:py-20">
+        <NightShiftPipeline />
       </section>
 
       {/* How OpenAI is used — an engineering evidence panel, not a marketing block.
           Placed after the story, before the ChatGPT surface. */}
       <section id="openai" className="relative py-24">
-        <Reveal>
+        <SectionFX accent="#34d399" variant="grid" />
+        <Reveal variants={blurRise}>
           <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
             <span className="h-1.5 w-1.5 rounded-full bg-violet shadow-[0_0_8px_#a78bfa]" /> How OpenAI is used
           </p>
@@ -359,13 +448,26 @@ export default function Landing() {
             { tag: "provider ledger", color: "#5eead4", title: "Provider ledger", body: "Every output carries its source: live, cache, demo, or unavailable. Honesty is a first-class feature, not an afterthought." },
           ].map((p) => (
             <Reveal key={p.title} variants={fadeUp}>
-              <GlowCard className="h-full p-6">
+              {p.title === "Codex CLI" ? (
+                <MovingBorderCard duration={7} className="h-full p-6">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="font-serif text-xl">{p.title}</h3>
+                    <span className="shrink-0 rounded-full border px-2.5 py-1 font-mono text-[9.5px] uppercase tracking-[0.1em]" style={{ color: p.color, borderColor: `${p.color}44`, background: `${p.color}12` }}>{p.tag}</span>
+                  </div>
+                  <p className="mt-3 text-[13px] leading-relaxed text-fog">{p.body}</p>
+                  <div className="mt-5 rounded-xl border border-violet/20 bg-violet/5 p-4 font-mono text-[11px] leading-relaxed text-violet/90">
+                    codex exec · disposable clone · diff-only artifact · no auto-merge
+                  </div>
+                </MovingBorderCard>
+              ) : (
+              <TiltCard className="h-full p-6">
                 <div className="flex items-center justify-between gap-3">
                   <h3 className="font-serif text-xl">{p.title}</h3>
                   <span className="shrink-0 rounded-full border px-2.5 py-1 font-mono text-[9.5px] uppercase tracking-[0.1em]" style={{ color: p.color, borderColor: `${p.color}44`, background: `${p.color}12` }}>{p.tag}</span>
                 </div>
                 <p className="mt-3 text-[13px] leading-relaxed text-fog">{p.body}</p>
-              </GlowCard>
+              </TiltCard>
+              )}
             </Reveal>
           ))}
         </RevealGroup>
@@ -375,7 +477,8 @@ export default function Landing() {
           to "I tested it, ship it". Each card grounds what runs TODAY before naming
           what's next, so the roadmap reads as confidence, not a wishlist. */}
       <section id="next" className="relative py-24">
-        <Reveal>
+        <SectionFX accent="#38bdf8" variant="left" />
+        <Reveal variants={slideLeft}>
           <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
             <span className="h-1.5 w-1.5 rounded-full bg-teal shadow-[0_0_8px_#5eead4]" /> Where this goes next
           </p>
@@ -391,7 +494,7 @@ export default function Landing() {
             { title: "Grounded at scale", today: "Every answer cites a real file:line — never fabricated.", next: "AST / LSP-backed grounding for cross-file correctness across millions of lines." },
           ].map((p) => (
             <Reveal key={p.title} variants={fadeUp}>
-              <GlowCard className="h-full p-6">
+              <TiltCard className="h-full p-6">
                 <h3 className="font-serif text-xl">{p.title}</h3>
                 <p className="mt-3 flex items-start gap-2 text-[13px] leading-relaxed text-fog">
                   <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-teal shadow-[0_0_6px_#5eead4]" />
@@ -401,7 +504,7 @@ export default function Landing() {
                   <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full border border-fog" />
                   <span><span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fog/80">Next</span><br />{p.next}</span>
                 </p>
-              </GlowCard>
+              </TiltCard>
             </Reveal>
           ))}
         </RevealGroup>
@@ -409,8 +512,10 @@ export default function Landing() {
 
       {/* Umbra inside ChatGPT — proof it isn't trapped in a dashboard. Placed
           before the report so the OpenAI surface lands ahead of the payoff. */}
-      <section id="chatgpt" className="relative py-24">
-        <Reveal>
+      <section id="chatgpt" className="relative -mx-6 overflow-hidden rounded-[2rem] border border-teal/10 bg-[radial-gradient(70%_80%_at_100%_100%,rgba(16,163,127,0.10),transparent_58%),linear-gradient(180deg,rgba(16,163,127,0.035),transparent)] px-6 py-24 md:-mx-10 md:px-10">
+        <SectionFX accent="#10a37f" variant="right" />
+        <div className="pointer-events-none absolute left-6 top-6 hidden font-mono text-[10px] uppercase tracking-[0.28em] text-teal/45 md:block">gpt action surface</div>
+        <Reveal variants={slideRight}>
           <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
             <span className="h-1.5 w-1.5 rounded-full bg-cyan shadow-[0_0_8px_#22d3ee]" /> Umbra inside ChatGPT
           </p>
@@ -421,26 +526,47 @@ export default function Landing() {
             The read-only actions are public; no sign-in required.
           </p>
         </Reveal>
-        <RevealGroup className="mt-9 grid gap-4 md:grid-cols-3">
-          {[
-            { n: "scanRepo", body: "“Scan github.com/expressjs/express” → Umbra Score + live CVEs." },
-            { n: "investigateIncident", body: "Paste an error → the root-cause commit from real git history." },
-            { n: "askUmbra", body: "“How does routing work?” → an answer with real file:line references." },
-          ].map((a) => (
-            <Reveal key={a.n} variants={fadeUp}>
-              <GlowCard className="h-full p-6">
+        <div className="mt-9 grid items-start gap-6 lg:grid-cols-[1.35fr_0.65fr]">
+          {/* The proof: a live-looking ChatGPT thread, grounded + honest. */}
+          <Reveal parallax={0}>
+            <ChatGptThread />
+          </Reveal>
+          {/* The three read-only actions this surface exposes. */}
+          <Reveal delay={0.05} className="flex flex-col gap-3">
+            <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-teal/70">Read-only actions</p>
+            {[
+              { n: "scanRepo", body: "Umbra Score + live CVEs for any public repo." },
+              { n: "investigateIncident", body: "An error → the root-cause commit from real git history." },
+              { n: "askUmbra", body: "A question → an answer with real file:line references." },
+            ].map((a) => (
+              <div key={a.n} className="rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] p-4">
                 <b className="font-mono text-[12px] text-cyan">{a.n}</b>
-                <p className="mt-2.5 text-[13px] leading-relaxed text-fog">{a.body}</p>
-              </GlowCard>
-            </Reveal>
-          ))}
-        </RevealGroup>
+                <p className="mt-1.5 text-[12.5px] leading-relaxed text-fog">{a.body}</p>
+              </div>
+            ))}
+          </Reveal>
+        </div>
         <Reveal className="mt-6 flex flex-wrap items-center gap-4">
           <a href="/openapi-actions.yaml" className="font-mono text-[12px] text-cyan hover:underline">OpenAPI schema ↗</a>
           <span className="text-fog/40">·</span>
           <a href="/.well-known/ai-plugin.json" className="font-mono text-[12px] text-cyan hover:underline">Plugin manifest ↗</a>
           <span className="text-fog/40">·</span>
           <a href="https://github.com/bkd-dotcom/umbra/tree/main/custom_gpt" target="_blank" rel="noreferrer" className="font-mono text-[12px] text-fog hover:text-cloud">Build the GPT ↗</a>
+        </Reveal>
+        <Reveal className="mt-8">
+          <InfiniteMovingCards
+            items={[
+              "Scan github.com/expressjs/express",
+              "Why did checkout fail?",
+              "Which file handles routing?",
+              "Trace this stack trace to a commit",
+              "Summarize the dependency risk",
+            ].map((item) => (
+              <span key={item} className="rounded-xl border border-teal/20 bg-[color:var(--surface)] px-4 py-3 font-mono text-[12px] text-fog">
+                “{item}”
+              </span>
+            ))}
+          />
         </Reveal>
       </section>
 
@@ -458,22 +584,6 @@ export default function Landing() {
         </Reveal>
       </section>
 
-      {/* Morning report — “one more thing.” The resolution of the whole story:
-          you slept, the crew filed the shift, and this is what was waiting. */}
-      <section id="report" className="relative py-28">
-        <Reveal className="text-center">
-          <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">The handoff</p>
-          <h2 className="mx-auto mt-3 max-w-[16ch] font-serif text-[clamp(34px,5.2vw,64px)] leading-[1.0] tracking-[-0.03em]">You slept. They didn’t.</h2>
-          <p className="mx-auto mt-4 max-w-[52ch] text-[15px] leading-relaxed text-fog">
-            Every morning the report is already waiting — what changed while you were away, and why.
-          </p>
-        </Reveal>
-
-        <Reveal className="mx-auto mt-10 max-w-[840px]">
-          <MorningReport />
-        </Reveal>
-      </section>
-
       {/* Final CTA — a calm close, three clear doors for a judge. */}
       <section className="relative pb-28 pt-10 text-center">
         <Reveal>
@@ -483,7 +593,7 @@ export default function Landing() {
             <Magnetic>
               <HoverBorderGradient href={scanHref} className="px-7 py-4 text-sm font-semibold">Try public repo scan <span className="text-cyan">→</span></HoverBorderGradient>
             </Magnetic>
-            <a href="/dashboard?proof=calhacks" className="font-mono text-[13px] text-teal transition-colors hover:text-cyan">▶ Open captured proof scan</a>
+            <a href="/dashboard?proof=calhacks" className="font-mono text-[13px] text-teal transition-colors hover:text-cyan">▶ Open captured shift</a>
             <span className="text-fog/30">·</span>
             <a href="/dashboard" className="font-mono text-[13px] text-cloud transition-colors hover:text-cyan">Open dashboard ↗</a>
             <span className="text-fog/30">·</span>

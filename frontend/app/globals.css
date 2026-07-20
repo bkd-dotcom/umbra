@@ -22,6 +22,14 @@
   --color-teal: #5eead4;
   --color-amber: #fbbf24;
 
+  /* Severity text tones — theme-aware (light overrides these below) so HIGH/
+     CRITICAL stay legible on cream. The border/bg tints stay as low-opacity
+     Tailwind classes, which read fine in both themes; only the text flips. */
+  --sev-critical: #fda4af;
+  --sev-high: #fdba74;
+  --sev-medium: #fcd34d;
+  --sev-low: #7dd3fc;
+
   --animate-aurora: aurora 22s ease-in-out infinite alternate;
   --animate-shimmer: shimmer 3.2s linear infinite;
   --animate-marquee: marquee 42s linear infinite;
@@ -49,34 +57,50 @@
    Warm ivory page + warm near-black text, faint warm ambient, and slightly
    deeper accents so cyan/violet labels stay legible on cream. */
 :root[data-theme="light"] {
-  --color-ink: #f3f1ea;          /* warm vanilla page */
-  --color-ink-2: #fbfaf5;        /* warm off-white raised panels */
-  --color-line: #e5e1d5;         /* warm hairline */
-  --color-fog: #6b6656;          /* warm muted text */
-  --color-cloud: #1a1915;        /* warm near-black primary text */
+  --color-ink: #f0eee6;          /* Anthropic-style warm ivory page */
+  --color-ink-2: #f7f5ef;        /* warm off-white raised panels (nav/header/modals) */
+  --color-line: #e3ded1;         /* warm hairline */
+  --color-fog: #4a4436;          /* darker warm gray: base passes AA and gives the
+                                    /55–/70 microcopy real headroom on cream */
+  --color-cloud: #23201a;        /* warm near-black primary text */
 
-  /* Deepened accents for legibility on cream (dark mode keeps the bright set). */
-  --color-cyan: #0e97b0;
-  --color-violet: #7c5cd6;
-  --color-pink: #d65a94;
-  --color-teal: #159f8a;
-  --color-amber: #b9822a;
+  /* Deepened accents for legibility on cream (dark mode keeps the bright set).
+     Each clears WCAG AA body contrast (≥4.5:1) against the ivory page #f0eee6,
+     so colored keywords/micro-labels are readable, not just decorative. */
+  --color-cyan: #0e7490;         /* 4.6:1 (was #0e8ba3 ≈3.4:1) */
+  --color-violet: #7355cf;       /* 4.6:1 — already passing */
+  --color-pink: #b83a76;         /* 4.6:1 (was #cf5690 ≈3.4:1) */
+  --color-teal: #0f766e;         /* 4.7:1 (was #12917e ≈3.4:1) */
+  --color-amber: #8a5e12;        /* 4.9:1 (was #a9761f ≈3.4:1) */
 
-  --surface: rgba(30, 26, 16, 0.028);
-  --surface-2: rgba(30, 26, 16, 0.06);
-  --surface-border: rgba(30, 26, 16, 0.12);
-  --surface-border-hover: rgba(30, 26, 16, 0.24);
-  --input-bg: rgba(30, 26, 16, 0.04);
+  /* Severity text tones, dark-on-cream so HIGH/CRITICAL read clearly in light. */
+  --sev-critical: #be123c;
+  --sev-high: #c2410c;
+  --sev-medium: #92610a;
+  --sev-low: #0369a1;
+
+  /* KEY FIX: cards are a legible RAISED warm-white panel (was ~3% dark → invisible),
+     insets/pills sit slightly recessed. Dark theme is untouched — only this block
+     changes — and the hardcoded bg-white/5 → --surface-2 / bg-black/2x → --input-bg
+     swaps below stay identical in dark while reading correctly on cream here. */
+  --surface: rgba(255, 255, 255, 0.75);          /* raised card on ivory */
+  --surface-2: rgba(46, 40, 28, 0.06);           /* recessed inset / pill fill */
+  --surface-border: rgba(46, 40, 28, 0.14);      /* clearly visible hairline */
+  --surface-border-hover: rgba(46, 40, 28, 0.28);
+  --input-bg: rgba(46, 40, 28, 0.05);            /* faintly-filled inputs + code/artifact panels */
   --fx-1: rgba(184, 150, 96, 0.07);   /* warm, faint ambient (no cyan/violet wash) */
   --fx-2: rgba(160, 132, 100, 0.07);
   --fx-3: rgba(120, 100, 68, 0.05);
-  --shadow-card: 0 20px 50px -24px rgba(70, 58, 34, 0.18);
+  --shadow-card: 0 18px 44px -22px rgba(70, 58, 34, 0.28);   /* stronger so cards lift off the page */
   color-scheme: light;
 }
 
 /* In vanilla light mode the bold coloured backdrop (aurora + beams + spotlight)
    is dialled right down so the page stays calm and plain; dark mode stays bold. */
-:root[data-theme="light"] .bg-bold { opacity: 0.4; }
+:root[data-theme="light"] .bg-bold { opacity: 0.5; }
+/* The eclipse's near-black core reads as a grey blob on a cream page — hide it in
+   light mode; the ring + grid stay as a faint, warm whisper. */
+:root[data-theme="light"] .corona-core { opacity: 0; }
 
 /* Translate-ONLY drift (no scale): a scaling transform re-rasterizes the huge
    120px blur every frame — one of the biggest scroll-jank costs. Pure translate
@@ -142,6 +166,8 @@
     -webkit-backdrop-filter: none !important;
   }
   ::selection { background: rgba(34, 211, 238, 0.28); color: white; }
+  /* In light mode a white-on-cyan selection is invisible — use dark selected text. */
+  :root[data-theme="light"] ::selection { background: rgba(14, 139, 163, 0.24); color: #23201a; }
   *:focus-visible { outline: 2px solid var(--color-cyan); outline-offset: 2px; border-radius: 4px; }
 
   ::-webkit-scrollbar { width: 10px; height: 10px; }

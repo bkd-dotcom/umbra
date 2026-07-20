@@ -21,9 +21,12 @@ export function Corona({ className }: { className?: string }) {
         style={{ background: "radial-gradient(circle, rgba(34,211,238,0.06), transparent 62%)", willChange: "transform" }}
       />
 
-      {/* Umbra core — the total-shadow center deepens the page toward black. */}
+      {/* Umbra core — the total-shadow center deepens the page toward black.
+          Dark-mode only: on a cream page a near-black core reads as a grey blob,
+          so it's hidden in light mode (see globals.css .corona-core), leaving the
+          clean cream + a whisper of the ring. */}
       <div
-        className="absolute left-1/2 top-[-26%] h-[96vh] w-[96vh] -translate-x-1/2 rounded-full"
+        className="corona-core absolute left-1/2 top-[-26%] h-[96vh] w-[96vh] -translate-x-1/2 rounded-full"
         style={{ background: "radial-gradient(circle, rgba(2,3,7,0.92) 34%, rgba(2,3,7,0.35) 46%, transparent 60%)" }}
       />
 

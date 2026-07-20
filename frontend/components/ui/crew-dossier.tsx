@@ -241,7 +241,7 @@ export function CrewDossier() {
 
 function ArtifactShell({ label, color, children }: { label: string; color: string; children: ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-[color:var(--surface-border)] bg-black/25">
+    <div className="overflow-hidden rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--input-bg)]">
       <div className="flex items-center justify-between border-b border-[color:var(--surface-border)] px-4 py-2.5">
         <span className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-fog">{label}</span>
         <span className="flex items-center gap-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em]" style={{ color }}>
@@ -299,11 +299,11 @@ function WatchmanArt({ color, reduce }: { color: string; reduce: boolean }) {
             >
               <span className={d.flag ? "text-cloud" : "text-fog"}>{d.n}</span>
               {d.flag ? (
-                <span className="flex items-center gap-1.5 text-[11px]" style={{ color: RISK }}>
+                <span className="flex items-center gap-1.5 text-[11px] text-[color:var(--sev-critical)]">
                   <span className="h-1.5 w-1.5 rounded-full animate-pulse-glow" style={{ background: RISK }} /> CVE-2024-29041 · HIGH
                 </span>
               ) : (
-                <span className="text-[11px] text-fog/60">✓ clear</span>
+                <span className="text-[11px] text-fog/75">✓ clear</span>
               )}
             </motion.div>
           ))}
@@ -323,7 +323,7 @@ function ReviewerArt({ color, reduce }: { color: string; reduce: boolean }) {
         </div>
         <div className="mt-2.5 flex items-center gap-3 text-[11px]">
           <span className="text-teal">+48</span>
-          <span className="text-rose-300">−12</span>
+          <span className="text-[color:var(--sev-critical)]">−12</span>
           <span className="ml-auto text-fog">blast-radius</span>
         </div>
         <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[color:var(--surface-2)]">

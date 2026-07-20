@@ -106,7 +106,7 @@ export function LocalWeather({ className = "" }: { className?: string }) {
 
   return (
     <div
-      className={`hidden items-center gap-2 rounded-full border border-[color:var(--surface-border)] bg-white/5 px-3 py-1.5 font-mono text-[11px] text-fog backdrop-blur-sm sm:flex ${className}`}
+      className={`hidden items-center gap-2 rounded-full border border-[color:var(--surface-border)] bg-[color:var(--surface-2)] px-3 py-1.5 font-mono text-[11px] text-fog backdrop-blur-sm sm:flex ${className}`}
       title={`${weather?.label || "Local time"} · weather for your approximate location`}
     >
       {weather && <span className="text-[13px] leading-none" aria-hidden>{weather.emoji}</span>}

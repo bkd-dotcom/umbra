@@ -21,6 +21,21 @@ Sol/Terra/Luna, or the Codex CLI's own GPT-5.6 model as fallback). Every result 
 ledger** label naming what produced it; nothing is fabricated. Fix PRs are **branch-only** and only
 opened on explicit request.
 
+**The differentiator — an accountability layer.** An autonomous crew is only trustworthy if you can
+audit what it did overnight, so every finding and fix is a verifiable **receipt**, not a claim:
+
+- **In-app PR review** — the Codex-drafted patch renders as a real diff (per-file, hunk headers, ±line
+  gutters) with the deterministic Reviewer risk verdict beside it; you review the exact change before
+  opening a branch-only PR.
+- **PR ledger** — every PR Umbra opens becomes a durable receipt (PR #, branch, advisory it remediates,
+  recorded verdict), grouped by repo.
+- **Triage with reasons** — snoozing / accepting-risk requires a reason, recorded server-side and shown
+  in the audit timeline — never a silent hide.
+- **Evidence Pack + verify** — a run exports to a path-sanitized Markdown pack stamped with a canonical
+  `sha256`; a verify endpoint **recomputes** the hash so anyone can confirm the report wasn't altered.
+- **Night-Shift pipeline** on the landing page walks this end-to-end (Scan → Triage → Root-cause →
+  Draft fix → Evidence → Human gate) from a real captured scan.
+
 Surfaces:
 - **Web app** — [umbra.engineer](https://umbra.engineer) (Cloud Run, single service).
 - **ChatGPT plugin / GPT Action** — public read-only actions (`scanRepo`, `investigateIncident`,
@@ -96,15 +111,49 @@ If kept private for judging, share with `testing@devpost.com` and `build-week-ev
   `https://umbra.engineer/openapi-actions.yaml` → Authentication **None** → paste
   [`custom_gpt/instructions.md`](custom_gpt/instructions.md) as the system prompt.
 
-## Demo video (<3 min) — script outline
-1. **0:00–0:20** Hook: "Umbra is an AI engineering team that works the night shift." Show the dashboard.
-2. **0:20–1:10** Live scan of a public repo → Umbra Score, real OSV advisories, dependency graph;
-   call out the **honesty ledger** (say: *this is real OSV data, labelled `live-watchman`*).
-3. **1:10–1:40** Ask Umbra + Detective **streaming** a grounded answer / root-cause commit in seconds.
-4. **1:40–2:20** ChatGPT: open the Umbra GPT and *“Scan expressjs/express”* — same engine, inside ChatGPT.
-5. **2:20–2:50** Autonomy: a PR gets an auto-review comment; mention nightly branch-only fix PRs.
-6. **2:50–3:00** Close: **"Codex did the engineering, GPT-5.6 did the reasoning, I approve the merge."**
-   Explicitly narrate where **Codex** and **GPT-5.6** were used (required by the rules).
+## Judging-criteria map
+
+- **Technological Implementation** — real Codex CLI engineering in a disposable, origin-stripped
+  checkout + GPT-5.6 reasoning via the Responses API (or Codex fallback), OSV.dev CVE grounding,
+  git-history root-cause, deterministic risk scoring, a tamper-evident canonical-hash evidence pack,
+  and a branch-only GitHub write path. 146 backend tests.
+- **Design** — a "mission control" dashboard and an editorial landing page (dark aurora + vanilla-light
+  themes), a scroll-driven Night-Shift pipeline, and a real in-app diff viewer. Motion is Emil-Kowalski-
+  aligned; reduced-motion respected throughout.
+- **Potential Impact** — turns "an AI touched my repo overnight" from a leap of faith into an auditable
+  morning report: verifiable receipts, reasons on every suppression, branch-only PRs a human merges.
+- **Quality of the Idea** — the novel angle is the **accountability layer** (night-shift → morning
+  report → verifiable receipts). Rivals draft fixes; few make the overnight work *auditable*.
+
+## Demo video (<3 min) — script
+
+Narrate where **Codex** (engineering) and **GPT-5.6** (reasoning) are used throughout — it's required.
+
+1. **0:00–0:18 — Hook.** Landing page: *"Your repo never sleeps alone. Umbra is an autonomous
+   engineering crew that works the night shift — and hands you a morning report you can actually
+   verify."* Scroll the **Night-Shift pipeline** once (Scan → Triage → Root-cause → Draft fix →
+   Evidence → Human gate).
+2. **0:18–1:00 — A real scan.** Dashboard → scan a public repo (e.g. `expressjs/express`). Umbra Score,
+   real **OSV** advisories, dependency map. Point at the **provider ledger**: *"every row is labelled
+   with what produced it — this is live OSV data; nothing here is faked."*
+3. **1:00–1:35 — Codex + GPT-5.6, made auditable.** Open a Watchman reasoning replay: the **Codex**-
+   drafted diff renders as a real patch (`next ^14.2.5 → ^14.2.33`); the **GPT-5.6** reasoning explains
+   why. *"Codex does the engineering, GPT-5.6 does the reasoning — and I can read the exact diff before
+   anything happens."*
+4. **1:35–2:05 — Review, then a branch-only PR.** Open the PR dialog: the diff + the deterministic
+   **Reviewer** risk verdict, side by side. Open the PR → it lands in the **PR ledger** as a receipt
+   (PR #, branch, advisory, verdict). *"Branch-only. Umbra never merges — I do."*
+5. **2:05–2:35 — Prove it.** Open the **Evidence Pack** and hit **Verify integrity** — Umbra
+   independently **recomputes** the canonical `sha256` (deterministic & reproducible) to confirm the
+   report wasn't altered. Show a triage snooze requiring a **reason**, then that reason in the
+   **audit timeline**. *"Every suppression is on the record."*
+6. **2:35–2:55 — Same engine, inside ChatGPT.** The Umbra GPT: *"Scan github.com/expressjs/express."*
+   Same live API, no rebuild.
+7. **2:55–3:00 — Close.** *"Codex did the engineering, GPT-5.6 did the reasoning, and every result is a
+   receipt I can verify. That's the night shift."*
+
+*(Fallback for a flaky network: the landing "Open a captured scan · instant" button and
+`/dashboard?proof=calhacks` replay a real captured scan with genuine Codex diffs — no live wait.)*
 
 ## README with setup / sample data / running guidance
 See [README.md](README.md) — uv setup, demo mode (zero-config sample results), live mode, env vars,

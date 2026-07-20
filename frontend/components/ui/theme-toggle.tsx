@@ -1,21 +1,32 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
 
 type Theme = "dark" | "light";
 
-/** Fixed top-right theme toggle. Persists to localStorage; the no-flash script
- *  in layout sets the initial theme before paint so there's no flicker. */
-export function ThemeToggle() {
+/** Theme toggle. Two variants:
+ *  - `fixed` (default): floats top-right. Rendered globally in layout, but hides
+ *    itself on routes that host their own inline toggle (`/` and `/dashboard*`) so
+ *    it never overlaps their top bar — the overlap was worst on mobile.
+ *  - `inline`: just the button, sized to sit inside a nav/header control cluster.
+ *  Persists to localStorage; the no-flash script in layout sets the initial theme
+ *  before paint so there's no flicker. */
+export function ThemeToggle({ variant = "fixed" }: { variant?: "fixed" | "inline" }) {
   const [theme, setTheme] = useState<Theme>("dark");
   const [mounted, setMounted] = useState(false);
+  const pathname = usePathname();
 
   useEffect(() => {
     const current = (document.documentElement.dataset.theme as Theme) || "dark";
     setTheme(current);
     setMounted(true);
   }, []);
+
+  // The fixed floater steps aside on pages that render an inline toggle in their
+  // own top bar (landing + dashboard); it stays for pages without one (e.g. privacy).
+  if (variant === "fixed" && (pathname === "/" || pathname?.startsWith("/dashboard"))) return null;
 
   const toggle = () => {
     const next: Theme = theme === "dark" ? "light" : "dark";
@@ -34,12 +45,15 @@ export function ThemeToggle() {
     }
   };
 
+  const base =
+    "grid place-items-center rounded-full border border-[color:var(--surface-border)] bg-[color:var(--surface)] backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-cyan/50";
+  const className =
+    variant === "fixed"
+      ? `fixed right-4 top-4 z-[60] h-10 w-10 sm:right-6 sm:top-6 ${base}`
+      : `h-9 w-9 ${base}`;
+
   return (
-    <button
-      onClick={toggle}
-      aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-      className="fixed right-4 top-4 z-[60] grid h-10 w-10 place-items-center rounded-full border border-[color:var(--surface-border)] bg-[color:var(--surface)] backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-cyan/50 sm:right-6 sm:top-6"
-    >
+    <button onClick={toggle} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} className={className}>
       <AnimatePresence mode="wait" initial={false}>
         {mounted && (
           <motion.span

@@ -16,8 +16,8 @@ type TrustBoundary = { clean: boolean; quarantined_count: number; scanned_source
 type VerifierCheck = { name: string; status: "pass" | "fail" | "unavailable"; detail: string; blocking: boolean };
 type Verifier = { status: "reviewable" | "blocked"; blocked: boolean; evidence_completeness: number; changed_files: string[]; secrets_found: number; checks: VerifierCheck[] };
 type ProposedChange = { package?: string; current?: string; fixed?: string; cve?: string | null; manifest?: string; ecosystem?: string };
-type CheckRowT = { command: string; status: "passed" | "failed" | "unavailable"; exit_code: number | null; output_hash: string | null; detail: string };
-type ChecksT = { ran: boolean; all_passed: boolean; results: CheckRowT[] };
+type CheckRowT = { command: string; status: "passed" | "failed" | "blocked" | "unavailable"; exit_code: number | null; output_hash: string | null; detail: string };
+type ChecksT = { ran: boolean; all_passed: boolean; enforcement: string; results: CheckRowT[] };
 type CodexConfig = { provider: string; model: string; reasoning_effort: string; config_hash: string; tests_passed_self_report: boolean | null };
 type ReceiptEnvelope = { receipt: Record<string, unknown>; canonical_hash: string; signature: string; public_key: string; algorithm: string; key_ephemeral: boolean };
 type AdmissionReport = {
@@ -85,22 +85,38 @@ function CheckRow({ ok, name, detail, muted }: { ok: boolean | null; name: strin
   );
 }
 
-export function AgentAdmission() {
+export function AgentAdmission({ repo = "", signedIn = false }: { repo?: string; signedIn?: boolean }) {
   const [fixture, setFixture] = useState(FIXTURES[0].id);
   const [running, setRunning] = useState(false);
+  const [runKind, setRunKind] = useState<"live" | "fixture" | null>(null);
+  const [showEvals, setShowEvals] = useState(false);
   const [report, setReport] = useState<AdmissionReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [receiptCheck, setReceiptCheck] = useState<string | null>(null);
   const [braked, setBraked] = useState(false);
   const [brakeNote, setBrakeNote] = useState<string | null>(null);
 
+  const repoLabel = repo.replace(/^https?:\/\//, "").replace(/^github\.com\//, "").replace(/\.git$/, "").replace(/\/$/, "");
+  const canRunLive = !!repoLabel && signedIn;
+
+  const runLive = useCallback(async () => {
+    if (!repoLabel) return;
+    setRunning(true); setRunKind("live"); setError(null); setReport(null); setReceiptCheck(null); setBraked(false); setBrakeNote(null);
+    const repoUrl = repoLabel.startsWith("http") ? repoLabel : `https://github.com/${repoLabel}`;
+    try {
+      const res = await fetch(`${API}/api/admit`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo_url: repoUrl }) });
+      if (res.status === 503) throw new Error("Live admission is disabled on this server (set UMBRA_ENABLE_LIVE_REPOS). Try a reproducible public eval below.");
+      if (!res.ok) throw new Error(`Admission failed (${res.status})`);
+      setReport(await res.json());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Admission request failed.");
+    } finally {
+      setRunning(false);
+    }
+  }, [repoLabel]);
+
   const run = useCallback(async (fixtureId: string) => {
-    setRunning(true);
-    setError(null);
-    setReport(null);
-    setReceiptCheck(null);
-    setBraked(false);
-    setBrakeNote(null);
+    setRunning(true); setRunKind("fixture"); setError(null); setReport(null); setReceiptCheck(null); setBraked(false); setBrakeNote(null);
     try {
       const res = await fetch(`${API}/api/admit`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ fixture: fixtureId }) });
       if (!res.ok) throw new Error(`Admission failed (${res.status})`);
@@ -112,15 +128,15 @@ export function AgentAdmission() {
     }
   }, []);
 
-  const brake = useCallback(async (repo: string) => {
+  const brake = useCallback(async (repoArg: string) => {
     setBraked(true);
     // Real server-side revoke: durably forces this repo's passport to Level 0 so a
     // subsequent /api/my/pr is blocked. Requires a signed-in session; on the public
-    // fixture demo (no auth) the call is rejected and we say so honestly.
+    // fixture preview (no auth) the call is rejected and we say so honestly.
     try {
-      const res = await fetch(`${API}/api/my/authority/revoke`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo, reason: "Emergency brake from dashboard" }) });
+      const res = await fetch(`${API}/api/my/authority/revoke`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo: repoArg, reason: "Emergency brake from dashboard" }) });
       if (res.ok) setBrakeNote("Authority revoked server-side — a PR for this repo is now blocked until re-admission.");
-      else if (res.status === 401) setBrakeNote("Sign in to persist a revocation server-side. (This public demo revokes the view only.)");
+      else if (res.status === 401) setBrakeNote("Sign in to persist a revocation server-side. (Public eval preview revokes the view only.)");
       else setBrakeNote(`Revoke returned ${res.status}.`);
     } catch {
       setBrakeNote("Revoke request could not reach the API.");
@@ -159,31 +175,57 @@ export function AgentAdmission() {
         <Chip tone="violet">governed autonomy</Chip>
       </div>
 
-      {/* Fixture selector + run trigger. Offline + deterministic — reproducible by anyone. */}
-      <div className="mt-5 flex flex-wrap items-center gap-2">
-        {FIXTURES.map((f) => (
+      {/* Primary action: run admission on the dashboard's selected repository (live). */}
+      <div className="mt-5 rounded-xl border border-violet/30 bg-violet/[0.06] p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-fog/70">Run on this repository</p>
+            <p className="mt-0.5 truncate font-mono text-[13px] text-cloud">{repoLabel || "— select a repository above —"}</p>
+          </div>
           <button
-            key={f.id}
-            onClick={() => setFixture(f.id)}
-            disabled={running}
-            className={`rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-50 ${fixture === f.id ? "border-violet/50 bg-violet/10" : "border-[color:var(--surface-border)] hover:border-[color:var(--surface-border-hover)]"}`}
+            onClick={runLive}
+            disabled={running || !canRunLive}
+            title={!repoLabel ? "Pick a repository first" : !signedIn ? "Sign in to run a live admission" : "Run a genuine bounded Codex admission on this repo"}
+            className="rounded-lg border border-violet/60 bg-violet/20 px-4 py-2 font-mono text-[12px] text-cloud transition-colors hover:bg-violet/30 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            <span className="block font-mono text-[11px] text-cloud">{f.label}</span>
-            <span className="block font-mono text-[9.5px] text-fog/70">{f.hint}</span>
+            {running && runKind === "live" ? "Running admission…" : "Run admission on this repository"}
           </button>
-        ))}
-        <button
-          onClick={() => run(fixture)}
-          disabled={running}
-          className="ml-auto rounded-lg border border-violet/50 bg-violet/15 px-4 py-2 font-mono text-[12px] text-cloud transition-colors hover:bg-violet/25 disabled:opacity-50"
-        >
-          {running ? "Running admission…" : "Run admission test"}
-        </button>
+        </div>
+        <p className="mt-2 font-mono text-[9.5px] leading-snug text-fog/55">
+          {signedIn
+            ? "Live run: clones a disposable checkout and (with the Codex CLI enabled) executes a genuine bounded Codex task, then enforces the contract, runs allowlisted checks in a sandbox, and issues a signed receipt."
+            : "Sign in and pick one of your repositories to run a live, Codex-backed admission. Or try a reproducible public eval below."}
+        </p>
       </div>
-      <p className="mt-2 font-mono text-[9.5px] leading-snug text-fog/55">
-        These fixtures run offline as a <span className="text-fog">deterministic policy evaluation</span> (no Codex, no network) so anyone can reproduce them. A live repository run
-        (with the Codex CLI enabled) executes a <span className="text-fog">genuine bounded Codex task</span> instead — the report labels which executor ran.
-      </p>
+
+      {/* Secondary: reproducible public evals (offline, deterministic — no auth). */}
+      <div className="mt-3">
+        <button onClick={() => setShowEvals((v) => !v)} className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fog/70 transition-colors hover:text-fog">
+          <span className={`transition-transform ${showEvals ? "rotate-90" : ""}`}>▸</span> Reproducible public evals (offline)
+        </button>
+        <AnimatePresence>
+          {showEvals && (
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+              <p className="mt-2 font-mono text-[9.5px] leading-snug text-fog/55">
+                Deterministic policy evaluation — no Codex, no network, no sign-in. Anyone (a judge, CI) can reproduce these exact outcomes.
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                {FIXTURES.map((f) => (
+                  <button
+                    key={f.id}
+                    onClick={() => { setFixture(f.id); run(f.id); }}
+                    disabled={running}
+                    className={`rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-50 ${fixture === f.id && runKind === "fixture" ? "border-violet/50 bg-violet/10" : "border-[color:var(--surface-border)] hover:border-[color:var(--surface-border-hover)]"}`}
+                  >
+                    <span className="block font-mono text-[11px] text-cloud">{f.label}</span>
+                    <span className="block font-mono text-[9.5px] text-fog/70">{f.hint}</span>
+                  </button>
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
 
       {error && <p className="mt-4 font-mono text-[12px] text-[color:var(--sev-critical)]">{error}</p>}
 
@@ -222,8 +264,8 @@ export function AgentAdmission() {
                 })}
               </div>
               {effectiveLevel >= 1 && !braked && (
-                <button onClick={() => brake(report.repo)} className="mt-3 rounded-lg border border-rose-400/40 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[color:var(--sev-critical)] transition-colors hover:bg-rose-400/10">
-                  ⦿ Emergency brake — revoke authority
+                <button onClick={() => brake(runKind === "live" ? repoLabel : report.repo)} className="mt-3 rounded-lg border border-rose-400/40 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[color:var(--sev-critical)] transition-colors hover:bg-rose-400/10">
+                  ⦿ Emergency brake — revoke authority{runKind === "fixture" ? " (preview)" : ""}
                 </button>
               )}
               {braked && (
@@ -287,9 +329,17 @@ export function AgentAdmission() {
                     ))}
                     {report.checks && report.contract.required_checks.length > 0 && (
                       <div className="mt-2 border-t border-[color:var(--surface-border)] pt-2">
-                        <span className="font-mono text-[9.5px] uppercase tracking-[0.12em] text-fog/70">required checks (executed)</span>
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-[9.5px] uppercase tracking-[0.12em] text-fog/70">required checks (executed)</span>
+                          {(() => {
+                            const enf = report.checks.enforcement;
+                            const tone = enf === "sandboxed" ? "teal" : enf === "host-restricted" ? "amber" : "fog";
+                            const label = enf === "sandboxed" ? "enforced · sandboxed" : enf === "host-restricted" ? "declared · isolation pending" : "not enforced";
+                            return <Chip tone={tone as "teal" | "amber" | "fog"}>{label}</Chip>;
+                          })()}
+                        </div>
                         {report.checks.results.map((r, i) => (
-                          <CheckRow key={i} ok={r.status === "unavailable" ? null : r.status === "passed"} name={r.command} detail={r.detail + (r.exit_code !== null ? ` · exit ${r.exit_code}` : "")} muted={r.status === "unavailable"} />
+                          <CheckRow key={i} ok={r.status === "unavailable" || r.status === "blocked" ? null : r.status === "passed"} name={r.command} detail={r.detail + (r.exit_code !== null ? ` · exit ${r.exit_code}` : "")} muted={r.status === "unavailable"} />
                         ))}
                         {!report.checks.all_passed && report.authority_level < 2 && (
                           <p className="mt-1 text-[10.5px] text-amber">Required checks did not all pass — branch-PR authority withheld (capped at analyze).</p>

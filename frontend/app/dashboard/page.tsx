@@ -633,7 +633,7 @@ export default function Dashboard() {
       {!scanning && (
         <section className="relative mt-14">
           <ZoneLabel n="02" title="Agent Admission" hint="does the agent obey this repo's rules?" />
-          <AgentAdmission />
+          <AgentAdmission repo={targetRepo} signedIn={!!me} />
         </section>
       )}
 

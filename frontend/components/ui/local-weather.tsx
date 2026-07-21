@@ -14,6 +14,7 @@ import { useEffect, useState } from "react";
 
 type Weather = { temp: number; unit: string };
 type Geo = { lat: number; lon: number; tz?: string; us?: boolean };
+type SunTimes = { sunrise: number; sunset: number }; // epoch ms
 
 async function fetchJson(url: string): Promise<Record<string, unknown> | null> {
   try {
@@ -23,6 +24,25 @@ async function fetchJson(url: string): Promise<Record<string, unknown> | null> {
     return null;
   }
 }
+
+// Day-phase icon: sunrise / sun / sunset / night, chosen from the LOCAL time
+// relative to today's actual sunrise & sunset for the viewer's coordinates. The
+// ~35-min windows around each event show the transition glyphs.
+type Phase = "sunrise" | "day" | "sunset" | "night";
+function phaseFor(now: number, sun: SunTimes | null): Phase {
+  if (!sun) {
+    // No sun data — fall back to a coarse local-hour split (still day/night aware).
+    const h = new Date(now).getHours();
+    return h >= 6 && h < 18 ? "day" : "night";
+  }
+  const edge = 35 * 60 * 1000; // 35-minute transition window
+  if (Math.abs(now - sun.sunrise) <= edge) return "sunrise";
+  if (Math.abs(now - sun.sunset) <= edge) return "sunset";
+  return now > sun.sunrise && now < sun.sunset ? "day" : "night";
+}
+const PHASE_GLYPH: Record<Phase, string> = { sunrise: "🌅", day: "☀", sunset: "🌇", night: "☾" };
+const PHASE_LABEL: Record<Phase, string> = { sunrise: "sunrise", day: "daytime", sunset: "sunset", night: "night" };
+
 
 // Resolve approximate location from the IP. Several free, no-key, CORS-enabled
 // providers are tried in order because any single one rate-limits. We accept the
@@ -50,7 +70,9 @@ async function resolveGeo(): Promise<Geo | null> {
 export function LocalWeather({ className = "" }: { className?: string }) {
   const [tz, setTz] = useState<string | undefined>(undefined);
   const [weather, setWeather] = useState<Weather | null>(null);
+  const [sun, setSun] = useState<SunTimes | null>(null);
   const [time, setTime] = useState("");
+  const [phase, setPhase] = useState<Phase>("night");
 
   useEffect(() => {
     let cancelled = false;
@@ -60,14 +82,23 @@ export function LocalWeather({ className = "" }: { className?: string }) {
       if (cancelled || !geo) return;
       if (geo.tz) setTz(geo.tz);
       const unit = geo.us ? "fahrenheit" : "celsius";
+      // One call gets current temp AND today's sunrise/sunset for the day-phase icon.
       const wx = await fetchJson(
-        `https://api.open-meteo.com/v1/forecast?latitude=${geo.lat}&longitude=${geo.lon}&current=temperature_2m&temperature_unit=${unit}`,
+        `https://api.open-meteo.com/v1/forecast?latitude=${geo.lat}&longitude=${geo.lon}&current=temperature_2m&daily=sunrise,sunset&timezone=auto&temperature_unit=${unit}`,
       );
       if (cancelled) return;
       const current = wx?.current as { temperature_2m?: number } | undefined;
       // Only render weather when it is GENUINELY sourced (a finite temperature).
-      if (current?.temperature_2m == null || !Number.isFinite(current.temperature_2m)) return;
-      setWeather({ temp: Math.round(current.temperature_2m), unit: unit === "fahrenheit" ? "°F" : "°C" });
+      if (current?.temperature_2m != null && Number.isFinite(current.temperature_2m)) {
+        setWeather({ temp: Math.round(current.temperature_2m), unit: unit === "fahrenheit" ? "°F" : "°C" });
+      }
+      // Sunrise/sunset come back as local ISO strings (timezone=auto) → epoch ms.
+      const daily = wx?.daily as { sunrise?: string[]; sunset?: string[] } | undefined;
+      const sr = daily?.sunrise?.[0], ss = daily?.sunset?.[0];
+      if (sr && ss) {
+        const sunrise = Date.parse(sr), sunset = Date.parse(ss);
+        if (Number.isFinite(sunrise) && Number.isFinite(sunset)) setSun({ sunrise, sunset });
+      }
     })();
     return () => { cancelled = true; };
   }, []);
@@ -79,15 +110,16 @@ export function LocalWeather({ className = "" }: { className?: string }) {
       } catch {
         setTime(new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date()));
       }
+      setPhase(phaseFor(Date.now(), sun));
     };
     tick();
     const id = setInterval(tick, 30_000);
     return () => clearInterval(id);
-  }, [tz]);
+  }, [tz, sun]);
 
   if (!time) return null; // nothing resolved yet — stay invisible, never block paint
 
-  const label = weather ? "Local time and weather" : "Local time";
+  const label = `${weather ? "Local time and weather" : "Local time"} · ${PHASE_LABEL[phase]}`;
   return (
     <div
       className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-1.5 font-mono text-[10.5px] text-fog sm:gap-1.5 sm:px-3 sm:text-[11px] ${className}`}
@@ -95,7 +127,7 @@ export function LocalWeather({ className = "" }: { className?: string }) {
       aria-label={label}
       title={label}
     >
-      <span className="text-[12px] leading-none text-fog/70" aria-hidden>☾</span>
+      <span className="text-[12px] leading-none text-fog/70" aria-hidden>{PHASE_GLYPH[phase]}</span>
       {weather && <span className="tabular-nums text-fog">{weather.temp}{weather.unit}</span>}
       {weather && <span className="text-fog/40" aria-hidden>·</span>}
       <span className="tabular-nums text-fog">{time}</span>

@@ -143,12 +143,12 @@ export const MacbookScroll = ({
       ref={ref}
       className="relative isolate"
       aria-hidden
-      style={{ height: "calc(clamp(520px, 72vh, 760px) + 55vh)" }}
+      style={{ height: "calc(clamp(600px, 86vh, 900px) + 50vh)" }}
     >
-      {/* Title sits ABOVE the device in normal flow (never absolutely over it), so
-          the handoff copy can't overlap the laptop screen. The stage is top-aligned
-          with a top offset that clears the nav; the device follows below with a gap. */}
-      <div className="sticky top-24 flex h-[clamp(520px,72vh,760px)] flex-col items-center justify-start gap-8 pt-10 [perspective:800px]">
+      {/* Title sits ABOVE the device in normal flow. The stage is tall enough to
+          fully CONTAIN the open composition (title + scaled lid + base) so the base
+          never spills past the stage bottom into the next section. Anchored high. */}
+      <div className="sticky top-12 flex h-[clamp(600px,86vh,900px)] flex-col items-center justify-start gap-3 pt-1 [perspective:800px]">
         <motion.div style={{ opacity: textOpacity }} className="px-4 text-center">
           {title}
         </motion.div>

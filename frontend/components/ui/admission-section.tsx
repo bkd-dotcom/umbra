@@ -34,6 +34,23 @@ const COMPARISON: { them: string; they: string; us: string }[] = [
   { them: "The coding agent itself (Codex, Devin)", they: "trusts its own output", us: "a verifier the writer can't bypass, plus a signed receipt" },
 ];
 
+// Honest capability matrix. Columns are TOOL CATEGORIES; cells reflect each
+// category's typical/default behaviour (products evolve). "yes" credits what they
+// genuinely do; "—" means "different scope", not a knock; the last column is Umbra.
+type Cell = "yes" | "partial" | "no";
+const MATRIX_COLS = ["Review bots", "Dependency bots", "Coding agents", "Umbra"] as const;
+const MATRIX: { cap: string; cells: [Cell, Cell, Cell, Cell]; wedge?: boolean }[] = [
+  { cap: "Comments / reviews a change", cells: ["yes", "no", "partial", "yes"] },
+  { cap: "Opens dependency-fix PRs", cells: ["no", "yes", "yes", "yes"] },
+  { cap: "Decides if the agent is allowed to change (fail-closed contract)", cells: ["no", "no", "no", "yes"], wedge: true },
+  { cap: "Quarantines prompt-injection on disk before the run", cells: ["no", "no", "no", "yes"], wedge: true },
+  { cap: "Independent verifier the writer can't bypass", cells: ["partial", "no", "no", "yes"], wedge: true },
+  { cap: "Verifies the bump actually clears the cited CVE", cells: ["no", "partial", "no", "yes"], wedge: true },
+  { cap: "Earned, revocable, run-bound authority (L0/L1/L2)", cells: ["no", "no", "no", "yes"], wedge: true },
+  { cap: "Ed25519-signed, independently verifiable receipt", cells: ["no", "no", "no", "yes"], wedge: true },
+  { cap: "Never auto-merges", cells: ["partial", "partial", "partial", "yes"] },
+];
+
 export function AdmissionSection() {
   const reduce = useReducedMotion();
   const [active, setActive] = useState(-1);
@@ -186,6 +203,49 @@ export function AdmissionSection() {
         </div>
       </Reveal>
 
+      {/* Capability matrix — honest cells: credits what each category does (✓),
+          "—" means different scope (not a knock). Bold rows are Umbra's wedge.
+          Scrolls horizontally on small screens so it never overflows the page. */}
+      <Reveal className="mt-6">
+        <div className="overflow-hidden rounded-2xl border border-[color:var(--surface-border)]">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[color:var(--surface-border)] bg-[color:var(--surface-2)] px-5 py-3">
+            <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-fog">Capability comparison</p>
+            <p className="font-mono text-[9.5px] text-fog/50">typical/default behaviour per category · products evolve</p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] border-collapse text-left">
+              <thead>
+                <tr className="border-b border-[color:var(--surface-border)]">
+                  <th className="px-4 py-2.5 font-mono text-[10px] uppercase tracking-[0.1em] text-fog/70">Capability</th>
+                  {MATRIX_COLS.map((c) => (
+                    <th key={c} className={`px-3 py-2.5 text-center font-mono text-[10px] uppercase tracking-[0.08em] ${c === "Umbra" ? "text-cyan" : "text-fog/70"}`}>{c}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {MATRIX.map((row) => (
+                  <tr key={row.cap} className="border-b border-[color:var(--surface-border)] last:border-0">
+                    <td className={`px-4 py-2.5 text-[12px] leading-snug ${row.wedge ? "font-medium text-cloud" : "text-fog"}`}>{row.cap}</td>
+                    {row.cells.map((cell, i) => (
+                      <td key={i} className={`px-3 py-2.5 text-center ${i === 3 ? "bg-cyan/[0.05]" : ""}`}>
+                        <CellMark cell={cell} umbra={i === 3} />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="border-t border-[color:var(--surface-border)] px-5 py-2.5">
+            <p className="font-mono text-[9.5px] leading-snug text-fog/55">
+              <span className="text-teal">✓</span> does this · <span className="text-amber">◐</span> partial ·
+              <span className="text-fog/50"> —</span> different scope (not a shortcoming). Basis: OWASP Top 10 for LLM
+              Apps 2025 (LLM01, LLM06) and each product&rsquo;s public docs.
+            </p>
+          </div>
+        </div>
+      </Reveal>
+
       {/* Why now — turns "anticipatory" into "the industry is already alarmed." */}
       <Reveal className="mt-6">
         <div className="rounded-2xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] px-5 py-4">
@@ -222,4 +282,12 @@ export function AdmissionSection() {
       </Reveal>
     </section>
   );
+}
+
+// One matrix cell: ✓ (teal) for a real capability, ◐ (amber) partial, — (muted)
+// for different scope. Umbra's column uses a brighter check to read as the answer.
+function CellMark({ cell, umbra }: { cell: "yes" | "partial" | "no"; umbra?: boolean }) {
+  if (cell === "yes") return <span className={umbra ? "font-mono text-[13px] font-semibold text-cyan" : "font-mono text-[13px] text-teal"} aria-label="yes">✓</span>;
+  if (cell === "partial") return <span className="font-mono text-[12px] text-amber" aria-label="partial">◐</span>;
+  return <span className="font-mono text-[12px] text-fog/40" aria-label="different scope">—</span>;
 }

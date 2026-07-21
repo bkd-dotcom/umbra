@@ -91,6 +91,32 @@ and [`backend/receipt.py`](backend/receipt.py).
   private repos, pick your repos in GitHub's UI) — every new PR gets an advisory review comment posted by
   the App (never merges). Setup: [docs/github-app.md](docs/github-app.md).
 
+## How Umbra differs from adjacent tools
+
+Umbra isn't another "AI reviews your PR" or "AI bumps your deps" tool — it sits one
+layer above them and decides whether an agent's change is *allowed at all*, then
+proves it. The table credits what each category genuinely does well and shows where
+Umbra adds a distinct mechanism (it reflects each category's typical/default
+behaviour; products evolve).
+
+| Capability | AI review bots (CodeRabbit / Greptile / Qodo) | Dependency bots (Dependabot / Snyk) | Coding agents (Codex / Devin) | **Umbra** |
+|---|:---:|:---:|:---:|:---:|
+| Comments / reviews a change | ✅ | — | partial | ✅ (deterministic verdict) |
+| Opens dependency-fix PRs | — | ✅ | ✅ | ✅ (branch-only) |
+| Decides if the agent is **allowed** to change — executable contract, fail-closed | — | — | — | **✅** |
+| Treats repo text as untrusted; **quarantines prompt-injection on disk before the run** | — | — | — | **✅** |
+| **Independent verifier the patch-writer can't bypass** | partial | — | — | **✅** |
+| Verifies the bump **actually clears the cited CVE** | — | partial | — | **✅** |
+| **Earned, revocable, run-bound authority** (L0 / L1 / L2 + emergency brake) | — | — | — | **✅** |
+| **Ed25519-signed, independently verifiable receipt** (vs. pinned key) | — | — | — | **✅** |
+| Runs the required checks in a preflighted sandbox; fails **closed** if unavailable | — | — | agent's own sandbox | **✅** |
+| Never auto-merges | varies | varies | varies | **✅ (never)** |
+
+The point isn't that Umbra reviews better — it's that reviewing/bumping happens
+*after* a governed admission decision that no one else in these categories makes.
+Positioning basis: OWASP Top 10 for LLM Apps 2025 (LLM01 Prompt Injection, LLM06
+Excessive Agency) and each product's public docs.
+
 ## How Codex + GPT-5.6 are used
 
 - **Codex** (`codex exec`, ChatGPT login) explores a **disposable checkout**, edits code, runs tests

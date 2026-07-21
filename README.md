@@ -140,7 +140,42 @@ finding and fix as an auditable receipt, not a claim to take on faith:
   sub-L2, or expired passport blocks the PR). `auto_merge` is never stored true. Set
   `UMBRA_REQUIRE_ADMISSION=true` for strict mode, where a repo with no passport cannot get an
   agent-created PR at all (otherwise admission governs *enrolled* repositories).
-- **Activity / audit timeline** — the shift, in order, from real durations and provider labels.
+ - **Activity / audit timeline** — the shift, in order, from real durations and provider labels.
+
+## Email reports
+
+Umbra can deliver a repository's morning report to your inbox — a compact HTML
+summary (score, findings, what Codex prepared, what still needs review) — two ways:
+
+- **On demand:** from the dashboard, "Email latest report now" sends the currently
+  saved report to your account email (`POST /api/my/reports/email`).
+- **On a schedule:** create a per-repo schedule (`POST /api/my/schedules`) and a
+  Cloud Scheduler cron hits `POST /api/cron/run-due-scans`, which runs each due
+  scan and emails the fresh report. Schedules are listable, pausable, and deletable.
+
+Delivery is intentionally honest. Sending is via **Resend**, and every schedule
+records a truthful delivery status after each run — `accepted_for_delivery` means
+*Resend accepted the message*, never a claim of inbox delivery (bounces and spam
+filtering are outside Umbra's knowledge). Other states are recorded plainly:
+`email_unavailable` (no provider/recipient configured), `email_rejected` (provider
+error), `scan_failed`, `skipped_opted_out`, `scheduled`.
+
+Every email carries a **signed one-click unsubscribe** link (`GET/POST
+/api/unsubscribe`, RFC 8058 `List-Unsubscribe` headers), so a recipient can opt out
+without signing in; the token is signed with the session secret and toggles the
+account's notifications flag. Email is entirely optional — until a provider is
+configured, sends degrade gracefully and report "email not configured" rather than
+failing. Modules: [`backend/notifications.py`](backend/notifications.py),
+[`backend/schedules.py`](backend/schedules.py); operator setup:
+[docs/scheduled-reports.md](docs/scheduled-reports.md).
+
+## Autonomy — reviews received from GitHub
+
+Beyond email, Umbra can act on inbound repository events. Install the **Umbra
+GitHub App** once and every new pull request is **received** as a webhook
+(`POST` app webhook), scanned, and answered with an advisory review comment posted
+by the App via a short-lived installation token — comment-only, never merges. See
+[docs/github-app.md](docs/github-app.md).
 
 ### Honest enforcement boundaries
 
@@ -320,6 +355,11 @@ auto-review is an **install-once GitHub App**: `GITHUB_APP_ID`, `GITHUB_APP_SLUG
 Manager). Reviews are posted by the App via a short-lived installation token — no per-repo webhooks and
 no stored user token. Full setup in [docs/github-app.md](docs/github-app.md). `GITHUB_TOKEN` is optional
 and read-only (a zero-scope token just raises the public-read rate limit).
+
+Email reports (optional): `RESEND_API_KEY` and `UMBRA_EMAIL_FROM` enable sending; leave them unset and
+scheduled/on-demand sends degrade gracefully to "email not configured". Scheduled sends run over an
+OIDC-authenticated cron — `UMBRA_SCHEDULER_OIDC_AUDIENCE` (defaults to `UMBRA_PUBLIC_URL`) is the audience
+Cloud Scheduler presents to `POST /api/cron/run-due-scans`. Setup: [docs/scheduled-reports.md](docs/scheduled-reports.md).
 
 ## Tests
 

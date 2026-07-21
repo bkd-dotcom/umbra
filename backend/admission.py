@@ -236,16 +236,26 @@ def _load_osv_fixture(repo_path: Path) -> dict[str, list[dict[str, Any]]] | None
 def _query_osv_live(package: str, version: str, ecosystem: str) -> list[dict[str, Any]]:
     """Query OSV for a single dependency (best-effort; empty on any failure)."""
     import os
+    import time
 
     import httpx
 
     base = os.getenv("OSV_API_BASE", "https://api.osv.dev/v1").rstrip("/")
-    try:
-        resp = httpx.post(f"{base}/query", json={"package": {"name": package, "ecosystem": ecosystem}, "version": version}, timeout=15)
-        resp.raise_for_status()
-        return resp.json().get("vulns", [])
-    except Exception:  # noqa: BLE001 - OSV unavailable → treat as no advisories
-        return []
+    payload = {"package": {"name": package, "ecosystem": ecosystem}, "version": version}
+    # Bounded retries with backoff so one slow/failed OSV call doesn't stall or
+    # silently drop advisories on a transient blip. Fail open to "no advisories"
+    # only after exhausting retries (honest: a scan can't invent a CVE it didn't see).
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            resp = httpx.post(f"{base}/query", json=payload, timeout=8)
+            resp.raise_for_status()
+            return resp.json().get("vulns", [])
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < 2:
+                time.sleep(0.4 * (2 ** attempt))
+    return []
 
 
 def _first_vulnerable_dependency(

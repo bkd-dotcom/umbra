@@ -5,7 +5,8 @@ import { motion } from "motion/react";
 import { Corona } from "@/components/ui/corona";
 import { OperationsBoard } from "@/components/ui/operations-board";
 import { CrewDossier } from "@/components/ui/crew-dossier";
-import { NightShiftPipeline, PIPELINE_SCENES } from "@/components/ui/night-shift-pipeline";
+import { AdmissionSection } from "@/components/ui/admission-section";
+import { NightShiftPipeline } from "@/components/ui/night-shift-pipeline";
 import { DitherImage } from "@/components/ui/dither-image";
 import { Magnetic } from "@/components/ui/magnetic-button";
 import { GlowCard } from "@/components/ui/glow-card";
@@ -20,7 +21,6 @@ import { MacbookScroll } from "@/components/ui/macbook-scroll";
 import { ChatGptThread } from "@/components/ui/chatgpt-thread";
 import { MovingBorderCard } from "@/components/ui/moving-border";
 import { HeroParallax } from "@/components/ui/hero-parallax";
-import { SectionFX } from "@/components/ui/section-fx";
 import { Spotlight } from "@/components/ui/spotlight";
 import { ChapterRail } from "@/components/ui/chapter-rail";
 import { UmbraLogo } from "@/components/ui/umbra-logo";
@@ -47,7 +47,16 @@ export default function Landing() {
   const scanHref = `/dashboard?repo=${encodeURIComponent((demoRepo.trim() || "github.com/expressjs/express").replace(/^https?:\/\//, ""))}`;
 
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 24);
+    // Guard against redundant state updates: only setState when the boolean flips,
+    // so a scroll storm doesn't re-render the tree on every wheel tick.
+    let last = false;
+    const onScroll = () => {
+      const next = window.scrollY > 24;
+      if (next !== last) {
+        last = next;
+        setScrolled(next);
+      }
+    };
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
@@ -73,9 +82,11 @@ export default function Landing() {
         <a href="/" aria-label="Umbra home" className="flex min-w-0 shrink-0 items-center rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-cyan">
           <UmbraLogo size={22} />
         </a>
-        {/* Center nav — simple hover-underline links (Aceternity-style). */}
-        <div className="hidden items-center gap-1 md:flex">
-          {([["Proof", "#evidence-locker"], ["Report", "#report"], ["Crew", "#crew"], ["Shift", "#pipeline-scan"], ["OpenAI", "#openai"]] as const).map(([label, href]) => (
+        {/* Center anchor nav — desktop only (lg / 1024px+). Hidden on tablet
+            (768–1023) so the logo, time/weather, theme, and full Sign in control
+            never crowd or clip at the right edge. */}
+        <div className="hidden items-center gap-1 lg:flex">
+          {([["Admission", "#admission"], ["Proof", "#evidence-locker"], ["Report", "#report"], ["Crew", "#crew"], ["Shift", "#pipeline"], ["OpenAI", "#openai"]] as const).map(([label, href]) => (
             <a key={href} href={href} className="group relative rounded-lg px-3 py-1.5 font-mono text-[12px] text-fog transition-colors hover:text-cloud">
               {label}
               <span className="absolute inset-x-3 -bottom-0.5 h-px origin-left scale-x-0 bg-cyan transition-transform duration-300 group-hover:scale-x-100" />
@@ -91,6 +102,17 @@ export default function Landing() {
         </div>
       </motion.nav>
 
+      {/* Mobile / tablet chapter nav (below lg) — a horizontally-scrolling labelled
+          pill row so touch users have real, discoverable navigation (the dot
+          ChapterRail alone isn't labelled). Desktop uses the centered nav above. */}
+      <nav aria-label="Sections" className="sticky top-[68px] z-30 -mx-6 mt-2 flex gap-2 overflow-x-auto px-6 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:hidden">
+        {([["Admission", "#admission"], ["Proof", "#evidence-locker"], ["Report", "#report"], ["Crew", "#crew"], ["Shift", "#pipeline"], ["OpenAI", "#openai"]] as const).map(([label, href]) => (
+          <a key={href} href={href} className="shrink-0 rounded-full border border-[color:var(--surface-border)] bg-[color:var(--surface)]/80 px-3 py-1.5 font-mono text-[11px] text-fog backdrop-blur transition-colors hover:border-cyan/40 hover:text-cloud focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan">
+            {label}
+          </a>
+        ))}
+      </nav>
+
       {/* Optional chapter progress aid — after the primary nav in DOM order so the
           real site navigation is the first landmark / tab stop. Fixed visually. */}
       <ChapterRail />
@@ -105,16 +127,16 @@ export default function Landing() {
             className="mb-7 flex flex-wrap items-center gap-2.5 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog"
           >
             <span className="h-1.5 w-1.5 rounded-full bg-cyan/70" aria-hidden />
-            <span>Autonomous night shift</span>
+            <span>Change-control plane for coding agents</span>
             <span className="text-fog/40">·</span>
-            <span className="text-violet">OpenAI reasoning — when enabled</span>
+            <span className="text-violet">Codex + GPT-5.6</span>
           </motion.div>
 
           {/* Hero headline is deliberately visible on first paint — a plain <h1>,
               no entrance animation — so screenshots, reduced-motion users, and slow
               devices always see the title immediately. */}
           <h1 className="font-serif text-[clamp(52px,8.4vw,116px)] font-normal leading-[0.92] tracking-[-0.035em] text-cloud">
-            {["Your repo never", "sleeps alone."].map((line) => (
+            {["Trust, earned", "and proven."].map((line) => (
               <span key={line} className="block overflow-hidden">
                 <span className="block pb-[0.12em]">{line}</span>
               </span>
@@ -123,9 +145,9 @@ export default function Landing() {
 
           <motion.p
             initial={false}
-            className="mt-6 max-w-[42ch] text-[clamp(17px,2.1vw,22px)] leading-snug text-cloud/75"
+            className="mt-6 max-w-[46ch] text-[clamp(17px,2.1vw,22px)] leading-snug text-cloud/75"
           >
-            An autonomous engineer you can actually trust — because every change is governed.
+            Before a coding agent is trusted <em className="not-italic text-cloud">with</em> your repo, Umbra tests whether it can be trusted <em className="not-italic text-cloud">in</em> your repo — and grants only the authority it earns.
           </motion.p>
 
           {/* Capability line — a single-run typewriter (types the setup, deletes
@@ -136,15 +158,23 @@ export default function Landing() {
             className="mt-4 max-w-[68ch] font-mono text-[clamp(13px,1.55vw,15px)] leading-relaxed text-fog"
           >
             <SingleRunTypewriter
-              first="Coding agents can change your repo."
-              final="Umbra makes every proposed change governable."
+              first="Coding agents can now change your repo."
+              final="Umbra decides how much authority each change has earned."
             />
           </motion.p>
           <motion.p
             initial={false}
             className="mt-2.5 max-w-[68ch] font-mono text-[clamp(13px,1.55vw,15px)] leading-relaxed text-fog"
           >
-            It tests whether an agent obeys <span className="text-cyan">your repository&apos;s rules</span>, then grants only the authority it <span className="text-amber">earns</span> — and proves it with a <span className="text-pink">signed receipt</span>. It <span className="text-cloud">never merges</span>.
+            An executable contract bounds the change <span className="text-fog/50">·</span> untrusted repo text is <span className="text-cyan">quarantined</span> <span className="text-fog/50">·</span> an independent verifier the writer can&apos;t bypass checks it <span className="text-fog/50">·</span> only the authority it <span className="text-amber">earns</span> is granted <span className="text-fog/50">·</span> sealed in an <span className="text-pink">Ed25519-signed receipt</span>. It <span className="text-cloud">never merges</span>.
+          </motion.p>
+
+          {/* For whom — a sharp, specific persona (not a vague "developers"). */}
+          <motion.p
+            initial={false}
+            className="mt-4 max-w-[64ch] text-[13.5px] leading-relaxed text-fog/85"
+          >
+            For the <span className="text-cloud">platform &amp; security lead</span> rolling out Codex across dozens of repos who has to prove the agent stayed in bounds.
           </motion.p>
 
           {/* Primary judge action — visible on first paint (no entrance gate), above
@@ -152,13 +182,13 @@ export default function Landing() {
               confidence path into the product. */}
           <motion.div initial={false} className="mt-7 flex flex-col items-start gap-3 sm:flex-row sm:items-center">
             <Magnetic>
-              <HoverBorderGradient href="/dashboard?proof=calhacks" className="px-7 py-3.5 text-sm font-semibold">
-                <span aria-hidden>▶</span> Open captured proof
+              <HoverBorderGradient href="/dashboard?proof=calhacks" ariaLabel="Run the Agent Admission demo — no sign-in" className="px-7 py-3.5 text-sm font-semibold whitespace-nowrap">
+                <span aria-hidden>▶</span> Run the Admission demo
               </HoverBorderGradient>
             </Magnetic>
-            <span className="font-mono text-[12px] text-teal">instant · no sign-in</span>
+            <span className="font-mono text-[12px] text-teal">judge mode · instant · no sign-in</span>
             <span className="hidden text-fog/30 sm:inline">·</span>
-            <a href="#report" className="font-mono text-[13px] text-cloud transition-colors hover:text-cyan">View morning report ↓</a>
+            <a href="#admission" className="font-mono text-[13px] text-cloud transition-colors hover:text-cyan">How admission works ↓</a>
           </motion.div>
 
           {/* Judge proof strip — what's real, at a glance. */}
@@ -219,12 +249,15 @@ export default function Landing() {
         </motion.div>
       </section>
 
+      {/* Agent Admission — the differentiator, led first (before the crew and the
+          rest of the story) so the page reads as governed autonomy, not a review bot. */}
+      <AdmissionSection />
+
       {/* The Evidence Locker — what's INSIDE a captured shift (the hero already
           owns the "open it" CTA). This section shows the receipt's contents so the
           proof reads as substance, not a second identical button. Static card:
           motion is reserved for the hero's live OperationsBoard. */}
       <section id="evidence-locker" data-chapter="Evidence Locker" className="chapter relative py-20 md:py-24">
-        <SectionFX accent="#5eead4" variant="top" />
         <Reveal variants={blurRise}>
           <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
             <span className="h-1.5 w-1.5 rounded-full bg-teal shadow-[0_0_8px_#5eead4]" /> The Evidence Locker
@@ -246,8 +279,8 @@ export default function Landing() {
               <span className="text-fog">human review required</span>
             </div>
             <div className="mt-7 border-t border-[color:var(--surface-border)] pt-6">
-              <HoverBorderGradient href="/dashboard?proof=calhacks" className="px-6 py-3.5 text-sm font-semibold">
-                Open the captured shift <span className="text-teal">→</span>
+              <HoverBorderGradient href="/dashboard?proof=calhacks" ariaLabel="Open the captured shift" className="px-6 py-3.5 text-sm font-semibold whitespace-nowrap">
+                Open captured shift <span className="text-teal">→</span>
               </HoverBorderGradient>
             </div>
           </div>
@@ -256,7 +289,7 @@ export default function Landing() {
 
       {/* The handoff — the morning report inside a MacBook that opens as you scroll.
           "You slept. They didn't." lives here and nowhere else. */}
-      <section id="report" data-chapter="Morning report" className="chapter relative">
+      <section id="report" data-chapter="Morning report" className="chapter relative isolate pt-[clamp(48px,8vw,128px)]">
         <MacbookScroll
           showGradient
           title={
@@ -275,11 +308,7 @@ export default function Landing() {
           gives this section its own "room" without an outer card frame clipping
           content — the wash lives in its own absolutely-positioned, self-clipped
           layer behind the content, never on the section that holds the text. */}
-      <section className="relative py-20 md:py-24">
-        <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden" aria-hidden>
-          <div className="absolute inset-0" style={{ background: "radial-gradient(70% 80% at 15% 0%, rgba(167,139,250,0.10), transparent 58%), linear-gradient(180deg, rgba(255,255,255,0.035), transparent)" }} />
-        </div>
-        <div className="pointer-events-none absolute right-6 top-6 hidden font-mono text-[10px] uppercase tracking-[0.28em] text-violet/40 md:block">unit manifest</div>
+      <section className="relative isolate py-[clamp(48px,8vw,128px)]">
         <HeroParallax
           heading={<h2 className="font-serif text-[clamp(28px,4vw,46px)] leading-[1.05] tracking-[-0.02em] text-cloud">Bounded specialists, one shift.</h2>}
           sub="Each works a disposable clone and files a grounded artifact — no fabrication, no auto-merge."
@@ -298,11 +327,6 @@ export default function Landing() {
           Background wash is its own self-clipped layer so no outer card frame can
           ever cut off content at any breakpoint. */}
       <section id="evidence" className="relative py-24">
-        <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden" aria-hidden>
-          <div className="absolute inset-0" style={{ background: "radial-gradient(70% 90% at 100% 0%, rgba(34,211,238,0.10), transparent 60%), linear-gradient(180deg, rgba(34,211,238,0.035), transparent)" }} />
-        </div>
-        <SectionFX accent="#22d3ee" variant="left" />
-        <div className="pointer-events-none absolute inset-0 grid-bg opacity-[0.035]" aria-hidden />
         <div className="relative z-10">
         <Reveal variants={slideLeft}>
           <p className="flex flex-wrap items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
@@ -392,9 +416,7 @@ export default function Landing() {
       </section>
 
       {/* Night crew — the main character: a classified ops file, one unit on station. */}
-      <section id="crew" data-chapter="Night crew" className="chapter relative py-24">
-        <SectionFX accent="#a78bfa" variant="right" />
-        <div className="pointer-events-none absolute left-1/2 top-16 h-56 w-56 -translate-x-1/2 rounded-full bg-violet/10 blur-[90px]" aria-hidden />
+      <section id="crew" data-chapter="Night crew" className="chapter relative isolate py-[clamp(48px,8vw,128px)]">
         <Reveal variants={scaleIn}>
           <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
             <span className="h-1.5 w-1.5 rounded-full bg-cyan shadow-[0_0_8px_#22d3ee]" /> The night crew
@@ -407,20 +429,18 @@ export default function Landing() {
         </Reveal>
       </section>
 
-      {/* The night shift, replayed — one real captured shift, broken into four
-          viewport-sized scenes (setup → detection & evidence → draft & check →
-          signed receipt & human gate). Each is its own chapter so the rail tracks
-          the real narrative beats; scrolling stays continuous (no pinned track). */}
-      {PIPELINE_SCENES.map((s, i) => (
-        <section key={s.key} id={s.key} data-chapter={s.label} className={`chapter ${s.fit ? "chapter-fit" : ""} relative py-16 md:py-20`}>
-          <NightShiftPipeline scene={i} />
-        </section>
-      ))}
+      {/* The night shift, replayed — one real captured shift as ONE connected
+          chronological timeline + console (six stages, 02:00 → 05:15). Desktop
+          pins the console and advances the active stage from native scroll
+          progress; mobile/tablet and reduced-motion render the same six stages
+          fully expanded on one connected vertical line. */}
+      <section id="pipeline" data-chapter="Night shift" className="chapter relative py-16 md:py-20">
+        <NightShiftPipeline />
+      </section>
 
       {/* How OpenAI is used — an engineering evidence panel, not a marketing block.
           Placed after the story, before the ChatGPT surface. */}
       <section id="openai" data-chapter="OpenAI evidence" className="chapter relative py-24">
-        <SectionFX accent="#34d399" variant="grid" />
         <Reveal variants={blurRise}>
           <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
             <span className="h-1.5 w-1.5 rounded-full bg-violet shadow-[0_0_8px_#a78bfa]" /> How OpenAI is used
@@ -467,7 +487,6 @@ export default function Landing() {
           to "I tested it, ship it". Each card grounds what runs TODAY before naming
           what's next, so the roadmap reads as confidence, not a wishlist. */}
       <section id="next" className="relative py-24">
-        <SectionFX accent="#38bdf8" variant="left" />
         <Reveal variants={slideLeft}>
           <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">
             <span className="h-1.5 w-1.5 rounded-full bg-teal shadow-[0_0_8px_#5eead4]" /> Where this goes next
@@ -506,10 +525,6 @@ export default function Landing() {
           so the ChatGPT window, composer, and message text can never be clipped
           by an outer rounded/overflow-hidden card frame. */}
       <section id="chatgpt" data-chapter="In ChatGPT" className="chapter relative py-24">
-        <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden" aria-hidden>
-          <div className="absolute inset-0" style={{ background: "radial-gradient(70% 80% at 100% 100%, rgba(16,163,127,0.10), transparent 58%), linear-gradient(180deg, rgba(16,163,127,0.035), transparent)" }} />
-        </div>
-        <SectionFX accent="#10a37f" variant="right" />
         <div className="pointer-events-none absolute left-6 top-6 hidden font-mono text-[10px] uppercase tracking-[0.28em] text-teal/45 md:block">gpt action surface</div>
         <Reveal variants={slideRight}>
           <p className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-fog">

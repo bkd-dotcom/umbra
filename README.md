@@ -40,15 +40,22 @@ server-side Emergency Brake to revoke it). The offline fixtures run as a determi
 policy evaluation (no Codex, no network) so anyone can reproduce them; a live repo run
 executes a genuine bounded Codex task — the report labels which executor ran.
 Try it with zero setup on the dashboard's **Agent Admission** panel (five committed,
-offline fixtures) or via the API:
+ offline fixtures) or via the API:
 
 ```bash
+# THE ONE-COMMAND PROOF (no sign-in, no network): admit a fixture + verify the signed receipt
+make judge              # → earns L2 branch-PR, then verifies the Ed25519 receipt → OK
+make judge-adversarial  # → prompt-injection redacted on disk, in-scope fix still permitted
+
 # offline, deterministic — no auth, no network (judges/CI reproduce it)
 curl -s -X POST localhost:8000/api/admit -d '{"fixture":"permitted-dependency-fix"}'      # → earns L2 branch-PR (required check ran & passed)
 curl -s -X POST localhost:8000/api/admit -d '{"fixture":"adversarial-readme-injection"}'  # → injection quarantined, fix still permitted
 curl -s -X POST localhost:8000/api/admit -d '{"fixture":"forbidden-scope-violation"}'      # → BLOCKED at L0 (out of scope)
 curl -s -X POST localhost:8000/api/admit -d '{"fixture":"failing-check-caps-authority"}'   # → capped at L1 (pre-existing check failure)
 curl -s -X POST localhost:8000/api/admit -d '{"fixture":"regression-detected"}'            # → capped at L1 (change caused a regression)
+
+# a LIVE run on an allowlisted public repo — no sign-in, rate-limited (real clone + live OSV)
+curl -s -X POST localhost:8000/api/admit/public-live -d '{"repo_url":"https://github.com/expressjs/express"}'
 
 # verify a receipt against Umbra's OWN pinned public key (proves Umbra issued it)
 curl -s localhost:8000/api/verify-key
@@ -89,7 +96,7 @@ and [`backend/receipt.py`](backend/receipt.py).
 - **Honesty ledger:** every run labels each half with what actually served it (`codex-cli` /
   `osv.dev` / `local-git` / `responses-api` / `demo-cache` / `unavailable`). Reasoning is never
   fabricated. See [docs/live-mode.md](docs/live-mode.md).
-- **Where Codex accelerated the build & the `/feedback` session ID:** see [SUBMISSION.md](SUBMISSION.md).
+- **Where Codex accelerated the build & the `/feedback` session ID:** see [docs/CODEX_USAGE.md](docs/CODEX_USAGE.md) for commit-level receipts (which Codex-authored commit built the contract, verifier, sandbox, receipts) and [SUBMISSION.md](SUBMISSION.md).
 
 ## The accountability layer (what makes Umbra different)
 

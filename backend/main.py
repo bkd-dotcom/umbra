@@ -47,6 +47,18 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     if not os.getenv("OPENAI_API_KEY") and os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true":
         # Do not raise here: health checks need to explain missing configuration.
         pass
+    # Loud warning if a security-critical secret is falling back to a dev placeholder.
+    # In local/dev/demo this is expected; in a real deploy it means receipts/sessions
+    # are signed with a known key — a reviewer should see this, not discover it silently.
+    from backend.settings import dev_secrets_in_use
+
+    dev_secrets = dev_secrets_in_use()
+    if dev_secrets and os.getenv("UMBRA_DEMO_MODE", "false").lower() != "true":
+        logging.getLogger("umbra.startup").warning(
+            "Using INSECURE dev fallbacks for: %s. Set these via Secret Manager in "
+            "production (receipts/sessions are otherwise signed with a known key).",
+            ", ".join(dev_secrets),
+        )
     yield
 
 
@@ -194,6 +206,92 @@ async def agent_admission(request: AdmissionRequest, http: Request) -> dict[str,
     user = http.session.get("user")
     if user:
         _persist_authority(user, report)
+    return report
+
+
+# --- Judge-triggerable public LIVE admission -------------------------------------
+# A hard-capped endpoint so a judge can watch admission run against a REAL public
+# repo with a live clone + live OSV — with no sign-in and no risk of spending the
+# founder's Codex credits (allow_codex is never granted here, so the executor is a
+# deterministic policy evaluation, labelled honestly). Rate-limited per-IP and
+# globally so it can't be used to burn resources.
+_PUBLIC_LIVE_ALLOWLIST = {
+    "github.com/expressjs/express",
+    "github.com/pallets/flask",
+    "github.com/psf/requests",
+    "github.com/lodash/lodash",
+    "github.com/axios/axios",
+}
+_PUBLIC_LIVE_HITS: dict[str, list[float]] = {}
+_PUBLIC_LIVE_PER_IP_HOUR = 3
+_PUBLIC_LIVE_GLOBAL_HOUR = 30
+
+
+def _client_ip(request: Request) -> str:
+    # Only trust X-Forwarded-For when we're explicitly behind a known proxy
+    # (UMBRA_TRUST_PROXY=true, e.g. Cloud Run / a load balancer). Otherwise the
+    # header is attacker-controlled and would let anyone mint a fresh rate-limit
+    # bucket per request, so we use the real socket peer instead.
+    if os.getenv("UMBRA_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes"}:
+        fwd = request.headers.get("x-forwarded-for")
+        if fwd:
+            return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _public_live_rate_ok(ip: str) -> tuple[bool, str]:
+    import time
+
+    now = time.time()
+    window = 3600.0
+    for key in list(_PUBLIC_LIVE_HITS):
+        _PUBLIC_LIVE_HITS[key] = [t for t in _PUBLIC_LIVE_HITS[key] if now - t < window]
+        if not _PUBLIC_LIVE_HITS[key]:
+            _PUBLIC_LIVE_HITS.pop(key, None)
+    total = sum(len(v) for v in _PUBLIC_LIVE_HITS.values())
+    if total >= _PUBLIC_LIVE_GLOBAL_HOUR:
+        return False, "The shared live-demo budget is used up for this hour — try a reproducible offline fixture instead (no wait, no limit)."
+    if len(_PUBLIC_LIVE_HITS.get(ip, [])) >= _PUBLIC_LIVE_PER_IP_HOUR:
+        return False, f"You've used your {_PUBLIC_LIVE_PER_IP_HOUR} live runs this hour — the offline fixtures reproduce the same pipeline with no limit."
+    _PUBLIC_LIVE_HITS.setdefault(ip, []).append(now)
+    return True, ""
+
+
+class PublicLiveRequest(BaseModel):
+    repo_url: str = Field(description="A public repo from the demo allowlist to run a live admission against")
+
+
+@app.get("/api/admit/public-live/repos", tags=["agents"])
+async def public_live_repos() -> dict[str, object]:
+    """The allowlist of public repos a judge can run a live admission against."""
+    return {"repos": sorted(_PUBLIC_LIVE_ALLOWLIST), "per_ip_per_hour": _PUBLIC_LIVE_PER_IP_HOUR}
+
+
+@app.post("/api/admit/public-live", tags=["agents"])
+async def public_live_admission(request: PublicLiveRequest, http: Request) -> dict[str, object]:
+    """Run a LIVE admission (real clone + live OSV) on an allowlisted public repo —
+    no sign-in, rate-limited. Never spends founder Codex credits, so the executor
+    is a deterministic policy evaluation (labelled honestly in the report). For a
+    genuine Codex-authored diff, judges open the captured proof scan or a founder
+    runs the signed-in live path."""
+    if not live_repositories_enabled():
+        raise HTTPException(status_code=503, detail="Live repositories are disabled on this server. Use a reproducible offline fixture instead.")
+    owner_repo = _validate_repo(request.repo_url)
+    normalized = f"github.com/{owner_repo}"
+    if normalized not in _PUBLIC_LIVE_ALLOWLIST:
+        raise HTTPException(status_code=400, detail=f"Only these public repos are enabled for the live demo: {', '.join(sorted(_PUBLIC_LIVE_ALLOWLIST))}.")
+    ok, msg = _public_live_rate_ok(_client_ip(http))
+    if not ok:
+        raise HTTPException(status_code=429, detail=msg)
+    try:
+        # token=None → public clone; no founder credits → deterministic executor.
+        report = await orchestrator.admit(normalized, token=None)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Live admission failed: {exc}") from exc
     return report
 
 

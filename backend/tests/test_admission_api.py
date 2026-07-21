@@ -71,3 +71,47 @@ def test_admit_path_traversal_rejected():
 
 def test_admit_requires_input():
     assert client.post("/api/admit", json={}).status_code == 422
+
+
+# --- Judge-triggerable public LIVE admission (rate-limited, allowlisted) ----------
+
+def test_public_live_repos_list():
+    r = client.get("/api/admit/public-live/repos")
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body["repos"], list) and len(body["repos"]) >= 3
+    assert body["per_ip_per_hour"] >= 1
+
+
+def test_public_live_rejects_non_allowlisted_repo(monkeypatch):
+    import backend.main as m
+
+    # Force live enabled so we reach the allowlist check (not the 503 gate).
+    monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
+    m._PUBLIC_LIVE_HITS.clear()
+    r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/some/random-repo"})
+    assert r.status_code == 400
+    assert "enabled for the live demo" in r.json()["detail"]
+
+
+def test_public_live_rate_limited(monkeypatch):
+    import backend.main as m
+
+    monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
+    m._PUBLIC_LIVE_HITS.clear()
+    # Saturate the GLOBAL hourly budget so the next call is 429 regardless of IP,
+    # before any clone happens.
+    now = __import__("time").time()
+    m._PUBLIC_LIVE_HITS["10.0.0.1"] = [now] * m._PUBLIC_LIVE_GLOBAL_HOUR
+    r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/expressjs/express"})
+    assert r.status_code == 429
+    m._PUBLIC_LIVE_HITS.clear()
+
+
+def test_public_live_disabled_returns_503(monkeypatch):
+    import backend.main as m
+
+    monkeypatch.setattr(m, "live_repositories_enabled", lambda: False)
+    m._PUBLIC_LIVE_HITS.clear()
+    r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/expressjs/express"})
+    assert r.status_code == 503

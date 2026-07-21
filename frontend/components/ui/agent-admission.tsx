@@ -135,6 +135,24 @@ export function AgentAdmission({ repo = "", signedIn = false }: { repo?: string;
     }
   }, []);
 
+  // Judge-triggerable LIVE run on an allowlisted public repo — no sign-in,
+  // rate-limited server-side. A real clone + live OSV; the executor is a
+  // deterministic policy evaluation (never spends Codex credits), labelled honestly.
+  const runPublicLive = useCallback(async (repoUrl: string) => {
+    setRunning(true); setRunKind("live"); setError(null); setReport(null); setReceiptCheck(null); setBraked(false); setBrakeNote(null);
+    try {
+      const res = await fetch(`${API}/api/admit/public-live`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo_url: repoUrl }) });
+      if (res.status === 429) { const b = await res.json().catch(() => ({})); throw new Error(b.detail || "Rate limit reached — try a reproducible offline fixture (no limit)."); }
+      if (res.status === 503) throw new Error("Live repos are disabled on this server. Try a reproducible offline fixture below.");
+      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.detail || `Live admission failed (${res.status})`); }
+      setReport(await res.json());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Live admission request failed.");
+    } finally {
+      setRunning(false);
+    }
+  }, []);
+
   const brake = useCallback(async (repoArg: string) => {
     setBraked(true);
     // Real server-side revoke: durably forces this repo's passport to Level 0 so a
@@ -201,7 +219,34 @@ export function AgentAdmission({ repo = "", signedIn = false }: { repo?: string;
         <p className="mt-2 font-mono text-[9.5px] leading-snug text-fog/55">
           {signedIn
             ? "Live run: clones a disposable checkout and (with the Codex CLI enabled) executes a genuine bounded Codex task, then enforces the contract, runs allowlisted checks in a sandbox, and issues a signed receipt."
-            : "Sign in and pick one of your repositories to run a live, Codex-backed admission. Or try a reproducible public eval below."}
+            : "Sign in and pick one of your repositories to run a live, Codex-backed admission. Or try a live public repo or a reproducible eval below."}
+        </p>
+      </div>
+
+      {/* Judge-triggerable LIVE run on an allowlisted public repo — no sign-in,
+          rate-limited. Real clone + live OSV; executor is deterministic (no Codex
+          credits spent), labelled honestly in the report. */}
+      <div className="mt-3 rounded-xl border border-cyan/25 bg-cyan/[0.05] p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded-full border border-cyan/40 bg-cyan/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-cyan">Live · no sign-in</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fog/70">Run a live admission on a public repo</span>
+        </div>
+        <div className="mt-2.5 flex flex-wrap gap-2">
+          {["expressjs/express", "pallets/flask", "psf/requests", "lodash/lodash", "axios/axios"].map((slug) => (
+            <button
+              key={slug}
+              onClick={() => runPublicLive(`https://github.com/${slug}`)}
+              disabled={running}
+              className="rounded-lg border border-cyan/30 bg-[color:var(--surface)] px-3 py-1.5 font-mono text-[11px] text-cloud transition-colors hover:border-cyan/50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {running && runKind === "live" ? "running…" : slug}
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 font-mono text-[9.5px] leading-snug text-fog/55">
+          A real clone + live OSV against the chosen repo. Rate-limited (3/hour). The executor is a deterministic policy
+          evaluation — no Codex credits are spent — and the report labels it honestly. For a genuine Codex-authored diff,
+          open the captured proof scan or run the signed-in live path.
         </p>
       </div>
 
@@ -271,9 +316,14 @@ export function AgentAdmission({ repo = "", signedIn = false }: { repo?: string;
                 })}
               </div>
               {effectiveLevel >= 1 && !braked && (
-                <button onClick={() => brake(runKind === "live" ? repoLabel : report.repo)} className="mt-3 rounded-lg border border-rose-400/40 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[color:var(--sev-critical)] transition-colors hover:bg-rose-400/10">
-                  ⦿ Emergency brake — revoke authority{runKind === "fixture" ? " (preview)" : ""}
-                </button>
+                <div className="mt-3">
+                  <button onClick={() => brake(runKind === "live" ? repoLabel : report.repo)} className="rounded-lg border border-rose-400/40 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[color:var(--sev-critical)] transition-colors hover:bg-rose-400/10">
+                    ⦿ Emergency brake — revoke authority{runKind === "fixture" ? " (preview)" : ""}
+                  </button>
+                  {runKind === "fixture" && (
+                    <p className="mt-1.5 font-mono text-[9.5px] leading-snug text-fog/55">On this offline preview the brake revokes the view only. Signed in on a live run, it persists server-side and blocks that repo&rsquo;s PR route until re-admission.</p>
+                  )}
+                </div>
               )}
               {braked && (
                 <div className="mt-3">

@@ -70,9 +70,11 @@ def test_analyze_is_disabled_without_the_flag(monkeypatch):
 
 def test_codex_sandbox_override_replaces_landlock_mode(monkeypatch, tmp_path: Path):
     # On gVisor (Cloud Run) Codex's own sandbox can't init, so the deploy overrides it.
+    # The unsafe mode now requires an explicit second opt-in flag.
     monkeypatch.setenv("UMBRA_ENABLE_CODEX_CLI", "true")
     monkeypatch.setenv("UMBRA_DEMO_MODE", "false")
     monkeypatch.setenv("UMBRA_CODEX_SANDBOX", "danger-full-access")
+    monkeypatch.setenv("UMBRA_ALLOW_UNSAFE_CODEX", "true")
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     captured: list[str] = []
     def runner(command, **_kwargs):
@@ -86,6 +88,7 @@ def test_codex_sandbox_bypass_uses_dedicated_flag(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("UMBRA_ENABLE_CODEX_CLI", "true")
     monkeypatch.setenv("UMBRA_DEMO_MODE", "false")
     monkeypatch.setenv("UMBRA_CODEX_SANDBOX", "bypass")
+    monkeypatch.setenv("UMBRA_ALLOW_UNSAFE_CODEX", "true")
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     captured: list[str] = []
     def runner(command, **_kwargs):
@@ -94,6 +97,24 @@ def test_codex_sandbox_bypass_uses_dedicated_flag(monkeypatch, tmp_path: Path):
     CodexClient(runner=runner).propose("Fix it", repo_path=tmp_path)
     assert "--dangerously-bypass-approvals-and-sandbox" in captured
     assert "--sandbox" not in captured
+
+
+def test_codex_unsafe_sandbox_ignored_without_optin(monkeypatch, tmp_path: Path):
+    # Without the explicit UMBRA_ALLOW_UNSAFE_CODEX opt-in, an unsafe override is
+    # ignored and Codex falls back to a safe sandbox mode (never runs unsandboxed
+    # by accident from a leaked/mis-set env var).
+    monkeypatch.setenv("UMBRA_ENABLE_CODEX_CLI", "true")
+    monkeypatch.setenv("UMBRA_DEMO_MODE", "false")
+    monkeypatch.setenv("UMBRA_CODEX_SANDBOX", "bypass")
+    monkeypatch.delenv("UMBRA_ALLOW_UNSAFE_CODEX", raising=False)
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    captured: list[str] = []
+    def runner(command, **_kwargs):
+        captured.extend(command)
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+    CodexClient(runner=runner).propose("Fix it", repo_path=tmp_path)
+    assert "--dangerously-bypass-approvals-and-sandbox" not in captured
+    assert captured[captured.index("--sandbox") + 1] == "workspace-write"
 
 
 def test_codex_failure_surfaces_reason(monkeypatch, tmp_path: Path):

@@ -185,7 +185,23 @@ class CodexClient:
         container itself is the isolation boundary. Unset → today's safe defaults.
         """
         override = os.getenv("UMBRA_CODEX_SANDBOX", "").strip().lower()
-        if override in {"read-only", "workspace-write", "danger-full-access", "bypass"}:
+        unsafe = {"danger-full-access", "bypass"}
+        if override in unsafe:
+            # The unsafe modes disable Codex's own sandbox — only honor them behind an
+            # explicit second flag so an accidental/leaked UMBRA_CODEX_SANDBOX can't
+            # silently run the agent unsandboxed. Log loudly on every invocation.
+            if os.getenv("UMBRA_ALLOW_UNSAFE_CODEX", "").strip().lower() not in {"1", "true", "yes"}:
+                logging.getLogger("umbra.codex").warning(
+                    "UMBRA_CODEX_SANDBOX=%s ignored: set UMBRA_ALLOW_UNSAFE_CODEX=true to enable "
+                    "the unsandboxed mode (falling back to a safe default).", override,
+                )
+                return "read-only" if read_only else "workspace-write"
+            logging.getLogger("umbra.codex").warning(
+                "Codex running with sandbox=%s (UNSANDBOXED) — the container is the only "
+                "isolation boundary. Enabled via UMBRA_ALLOW_UNSAFE_CODEX.", override,
+            )
+            return override
+        if override in {"read-only", "workspace-write"}:
             return override
         return "read-only" if read_only else "workspace-write"
 

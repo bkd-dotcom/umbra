@@ -101,18 +101,18 @@ def _profile_allowed(cmd: str) -> bool:
 
 
 def _scrubbed_env() -> dict[str, str]:
-    """Minimal env with secrets removed — enough for npm/pytest to find a toolchain."""
+    """Minimal env with secrets removed — enough for npm/pytest to find a toolchain.
+
+    This is an ALLOWLIST, not a denylist: only the toolchain vars below are copied
+    from the parent environment, so nothing else (API keys, tokens, cloud creds)
+    can leak into an untrusted check by construction. `_SECRET_FRAGMENTS` is used by
+    the caller for defense-in-depth logging, not here.
+    """
     keep = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "NODE_PATH", "PYTHONPATH", "SHELL")
-    env: dict[str, str] = {}
-    for k in keep:
-        if k in os.environ:
-            env[k] = os.environ[k]
-    # Defensive: never carry anything that looks like a credential.
-    for k, v in os.environ.items():
-        if k in env:
-            continue
-        if any(frag in k.upper() for frag in _SECRET_FRAGMENTS):
-            continue
+    env: dict[str, str] = {k: os.environ[k] for k in keep if k in os.environ}
+    # Defense-in-depth: drop any allowlisted var whose NAME still looks credential-like
+    # (belt-and-suspenders against a future edit adding a risky name to `keep`).
+    env = {k: v for k, v in env.items() if not any(frag in k.upper() for frag in _SECRET_FRAGMENTS)}
     env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
     # Signal to well-behaved tools that this is an isolated, offline check.
     env["CI"] = "1"

@@ -24,6 +24,7 @@ import { DiffView } from "@/components/ui/diff-view";
 import { AgentAdmission } from "@/components/ui/agent-admission";
 import { PROOF_SCAN, PROOF_REPO, PROOF_CAPTURED_AT } from "@/lib/proof-scan";
 import { EASE } from "@/lib/motion";
+import { useModalA11y } from "@/lib/use-modal-a11y";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const creds: RequestInit = { credentials: "include" };
@@ -221,6 +222,9 @@ export default function Dashboard() {
   const [prList, setPrList] = useState<PrRecord[]>([]);
   const [onboardDismissed, setOnboardDismissed] = useState(false);
   const stepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const elapsedTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const scanAbort = useRef<AbortController | null>(null);
+  const [elapsed, setElapsed] = useState(0);
 
   // Onboarding guide dismissal persists across reloads (client-only; read after
   // mount so there's no hydration mismatch).
@@ -336,23 +340,38 @@ export default function Dashboard() {
     const url = normalizeRepoUrl(target ?? repoUrl);
     if (scanning || !url) return;
     if (target && target !== repoUrl) setRepoUrl(target);
-    setScanning(true); setScanError(null); setResult(null); setStep(0); setViewingSaved(null); setCapturedAt(null);
+    setScanning(true); setScanError(null); setResult(null); setStep(0); setElapsed(0); setViewingSaved(null); setCapturedAt(null);
     scrollToTop();
-    stepTimer.current = setInterval(() => setStep((s) => Math.min(s + 1, SCAN_STEPS.length - 1)), 1400);
+    // The step checklist advances on a slow cadence but is CAPPED at the second-to-last
+    // step until the real response arrives — so the UI never claims "report assembled"
+    // before the backend actually returns. A live elapsed timer shows real progress of
+    // time, and the scan is cancellable.
+    stepTimer.current = setInterval(() => setStep((s) => Math.min(s + 1, SCAN_STEPS.length - 2)), 2200);
+    elapsedTimer.current = setInterval(() => setElapsed((e) => e + 1), 1000);
+    const controller = new AbortController();
+    scanAbort.current = controller;
     try {
-      const res = await fetch(`${API}/api/scan`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo_url: url, model, reasoning_effort: effort, agents: crew === "quick" ? ["watchman"] : undefined }) });
+      const res = await fetch(`${API}/api/scan`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", signal: controller.signal, body: JSON.stringify({ repo_url: url, model, reasoning_effort: effort, agents: crew === "quick" ? ["watchman"] : undefined }) });
       if (!res.ok) throw new Error(`scan returned ${res.status}`);
       const data: ScanResult = await res.json();
+      setStep(SCAN_STEPS.length - 1); // only now is the report actually assembled
       setResult(data);
       // Persist the FULL report so this scan can be re-opened later without re-scanning.
       fetch(`${API}/api/my/scans`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo_full_name: repoFullName(url), umbra_score: data.umbra_score, source: data.source ?? "demo-cache", vuln_count: (data.vulnerabilities ?? []).length, report: data }) }).then(loadHistory).catch(() => {});
     } catch (e) {
-      setScanError((e as Error).message);
+      if ((e as Error).name === "AbortError") setScanError("Scan cancelled.");
+      else setScanError((e as Error).message);
     } finally {
       if (stepTimer.current) clearInterval(stepTimer.current);
+      if (elapsedTimer.current) clearInterval(elapsedTimer.current);
+      scanAbort.current = null;
       setScanning(false);
     }
   }, [repoUrl, scanning, loadHistory, model, effort, crew]);
+
+  const cancelScan = useCallback(() => {
+    scanAbort.current?.abort();
+  }, []);
 
   // Open the bundled captured proof scan instantly (no backend round-trip) so a
   // judge sees a working scan without the ~90s live wait. The JSON is genuine scan
@@ -511,6 +530,9 @@ export default function Dashboard() {
 
   return (
     <main className="relative mx-auto min-h-screen w-full max-w-[1240px] px-6 pb-24 md:px-10">
+      {/* Accessible page title — visually hidden (the CommandHeader carries the brand
+          visually) but present as the single <h1> for screen readers and SEO. */}
+      <h1 className="sr-only">Umbra — Mission Control: govern and prove every coding-agent change</h1>
       {/* Backdrop — a faint operational grid + one subtle spotlight on the current
           shift. No animated beams; mission control reads calm, dense, legible. */}
       <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden" aria-hidden>
@@ -559,7 +581,7 @@ export default function Dashboard() {
           <GuestScanBar repoUrl={repoUrl} setRepoUrl={setRepoUrl} scanning={scanning} onRun={() => launchScan()} />
         )}
         <ScanOptions model={model} setModel={setModel} effort={effort} setEffort={setEffort} crew={crew} setCrew={setCrew} />
-        <ApiStatus up={apiUp} />
+        <ApiStatus up={apiUp} onOpenCaptured={openCaptured} />
         {me && <AutoReviewPanel appInfo={appInfo} installs={appInstalls} />}
         {scanError && <p className="mt-3 font-mono text-xs text-[color:var(--sev-critical)]">Scan unavailable: {scanError}{guest ? " — showing the sample shift below." : ""}</p>}
 
@@ -568,7 +590,13 @@ export default function Dashboard() {
           {scanning && (
             <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
               <GlowCard className="mt-5 p-6">
-                <p className="mb-4 font-mono text-[11px] uppercase tracking-[0.16em] text-cyan">Running · {repoFullName(repoUrl)}</p>
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-cyan">Running · {repoFullName(repoUrl)}</p>
+                  <div className="flex items-center gap-3">
+                    <span className="font-mono text-[11px] tabular-nums text-fog" aria-live="polite">{Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")} elapsed</span>
+                    <button onClick={cancelScan} className="rounded-lg border border-[color:var(--surface-border)] px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-fog transition-colors hover:border-rose-400/50 hover:text-cloud">Cancel</button>
+                  </div>
+                </div>
                 <div className="flex flex-col gap-2.5">
                   {SCAN_STEPS.map((s, i) => (
                     <div key={s} className="flex items-center gap-3 text-sm">
@@ -579,6 +607,7 @@ export default function Dashboard() {
                     </div>
                   ))}
                 </div>
+                <p className="mt-3 font-mono text-[10px] leading-snug text-fog/60">Live work — a full crew scan can take a few minutes on a cold clone. The last step completes only when the real report returns.</p>
               </GlowCard>
             </motion.div>
           )}
@@ -820,6 +849,7 @@ type Phase = "idle" | "scanning" | "done";
 function AuthLoading() {
   return (
     <main className="mx-auto min-h-screen w-full max-w-[1240px] px-6 py-24 md:px-10">
+      <h1 className="sr-only">Umbra — Mission Control (loading)</h1>
       <div className="flex items-center gap-3"><Skeleton className="h-9 w-9 rounded-full" /><Skeleton className="h-4 w-40" /></div>
       <Skeleton className="mt-10 h-12 w-80" />
       <Skeleton className="mt-4 h-4 w-[36ch]" />
@@ -1083,7 +1113,7 @@ function ZoneLabel({ n, title, hint }: { n: string; title: string; hint?: string
 // Backend reachability indicator. When the API is unreachable a scan fails with a
 // bare "Failed to fetch"; this makes the fix explicit (and only shows the local
 // :8000 command when the client is actually pointed at localhost).
-function ApiStatus({ up }: { up: boolean | null }) {
+function ApiStatus({ up, onOpenCaptured }: { up: boolean | null; onOpenCaptured?: () => void }) {
   if (up === null) return null; // still probing
   if (up) {
     return (
@@ -1105,6 +1135,17 @@ function ApiStatus({ up }: { up: boolean | null }) {
           <pre className="mt-1.5 overflow-x-auto rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-3 py-2 font-mono text-[10.5px] leading-relaxed text-cloud">uv run uvicorn backend.main:app --reload   # http://localhost:8000</pre>
         </>
       )}
+      {/* Even with the API down, the bundled captured proof scan renders fully
+          client-side — so a judge is never left with a dead dashboard. */}
+      {onOpenCaptured && (
+        <button
+          type="button"
+          onClick={onOpenCaptured}
+          className="mt-2.5 inline-flex items-center gap-2 rounded-full border border-teal/40 bg-teal/10 px-3 py-1.5 font-mono text-[11px] text-teal transition-colors hover:bg-teal/20"
+        >
+          ▶ Open the captured proof scan instead <span className="text-teal/70">· works offline</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -1115,15 +1156,15 @@ function ApiStatus({ up }: { up: boolean | null }) {
 // sees the "For judges" onboarding card or its captured-scan shortcut.
 function JudgePath({ onOpenCaptured }: { onOpenCaptured: () => void }) {
   const steps = [
-    ["01", "Run a public repo scan", "Live, OSV-grounded findings from any open-source repo — or open a captured scan below for instant proof."],
+    ["01", "Run the Agent Admission Test", "The differentiator — Zone 02 below. Run a fixture (permitted → forbidden → capped) to watch the pipeline decide the authority a change earns, then verify the signed receipt."],
     ["02", "Read the Provider Ledger", "Every output labelled live / cache / unavailable — never fabricated."],
-    ["03", "Open an agent replay", "Open any agent replay to inspect its recorded prompt, provider, and proposed diff when available."],
+    ["03", "Open a captured scan or agent replay", "A real captured scan for instant proof, plus recorded prompt / provider / proposed diff per agent."],
   ] as const;
   return (
     <GlowCard className="mt-4 mb-5 p-5">
       <div className="mb-3.5 flex flex-wrap items-center gap-2">
         <span className="rounded-full border border-cyan/40 bg-cyan/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-cyan">For judges</span>
-        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-fog">A 30-second path through the proof</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-fog">A 30-second path through the proof — no sign-in</span>
       </div>
       <div className="grid gap-3 sm:grid-cols-3">
         {steps.map(([n, title, body]) => (
@@ -1146,6 +1187,16 @@ function JudgePath({ onOpenCaptured }: { onOpenCaptured: () => void }) {
           ▶ Open a captured scan <span className="text-teal/70">· instant, no wait</span>
         </button>
         <span className="font-mono text-[10.5px] leading-snug text-fog/70">A real scan of {PROOF_REPO} — 26 live OSV advisories + Codex-proposed diffs, captured {PROOF_CAPTURED_AT}.</span>
+      </div>
+      {/* Same engine, inside ChatGPT — judges can import the live Action directly. */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-[color:var(--surface-border)] pt-3.5">
+        <span className="rounded-full border border-violet/40 bg-violet/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-violet">Also in ChatGPT</span>
+        <span className="font-mono text-[10.5px] leading-snug text-fog/80">
+          Same live API as a GPT Action — import{" "}
+          <a href="/openapi-actions.yaml" className="text-cloud underline decoration-dotted underline-offset-2 hover:text-cyan">/openapi-actions.yaml</a>{" "}
+          (auth: None) and ask &ldquo;Scan github.com/expressjs/express&rdquo;. Manifest:{" "}
+          <a href="/.well-known/ai-plugin.json" className="text-cloud underline decoration-dotted underline-offset-2 hover:text-cyan">ai-plugin.json</a>.
+        </span>
       </div>
     </GlowCard>
   );
@@ -1986,6 +2037,7 @@ function PrDialog({ target, repo, diff, diffs, model, effort, onClose, onOpened 
   const [preview, setPreview] = useState<PrPreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const { dialogProps } = useModalA11y(!!target, onClose, "Open a pull request");
 
   // For a Codex fix, reuse the patch Watchman already produced in the scan (the
   // diff on screen): applying it opens a PR in seconds with no second Codex run.
@@ -2050,11 +2102,12 @@ function PrDialog({ target, repo, diff, diffs, model, effort, onClose, onOpened 
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
           <motion.div
             data-lenis-prevent
-            className="relative max-h-[86vh] w-[min(520px,100%)] overflow-auto rounded-3xl border border-[color:var(--surface-border)] bg-ink-2/95 p-7"
+            {...dialogProps}
+            className="relative max-h-[86vh] w-[min(520px,100%)] overflow-auto rounded-3xl border border-[color:var(--surface-border)] bg-ink-2/95 p-7 outline-none"
             initial={{ opacity: 0, scale: 0.95, y: 16 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96 }} transition={{ duration: 0.28, ease: EASE }}
             onClick={(e) => e.stopPropagation()}
           >
-            <button onClick={onClose} className="absolute right-5 top-4 text-2xl text-fog hover:text-cloud">×</button>
+            <button onClick={onClose} aria-label="Close dialog" className="absolute right-5 top-4 text-2xl text-fog hover:text-cloud">×</button>
             <h3 className="mb-1 font-serif text-2xl">Open a pull request</h3>
             <p className="mb-4 text-[13px] text-fog">Umbra opens PRs only — it never merges, and only ever touches a new <span className="font-mono">umbra/…</span> branch. The Reviewer scores the exact change first.</p>
             {status === "done" && result ? (
@@ -2729,7 +2782,7 @@ function ByoKeyPanel({ user, keyInput, setKeyInput, onSave, onRemove, saving }: 
           <button onClick={onRemove} className="shrink-0 rounded-xl border border-[color:var(--surface-border)] px-4 py-2.5 text-xs text-fog transition-colors hover:border-rose-400/50 hover:text-cloud">Remove key</button>
         ) : (
           <div className="flex shrink-0 items-center gap-2">
-            <input value={keyInput} onChange={(e) => setKeyInput(e.target.value)} type="password" placeholder="sk-…" className="w-52 rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-3 py-2.5 font-mono text-[13px] outline-none focus:border-cyan/50" />
+            <input value={keyInput} onChange={(e) => setKeyInput(e.target.value)} type="password" autoComplete="off" spellCheck={false} placeholder="sk-…" aria-label="OpenAI API key" className="w-52 rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-3 py-2.5 font-mono text-[13px] outline-none focus:border-cyan/50" />
             <StatefulButton loading={saving} disabled={!keyInput.startsWith("sk-")} onClick={onSave}>Connect</StatefulButton>
           </div>
         )}
@@ -2739,6 +2792,8 @@ function ByoKeyPanel({ user, keyInput, setKeyInput, onSave, onRemove, saving }: 
 }
 
 function ReplayModal({ replay, onClose }: { replay: Replay | null; onClose: () => void }) {
+  const { dialogProps } = useModalA11y(!!replay, onClose, replay ? `${replay.agent} reasoning replay` : "Reasoning replay");
+  const { ref, ...aria } = dialogProps;
   return (
     <AnimatePresence>
       {replay && (
@@ -2746,11 +2801,13 @@ function ReplayModal({ replay, onClose }: { replay: Replay | null; onClose: () =
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
           <motion.article
             data-lenis-prevent
-            className="relative max-h-[86vh] w-[min(680px,100%)] overflow-auto rounded-3xl border border-[color:var(--surface-border)] bg-ink-2/95 p-7"
+            ref={ref as unknown as React.Ref<HTMLElement>}
+            {...aria}
+            className="relative max-h-[86vh] w-[min(680px,100%)] overflow-auto rounded-3xl border border-[color:var(--surface-border)] bg-ink-2/95 p-7 outline-none"
             initial={{ opacity: 0, scale: 0.95, y: 16 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96 }} transition={{ duration: 0.32, ease: EASE }}
             onClick={(e) => e.stopPropagation()}
           >
-            <button onClick={onClose} className="absolute right-5 top-4 text-2xl text-fog hover:text-cloud">×</button>
+            <button onClick={onClose} aria-label="Close replay" className="absolute right-5 top-4 text-2xl text-fog hover:text-cloud">×</button>
             <h2 className="mb-5 font-serif text-2xl">{replay.agent} · reasoning replay</h2>
             {(() => {
               // Show ONE honest state per half instead of repeating the same raw

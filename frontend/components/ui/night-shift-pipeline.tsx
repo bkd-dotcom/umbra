@@ -1,7 +1,13 @@
 "use client";
 
-import { useMemo } from "react";
-import { motion } from "motion/react";
+import { useMemo, useRef, useState } from "react";
+import {
+  AnimatePresence,
+  motion,
+  useMotionValueEvent,
+  useReducedMotion,
+  useScroll,
+} from "motion/react";
 import { EASE } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { PROOF_SCAN, PROOF_REPO } from "@/lib/proof-scan";
@@ -22,13 +28,27 @@ import { ScoreDial } from "@/components/ui/score-dial";
 import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
 
 /* -----------------------------------------------------------------------------
-   Night Shift Pipeline — a sticky, scroll-driven replay of Umbra's six-stage
-   night shift, driven ENTIRELY by a real captured scan (PROOF_SCAN by default).
+   Night Shift Pipeline — ONE connected six-stage timeline + console, driven
+   ENTIRELY by a real captured scan (PROOF_SCAN by default). Replaces the old
+   six-separate-"Operations Monitor"-window layout: there is now exactly one
+   console frame, one connected rail joining all six stage nodes, and one
+   evidence body that cross-fades between the six real StagePanel renderers.
 
-   A numbered left rail tracks the active stage with a scroll-linked progress beam
-   that warms cyan → violet → amber (02:00 → 06:00). A single persistent "Umbra
-   console" on the right cross-swaps its body per stage:
-     01 Scan · 02 Triage · 03 Root cause · 04 Draft fix · 05 Evidence · 06 Gate
+   Desktop (lg+, motion allowed): <ScrollConsole/> — a tall scroll track wraps
+   a CSS `sticky`-pinned console. Native scroll progress (useScroll on the
+   track + useMotionValueEvent) selects the active stage; there is no wheel
+   interception, no synthetic progress bar, no scroll-jacking — the browser
+   still owns scroll entirely. Past stages render checked/filled, the current
+   stage is accent-emphasized, future stages stay hollow/subdued, but the rail
+   always shows all six.
+
+   Mobile/tablet, and universally under reduced-motion: <ExpandedTimeline/> —
+   the same six nodes on one connected vertical line, each with its real
+   evidence panel stacked directly beneath it, in document flow. Nothing is
+   ever hidden by viewport or motion preference.
+
+   A `scene` prop remains for back-compat (single-stage editorial mode used
+   by earlier call sites) but the landing now renders the connected timeline.
 
    HONESTY: every number, advisory, provider label and diff line comes from the
    real result. Provider pills are labelled by the single-sourced statusFor /
@@ -36,9 +56,9 @@ import { HoverBorderGradient } from "@/components/ui/hover-border-gradient";
    (e.g. Detective git-blame in the captured shift) is chipped SAMPLE, never LIVE.
 
    PERF/A11Y: transform + opacity + colour only (no layout/filter thrash, no
-   filter:blur on text). Under reduced-motion OR below lg, the whole pinned path
-   is replaced by <StaticStack/> — all six stages rendered as plain DOM so the
-   global reduced-motion transform-kill can never hide content.
+   filter:blur on text). The connected rail is a semantic <ol>; reduced-motion
+   and mobile paths render every stage's evidence as plain DOM, so the global
+   reduced-motion transform-kill can never hide content.
 ----------------------------------------------------------------------------- */
 
 type Line = { kind: "ctx" | "del" | "add"; text: string };
@@ -241,14 +261,296 @@ export function NightShiftPipeline({
     );
   }
 
-  // Full mode (unused by the landing now): a natural static stack of all stations.
-  // The old pinned h-[560vh] scroll-transform track was removed — it fought Lenis
-  // and forced a multi-viewport chapter. This keeps a single honest fallback.
+  // Default / connected mode: ONE operations console holding a single connected
+  // six-stage rail (02:00 → 05:15). Desktop pins the console (CSS `sticky`) and
+  // advances the active stage from native scroll progress — no wheel capture, no
+  // artificial progress bar, no scroll-jacking. Mobile/tablet — and everyone
+  // under reduced-motion — get the same console with the timeline fully
+  // expanded in one connected vertical flow, every stage's real evidence
+  // already visible, in order.
   return (
     <div className={cn("relative", className)}>
       <Intro mode={mode} />
-      <StaticStack D={D} mode={mode} />
+      <NightShiftConnected D={D} mode={mode} />
     </div>
+  );
+}
+
+/* ------------------------- Connected timeline console ---------------------- */
+/* One operations console, one connected rail, six stages, always all present.
+   - Desktop (lg+, motion allowed): the section scrolls past a `sticky`-pinned
+     console; scroll progress (useScroll + useMotionValueEvent) selects the
+     active stage. Past stages render filled + checked, the active stage is the
+     accent-emphasized node with its real evidence cross-fading in via
+     AnimatePresence, future stages stay hollow/subdued. This is CSS-sticky
+     positioning read against native scroll — no wheel interception.
+   - Mobile/tablet or reduced-motion (any width): the console renders the fully
+     expanded chronological timeline — all six nodes on one connected vertical
+     line, each with its evidence stacked directly beneath it, no pinning, no
+     scroll-linked state, nothing hidden. */
+function NightShiftConnected({ D, mode }: { D: Derived; mode: Mode }) {
+  const reduce = useReducedMotion();
+
+  if (reduce) {
+    return (
+      <ConsoleChrome subtitle="full shift · reduced motion">
+        <ExpandedTimeline D={D} mode={mode} animate={false} />
+      </ConsoleChrome>
+    );
+  }
+
+  // Same connected system on every viewport: one sticky active-stage console whose
+  // active stage advances with scroll. Desktop shows a vertical rail beside the
+  // evidence; mobile shows a compact horizontal rail above it. Never a long stack
+  // of separate cards.
+  return <ScrollConsole D={D} mode={mode} />;
+}
+
+/** Shared console chrome: one dark operator-screen frame — status dot, real
+ *  repo target, and the shift's time span. A visual container only (no nav,
+ *  no fake controls); the connected rail + real evidence render inside. */
+function ConsoleChrome({ children, subtitle, clock }: { children: React.ReactNode; subtitle: string; clock?: string }) {
+  return (
+    <div
+      className="overflow-hidden rounded-xl border shadow-[var(--shadow-card)]"
+      style={{ borderColor: "var(--surface-border)", background: "var(--color-ink-2)" }}
+    >
+      {/* macOS-style window title bar — three traffic-light controls + centered
+          window title. A visual window frame only (the controls are decorative). */}
+      <div
+        className="relative flex items-center gap-x-2.5 border-b px-4 py-2.5"
+        style={{ borderColor: "var(--surface-border)", background: "var(--surface-2)" }}
+      >
+        <span className="flex shrink-0 items-center gap-2" aria-hidden>
+          <span className="h-3 w-3 rounded-full bg-[#ff5f57]" />
+          <span className="h-3 w-3 rounded-full bg-[#febc2e]" />
+          <span className="h-3 w-3 rounded-full bg-[#28c840]" />
+        </span>
+        {/* Centered window title (absolute so the traffic lights don't shift it). */}
+        <span className="pointer-events-none absolute inset-x-0 mx-auto flex min-w-0 items-center justify-center gap-2 px-24">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan shadow-[0_0_8px_#22d3ee]" aria-hidden />
+          <span className="min-w-0 truncate font-mono text-[11px] text-cloud" translate="no">{PROOF_REPO}</span>
+          <span className="hidden min-w-0 truncate font-mono text-[10px] text-fog md:inline">· {subtitle}</span>
+        </span>
+        <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-fog/70">
+          02:00 → 05:15{clock ? ` · now ${clock}` : ""}
+        </span>
+      </div>
+      <div className="min-w-0 p-4 sm:p-6">{children}</div>
+    </div>
+  );
+}
+
+/** Pinned console (all viewports): a tall scroll track wraps a `sticky` console
+ *  frame offset below the sticky nav. Native scroll progress over the track
+ *  selects the active stage — pure CSS-sticky + scroll position, no wheel capture,
+ *  no synthetic progress bar. Desktop: vertical rail beside evidence. Mobile: a
+ *  compact horizontal rail above the evidence, in the SAME console (not a stack). */
+function ScrollConsole({ D, mode }: { D: Derived; mode: Mode }) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const { scrollYProgress } = useScroll({ target: trackRef, offset: ["start start", "end end"] });
+  const [active, setActive] = useState(0);
+
+  useMotionValueEvent(scrollYProgress, "change", (v) => {
+    const idx = Math.min(STAGES.length - 1, Math.max(0, Math.floor(v * STAGES.length)));
+    setActive((prev) => (prev === idx ? prev : idx));
+  });
+
+  const stage = STAGES[active];
+
+  return (
+    // Each stage gets ~75vh of scroll so advancing/reversing through the six shifts
+    // feels like a normal, unhurried scroll (roughly one comfortable viewport per
+    // stage) rather than snapping between cards.
+    <div ref={trackRef} className="relative" style={{ height: `${STAGES.length * 75}vh` }}>
+      {/* top offset clears the sticky nav (nav bottom ≈ 71px); nothing begins under it. */}
+      <div className="sticky top-[80px] sm:top-20 lg:top-24">
+        <ConsoleChrome subtitle="live scroll position" clock={stage.time}>
+          {/* Mobile: compact horizontal connected rail above the evidence. */}
+          <ConsoleRailCompact current={active} />
+          <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[200px_minmax(0,1fr)] lg:gap-8">
+            {/* Desktop: vertical connected rail beside the evidence. */}
+            <div className="hidden lg:block">
+              <ConsoleRail current={active} />
+            </div>
+            {/* Evidence body — cross-fade WITHOUT mode="wait": the outgoing stage
+                stays rendered (absolutely layered) until the incoming one is in, so
+                the console is never blank mid-transition. A stable min-height keeps
+                the shell height steady through the fade. */}
+            <div className="relative min-w-0 min-h-[520px] sm:min-h-[480px] lg:min-h-[440px]">
+              <AnimatePresence initial={false}>
+                <motion.div
+                  key={active}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.32, ease: EASE }}
+                  className="absolute inset-0"
+                >
+                  <StageHeading stage={stage} />
+                  <StagePanel index={active} D={D} mode={mode} />
+                </motion.div>
+              </AnimatePresence>
+            </div>
+          </div>
+        </ConsoleChrome>
+      </div>
+    </div>
+  );
+}
+
+/** Compact horizontal connected rail for mobile/tablet: six connected numbered
+ *  dots with the (short) time under each — NO stage names on the rail, so nothing
+ *  is ever truncated and it never scrolls horizontally. The active stage's FULL
+ *  name is shown on the line above and again in the console heading below. Past =
+ *  filled+checked, current = accent, future = subdued; all six always visible. */
+function ConsoleRailCompact({ current }: { current: number }) {
+  const cur = STAGES[current];
+  return (
+    <div className="mb-4 lg:hidden">
+      {/* Active stage, full name — never abbreviated. */}
+      <div className="mb-2.5 flex items-baseline gap-2">
+        <span className="font-mono text-[10px] tabular-nums text-fog">{String(current + 1)} / {STAGES.length}</span>
+        <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.12em]" style={{ color: cur.accent }}>{cur.rail}</span>
+        <span className="ml-auto font-mono text-[10px] tabular-nums text-fog/70">{cur.time}</span>
+      </div>
+      <ol aria-label="Night shift timeline" className="flex items-start gap-0">
+        {STAGES.map((s, i) => {
+          const state = i < current ? "past" : i === current ? "current" : "future";
+          return (
+            <li key={s.n} className="flex min-w-0 flex-1 flex-col items-center" aria-current={state === "current" ? "step" : undefined} title={`${s.time} · ${s.rail}`}>
+              <div className="flex w-full items-center">
+                <span className="h-px flex-1" style={{ background: i === 0 ? "transparent" : i <= current ? `${STAGES[i].accent}66` : "var(--surface-2)" }} aria-hidden />
+                <span
+                  aria-hidden
+                  className="grid h-[20px] w-[20px] shrink-0 place-items-center rounded-full border-2 font-mono text-[9px] transition-colors duration-300"
+                  style={{
+                    background: state === "current" ? s.accent : state === "past" ? `${s.accent}26` : "transparent",
+                    borderColor: state === "future" ? "var(--surface-border)" : s.accent,
+                    color: state === "current" ? "var(--color-ink)" : s.accent,
+                    boxShadow: state === "current" ? `0 0 10px ${s.accent}` : "none",
+                  }}
+                >
+                  {state === "past" ? "✓" : String(s.n)}
+                </span>
+                <span className="h-px flex-1" style={{ background: i === STAGES.length - 1 ? "transparent" : i < current ? `${STAGES[i + 1].accent}66` : "var(--surface-2)" }} aria-hidden />
+              </div>
+              {/* Time only (5 chars) — always fits, never truncated. */}
+              <span
+                className="mt-1 font-mono text-[8.5px] tabular-nums"
+                style={{ color: state === "current" ? cur.accent : "var(--color-fog)", opacity: state === "future" ? 0.6 : 1 }}
+              >
+                {s.time}
+              </span>
+              {/* Accessible full stage name for SR/keyboard users (visually hidden). */}
+              <span className="sr-only">{s.rail}</span>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+/** The connected rail for the desktop pinned console: one vertical line joining
+ *  all six stage nodes. Past = filled + checked (visibly completed), current =
+ *  accent-emphasized, future = hollow/subdued — but ALL six stay present at all
+ *  times (nothing is ever hidden by scroll position). */
+function ConsoleRail({ current }: { current: number }) {
+  return (
+    <ol aria-label="Night shift timeline" className="relative flex flex-col">
+      {STAGES.map((s, i) => {
+        const state = i < current ? "past" : i === current ? "current" : "future";
+        return (
+          <li key={s.n} className="relative flex gap-3 pb-8 last:pb-0" aria-current={state === "current" ? "step" : undefined}>
+            {i < STAGES.length - 1 && (
+              <span
+                aria-hidden
+                className="absolute left-[9px] top-5 h-[calc(100%-0.6rem)] w-px"
+                style={{ background: state === "future" ? "var(--surface-2)" : `${s.accent}55` }}
+              />
+            )}
+            <span
+              aria-hidden
+              className="relative z-10 mt-0.5 grid h-[19px] w-[19px] shrink-0 place-items-center rounded-full border-2 font-mono text-[10px] transition-colors duration-300"
+              style={{
+                background: state === "current" ? s.accent : state === "past" ? `${s.accent}26` : "transparent",
+                borderColor: state === "future" ? "var(--surface-border)" : s.accent,
+                color: state === "current" ? "var(--color-ink)" : s.accent,
+                boxShadow: state === "current" ? `0 0 10px ${s.accent}` : "none",
+              }}
+            >
+              {state === "past" ? "✓" : String(s.n)}
+            </span>
+            <div className="min-w-0 pt-0.5">
+              <div
+                className="font-mono text-[10px] tabular-nums"
+                style={{ color: state === "future" ? "var(--color-fog)" : "var(--color-cloud)", opacity: state === "future" ? 0.55 : 1 }}
+              >
+                {s.time}
+              </div>
+              <div
+                className="font-mono text-[11px] font-semibold uppercase tracking-[0.1em]"
+                style={{ color: state === "current" ? s.accent : state === "future" ? "var(--color-fog)" : "var(--color-cloud)", opacity: state === "future" ? 0.6 : 1 }}
+              >
+                {s.rail}
+              </div>
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** Stage number/label/description/time header shown above the active stage's
+ *  evidence in the pinned console. Purely informational. */
+function StageHeading({ stage }: { stage: Stage }) {
+  return (
+    <div className="mb-3 flex flex-wrap items-baseline gap-3">
+      <span className="font-serif text-2xl leading-none" style={{ color: stage.accent }}>{String(stage.n).padStart(2, "0")}</span>
+      <div className="min-w-0">
+        <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-cloud">{stage.rail}</div>
+        <div className="font-mono text-[11px] text-fog">{stage.desc}</div>
+      </div>
+      <span className="ml-auto font-mono text-[10px] tabular-nums text-fog/70">{stage.time}</span>
+    </div>
+  );
+}
+
+/** Fully expanded, one-connected-line timeline: all six stages on a single
+ *  vertical rail, each with its real evidence stacked directly beneath it, in
+ *  chronological order. Used on mobile/tablet, and universally under
+ *  reduced-motion — never hidden, no scroll coupling, no nested scrollers
+ *  (the diff panel's intentional horizontal scroller is the one accepted
+ *  exception, unchanged from the existing evidence renderers). */
+function ExpandedTimeline({ D, mode, animate }: { D: Derived; mode: Mode; animate: boolean }) {
+  return (
+    <ol aria-label="Night shift timeline — full shift" className="relative flex flex-col gap-9">
+      {STAGES.map((s, i) => (
+        <li key={s.n} className="relative min-w-0 pl-9">
+          {i < STAGES.length - 1 && (
+            <span aria-hidden className="absolute left-[9px] top-6 bottom-[-2.25rem] w-px" style={{ background: "var(--surface-2)" }} />
+          )}
+          <span
+            aria-hidden
+            className="absolute left-0 top-0 grid h-[19px] w-[19px] place-items-center rounded-full border-2 font-mono text-[10px]"
+            style={{ background: `${s.accent}26`, borderColor: s.accent, color: s.accent }}
+          >
+            ✓
+          </span>
+          <div className="flex flex-wrap items-baseline gap-2">
+            <span className="font-mono text-[10px] tabular-nums text-fog/80">{s.time}</span>
+            <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-cloud">{s.rail}</span>
+            <span className="font-mono text-[10px] text-fog/60">{String(s.n).padStart(2, "0")} / 06</span>
+          </div>
+          <p className="mt-0.5 max-w-[52ch] font-mono text-[11px] leading-relaxed text-fog">{s.desc}</p>
+          <div className="mt-3 min-w-0">
+            <StagePanel index={i} D={D} mode={mode} still={!animate} />
+          </div>
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -748,27 +1050,6 @@ function GatePanel({ D, still }: { D: Derived; still: boolean }) {
       <HoverBorderGradient href="/dashboard?proof=calhacks" className="self-start px-5 py-3 text-sm font-semibold">
         Open the captured shift <span className="text-teal">→</span>
       </HoverBorderGradient>
-    </div>
-  );
-}
-
-/* --------------------- Static fallback (mobile + reduced-motion) ------------ */
-function StaticStack({ D, mode }: { D: Derived; mode: Mode }) {
-  return (
-    <div className="mt-2 flex flex-col gap-5">
-      {STAGES.map((s, i) => (
-        <article key={s.n} className="rounded-2xl border p-5 shadow-[var(--shadow-card)]" style={{ borderColor: "var(--surface-border)", background: "var(--surface)" }}>
-          <div className="mb-3 flex items-baseline gap-3">
-            <span className="font-serif text-2xl leading-none" style={{ color: s.accent }}>{String(s.n).padStart(2, "0")}</span>
-            <div>
-              <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-cloud">{s.rail}</div>
-              <div className="font-mono text-[11px] text-fog">{s.desc}</div>
-            </div>
-            <span className="ml-auto font-mono text-[10px] tabular-nums text-fog/70">{s.time}</span>
-          </div>
-          <StagePanel index={i} D={D} mode={mode} still />
-        </article>
-      ))}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { MotionValue, motion, useReducedMotion, useScroll, useTransform } from "motion/react";
 import { cn } from "@/lib/utils";
 import {
@@ -24,37 +24,18 @@ import {
   IconCaretDownFilled,
 } from "@tabler/icons-react";
 
-/* A real Aceternity/Fey-style MacBook. The screen is a pre-rendered PNG
-   (public/morning-report.png, natural 4:3) so it never distorts. Whole thing
-   is aria-hidden (decorative); the surrounding section carries the real copy.
+/* Faithful adaptation of Aceternity's official "Macbook Scroll" component
+   (registry: @aceternity/macbook-scroll). The hierarchy and transform mapping are
+   the official ones — outer scale-gated scene (0.35 → 1), Lid = a folded-back
+   panel plus an absolutely-positioned screen that unfolds about its top hinge
+   (rotateX) and scales forward while translating, over a `-z-10` Base keyboard
+   sibling. Only the CONTENT is substituted for Umbra: the screen shows the
+   morning-report image, the closed-lid logo is Umbra's mark, and the base is dark
+   by default (Umbra uses a data-theme system, so the original `dark:` class never
+   fires — the dark value is applied directly). Interaction is unchanged.
 
-   The device (screen + keyboard deck) is a fixed-size "canvas" (NATIVE_W ×
-   NATIVE_H, matching the original pixel-perfect artwork) rendered inside a
-   <ScaledCanvas> that measures its own container width via ResizeObserver and
-   applies ONE uniform `transform: scale()` — never separate x/y scales, so
-   nothing ever distorts, and the reserved layout height always matches the
-   visual size exactly (no dead space, no reflow surprises).
-
-   Two render paths, chosen ONCE on mount via matchMedia (never guessed from
-   viewport width alone, since a phone can request "desktop site" and report a
-   wide innerWidth while still being a coarse-pointer touch device):
-
-   - SAFE STATIC (default on first paint / SSR, and permanent for touch/coarse
-     pointer, <1024px, or prefers-reduced-motion): a stable, NON-sticky, fully
-     open device at its natural aspect ratio. The keyboard/base is always
-     rendered directly beneath the screen in normal document flow — nothing
-     scales it away, clips it, or hides it behind the screen.
-
-   - CINEMATIC (only min-width:1024px AND hover:hover AND pointer:fine AND no
-     reduced-motion): the Fey/Aceternity scroll pattern — the report image grows
-     forward out of the display while the keyboard remains a normal, visible
-     sibling. It has a single bounded track and never uses negative z-index. */
-
-const NATIVE_W = 512; // 32rem canvas — matches the source artwork's proportions
-const NATIVE_SCREEN_H = 384; // 4:3 aspect, matching morning-report.png (2048×1536)
-const NATIVE_BASE_H = 336; // keyboard deck height (21rem, unchanged from original)
-const HINGE_OVERLAP = 6; // tiny cosmetic seam only — never enough to cover a key
-
+   Reduced-motion renders a stable, fully-open, coherent device with the report
+   readable and no scroll-linked transforms. */
 export const MacbookScroll = ({
   src = "/morning-report.png",
   showGradient,
@@ -66,288 +47,127 @@ export const MacbookScroll = ({
   title?: string | React.ReactNode;
   badge?: React.ReactNode;
 }) => {
-  const reduce = useReducedMotion();
-  // Default to the SAFE static path on first render/SSR — a phone requesting
-  // "desktop site" has a coarse pointer and must land here, never in cinema.
-  const [cinema, setCinema] = useState(false);
-
-  useEffect(() => {
-    if (reduce) return; // reduced-motion always gets the static fully-open device
-    const mq = window.matchMedia("(min-width: 1024px) and (hover: hover) and (pointer: fine)");
-    const update = () => setCinema(mq.matches);
-    update();
-    mq.addEventListener("change", update);
-    return () => mq.removeEventListener("change", update);
-  }, [reduce]);
-
-  if (cinema && !reduce) return <MacbookCinematic src={src} showGradient={showGradient} title={title} badge={badge} />;
-  return <MacbookStatic src={src} title={title} badge={badge} />;
-};
-
-/** Measures its own rendered width and scales a fixed-size canvas to fit it
- *  uniformly (one scale factor, never separate x/y — no distortion). The
- *  wrapper's height is set to the exact scaled height, so there is never any
- *  leftover dead space below the device. */
-function ScaledCanvas({
-  nativeWidth,
-  nativeHeight,
-  maxWidth,
-  className,
-  children,
-}: {
-  nativeWidth: number;
-  nativeHeight: number;
-  /** A bounded display width keeps a complete device in the cinematic viewport. */
-  maxWidth?: number;
-  className?: string;
-  children: React.ReactNode;
-}) {
-  const outerRef = useRef<HTMLDivElement>(null);
-  const [scale, setScale] = useState(1);
-
-  useLayoutEffect(() => {
-    const el = outerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect.width ?? nativeWidth;
-      setScale(w > 0 ? Math.min(1, w / nativeWidth) : 1);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [nativeWidth]);
-
-  return (
-    <div
-      ref={outerRef}
-      className={cn("relative w-full", className)}
-      style={{ maxWidth: maxWidth ? `${maxWidth}px` : undefined, height: nativeHeight * scale }}
-    >
-      <div style={{ width: nativeWidth, height: nativeHeight, transform: `scale(${scale})`, transformOrigin: "top left" }}>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------- Safe static -------------------------------
-   Non-sticky, natural document flow. The screen sits fully open at its
-   natural 4:3 aspect ratio; the base is a normal sibling directly beneath it
-   in the same fixed-size canvas — always visible, never scaled away, never
-   z-hidden, never off-screen. */
-function MacbookStatic({
-  src,
-  title,
-  badge,
-}: {
-  src: string;
-  title?: string | React.ReactNode;
-  badge?: React.ReactNode;
-}) {
   const ref = useRef<HTMLDivElement>(null);
   const reduce = useReducedMotion();
-  // Touch/coarse-pointer devices deliberately avoid the desktop's pinned lid
-  // rotation: it caused the keyboard to crop on short mobile viewports. This
-  // remains a fully assembled device, but now has a small document-scroll
-  // reveal so the handoff still feels responsive rather than inert.
-  const { scrollYProgress } = useScroll({ target: ref, offset: ["start 88%", "start 38%"] });
-  const revealY = useTransform(scrollYProgress, [0, 1], [26, 0]);
-  const revealScale = useTransform(scrollYProgress, [0, 1], [0.955, 1]);
-
-  return (
-    <motion.div
-      ref={ref}
-      className="relative flex flex-col items-center py-10"
-      aria-label="Morning Report product preview"
-      style={reduce ? undefined : { y: revealY, scale: revealScale }}
-    >
-      {title && <div className="mb-8 px-4 text-center md:mb-10">{title}</div>}
-      <ScaledCanvas
-        nativeWidth={NATIVE_W}
-        nativeHeight={NATIVE_SCREEN_H + NATIVE_BASE_H - HINGE_OVERLAP}
-        className="mx-auto max-w-[26rem] md:max-w-[32rem]"
-      >
-        <div aria-hidden style={{ width: NATIVE_W }}>
-          {/* Screen — fully open, natural aspect ratio, no fold/rotate. */}
-          <div className="relative rounded-2xl bg-[#0a0a0c] p-2" style={{ width: NATIVE_W, height: NATIVE_SCREEN_H }}>
-            <div className="absolute inset-0 rounded-lg bg-[#0a0a0c]" />
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={src} alt="" className="absolute inset-0 h-full w-full rounded-lg object-cover object-left-top" />
-          </div>
-          {/* Base — directly beneath, in normal flow, always fully visible. */}
-          <div style={{ marginTop: -HINGE_OVERLAP }}>
-            <Base badge={badge} />
-          </div>
-        </div>
-      </ScaledCanvas>
-    </motion.div>
-  );
-}
-
-/* ------------------------------- Cinematic ---------------------------------
-   Desktop, fine-pointer, hover-capable only. The report grows out of the
-   display over one bounded sticky track, following the Aceternity/Fey pattern.
-   The keyboard is a normal visible sibling rather than a negative-z layer. */
-function MacbookCinematic({
-  src,
-  showGradient,
-  title,
-  badge,
-}: {
-  src: string;
-  showGradient?: boolean;
-  title?: string | React.ReactNode;
-  badge?: React.ReactNode;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
   const { scrollYProgress } = useScroll({
     target: ref,
-    offset: ["start start", "end end"],
+    offset: ["start start", "end start"],
   });
 
-  // The actual Fey/Aceternity interaction: the report begins contained by the
-  // display, then scales forward and out of it while the keyboard stays put.
-  // This is intentionally not a lid-opening animation. The effect gets enough
-  // scroll room to read clearly, but is restricted to desktop fine pointers.
-  const screenScaleX = useTransform(scrollYProgress, [0, 0.55], [1.16, 1.5]);
-  const screenScaleY = useTransform(scrollYProgress, [0, 0.55], [0.62, 1.5]);
-  const screenY = useTransform(scrollYProgress, [0, 1], [0, -92]);
-  const rotate = useTransform(scrollYProgress, [0.08, 0.14, 0.55], [-28, -28, 0]);
-  const textOpacity = useTransform(scrollYProgress, [0, 0.6, 0.82], [1, 1, 0]);
-  const textY = useTransform(scrollYProgress, [0, 0.85], [0, -24]);
+  // Viewport tier — the raw registry values are desktop-only; mobile/tablet need
+  // their own scale + (much smaller) translate so the report stays attached to the
+  // laptop rather than flying ~1500px away. Desktop mapping is unchanged.
+  const [tier, setTier] = useState<"mobile" | "tablet" | "desktop">("desktop");
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const compute = () => {
+      const w = window.innerWidth;
+      setTier(w < 768 ? "mobile" : w < 1024 ? "tablet" : "desktop");
+    };
+    compute();
+    window.addEventListener("resize", compute);
+    return () => window.removeEventListener("resize", compute);
+  }, []);
 
+  // Final scale of the open screen. Desktop is pinned (no lift), so the scale must
+  // fit the sticky stage below the nav without the tall open screen clipping above
+  // the viewport — 1.25 reads large and premium while staying fully in frame.
+  const finalScale = tier === "desktop" ? 1.25 : tier === "tablet" ? 1.35 : 1.2;
+  // Desktop lifts the screen far (official). On small screens we PIN the device in
+  // a sticky stage instead (below), so there is NO lift — the report never drifts
+  // up behind the sticky nav and never leaves the device context.
+  const liftPx = 0;
+
+  // All tiers now PIN the device in a sticky stage sized to the open composition and
+  // open it IN PLACE (scale + un-rotate), with NO upward lift. This guarantees the
+  // laptop/report never translates out of its own section into the next one — the
+  // screen finishes opening and holds, then the sticky releases cleanly into the
+  // following section. Desktop keeps its larger scale/scene; only the runaway lift
+  // that pushed the open screen into Crew is removed.
+  const openEnd = tier === "desktop" ? 0.38 : 0.4;
+  const scaleX = useTransform(scrollYProgress, [0, openEnd], [1.2, finalScale]);
+  const scaleY = useTransform(scrollYProgress, [0, openEnd], [0.6, finalScale]);
+  const translate = useTransform(scrollYProgress, [0, openEnd], [0, liftPx]);
+  const rotate = useTransform(scrollYProgress, [0.1 * (openEnd / 0.3), 0.12 * (openEnd / 0.3), openEnd], [-28, -28, 0]);
+  const textOpacity = useTransform(scrollYProgress, [0, 0.2], [1, 0]);
+
+  // Reduced-motion: a stable, fully-open device (no pinned track, no scroll
+  // transforms) — the lid sits open at rest and the report is fully readable.
+  if (reduce) {
+    return (
+      <div className="flex shrink-0 scale-[0.6] flex-col items-center justify-start py-8 [perspective:800px] sm:scale-75 md:scale-100 md:py-20" aria-hidden>
+        {title && <div className="mb-8 text-center">{title}</div>}
+        <StaticLid src={src} />
+        <BaseArea showGradient={showGradient} badge={badge} />
+      </div>
+    );
+  }
+
+  // --- Mobile / tablet (<1024px): PINNED stage --------------------------------
+  // A short track with a `sticky` stage cleared below the 80px nav. The stage is
+  // sized to the laptop/report COMPOSITION (not the viewport), has NO background of
+  // its own (the shared document background shows through — no dark rectangle), and
+  // the pin travel is only long enough to play the open. The open completes
+  // (openEnd≈0.4) just before the sticky releases, so the final report is fully
+  // visible and Crew follows with normal clamp spacing — no dead panel, no gap.
+  if (tier !== "desktop") {
+    return (
+      <div
+        ref={ref}
+        className="relative isolate"
+        aria-hidden
+        // Track = stage height (fits composition) + a short pin travel (40vh).
+        style={{ height: "calc(clamp(340px, 52vh, 560px) + 40vh)" }}
+      >
+        <div className="sticky top-[80px] flex h-[clamp(340px,52vh,560px)] flex-col items-center justify-center [perspective:800px]">
+          <motion.div style={{ opacity: textOpacity }} className="mb-6 px-4 text-center">
+            {title}
+          </motion.div>
+          <div className="flex scale-[0.6] flex-col items-center sm:scale-[0.78]">
+            <Lid src={src} scaleX={scaleX} scaleY={scaleY} rotate={rotate} translate={translate} />
+            <BaseArea showGradient={showGradient} badge={badge} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // --- Desktop (≥1024px): PINNED stage (same open-in-place mechanic as small
+  // screens, at the larger desktop scale). The device opens in a sticky stage and
+  // the sticky RELEASES into the next section — the open screen no longer lifts
+  // 1500px into Crew. The lid still scales/un-rotates exactly as before; only the
+  // runaway upward translate is gone. Stage height fits the open composition; the
+  // track adds a modest pin travel so the open plays over real scroll, then clears.
   return (
-    <div ref={ref} className="relative h-[200vh]" aria-label="Morning Report product preview">
-      {/* soft ambient behind the laptop */}
-      <div className="pointer-events-none absolute left-1/2 top-[20vh] h-[46rem] w-[46rem] -translate-x-1/2 rounded-full bg-amber/10 blur-[150px]" aria-hidden />
-      <div className="sticky top-0 flex h-screen flex-col items-center justify-center overflow-hidden [perspective:900px]" aria-hidden>
-        <motion.div style={{ opacity: textOpacity, y: textY }} className="mb-8 px-4 text-center md:mb-12">
+    <div
+      ref={ref}
+      className="relative isolate"
+      aria-hidden
+      style={{ height: "calc(clamp(520px, 72vh, 760px) + 55vh)" }}
+    >
+      {/* Title sits ABOVE the device in normal flow (never absolutely over it), so
+          the handoff copy can't overlap the laptop screen. The stage is top-aligned
+          with a top offset that clears the nav; the device follows below with a gap. */}
+      <div className="sticky top-24 flex h-[clamp(520px,72vh,760px)] flex-col items-center justify-start gap-8 pt-10 [perspective:800px]">
+        <motion.div style={{ opacity: textOpacity }} className="px-4 text-center">
           {title}
         </motion.div>
-
-        <ScaledCanvas
-          nativeWidth={NATIVE_W}
-          nativeHeight={NATIVE_SCREEN_H + NATIVE_BASE_H - HINGE_OVERLAP}
-          className="mx-auto max-w-[32rem]"
-        >
-          <div style={{ width: NATIVE_W }}>
-            <FeyLid src={src} scaleX={screenScaleX} scaleY={screenScaleY} rotate={rotate} translateY={screenY} />
-            {/* The keyboard/base is a normal sibling, never negative-z. The
-                report expands over it visually, exactly like the reference,
-                but the deck itself is never clipped or removed. */}
-            <div style={{ marginTop: -HINGE_OVERLAP }}>
-              <Base badge={badge} />
-            </div>
-          </div>
-        </ScaledCanvas>
-      </div>
-      {showGradient && (
-        <div
-          className="pointer-events-none absolute inset-x-0 bottom-0 h-48"
-          style={{ background: "linear-gradient(to bottom, transparent, var(--color-ink) 78%)" }}
-        />
-      )}
-    </div>
-  );
-}
-
-/** Fey/Aceternity-style screen: scroll makes the report emerge from the
- * display. This is separate from the safe static lid used on touch devices. */
-function FeyLid({
-  scaleX,
-  scaleY,
-  rotate,
-  translateY,
-  src,
-}: {
-  scaleX: MotionValue<number>;
-  scaleY: MotionValue<number>;
-  rotate: MotionValue<number>;
-  translateY: MotionValue<number>;
-  src: string;
-}) {
-  return (
-    <div className="relative [perspective:800px]" style={{ width: NATIVE_W, height: NATIVE_SCREEN_H }}>
-      <div
-        className="absolute inset-x-0 bottom-0 h-[12rem] rounded-2xl bg-[#0a0a0c] p-2"
-        style={{ transform: "perspective(800px) rotateX(-25deg) translateZ(0px)", transformOrigin: "bottom", transformStyle: "preserve-3d" }}
-      >
-        <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-[#0a0a0c]" style={{ boxShadow: "0px 2px 0px 2px #171717 inset" }}>
-          <span className="text-white"><UmbraMark /></span>
+        <div className="flex flex-col items-center">
+          <Lid src={src} scaleX={scaleX} scaleY={scaleY} rotate={rotate} translate={translate} />
+          <BaseArea showGradient={showGradient} badge={badge} />
         </div>
       </div>
-      <motion.div
-        className="absolute inset-0 rounded-2xl bg-[#0a0a0c] p-2"
-        style={{ scaleX, scaleY, rotateX: rotate, translateY, transformStyle: "preserve-3d", transformOrigin: "top" }}
-      >
-        <div className="absolute inset-0 rounded-lg bg-[#0a0a0c]" />
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={src} alt="" className="absolute inset-0 h-full w-full rounded-lg object-cover object-left-top" />
-      </motion.div>
-    </div>
-  );
-}
-
-export const Lid = ({
-  rotate,
-  foldedOpacity,
-  src,
-}: {
-  rotate: MotionValue<number>;
-  foldedOpacity: MotionValue<number>;
-  src: string;
-}) => {
-  return (
-    <div className="relative [perspective:800px]" style={{ width: NATIVE_W, height: NATIVE_SCREEN_H }}>
-      {/* folded back of the lid — visible only in the closed/near-closed phase
-          (fades out as the screen opens); anchored to the SAME hinge line
-          (bottom of this box) as the screen, so there is never a mismatch. */}
-      <motion.div
-        style={{
-          opacity: foldedOpacity,
-          transform: "perspective(800px) rotateX(-25deg) translateZ(0px)",
-          transformOrigin: "bottom",
-        }}
-        className="absolute inset-x-0 bottom-0 h-[12rem] w-full rounded-2xl bg-[#0a0a0c] p-2"
-      >
-        <div
-          style={{ boxShadow: "0px 2px 0px 2px #171717 inset" }}
-          className="absolute inset-0 flex items-center justify-center rounded-lg bg-[#0a0a0c]"
-        >
-          <span className="text-white">
-            <UmbraMark />
-          </span>
-        </div>
-      </motion.div>
-      {/* the screen — unfolds about the SAME bottom hinge line; fixed box size
-          (never inset-0 against a shorter parent) so it can never spill over
-          the deck below. Natural aspect ratio, no distortion, no cropped edge. */}
-      <motion.div
-        style={{
-          rotateX: rotate,
-          transformStyle: "preserve-3d",
-          transformOrigin: "bottom",
-        }}
-        className="absolute inset-0 rounded-2xl bg-[#0a0a0c] p-2"
-      >
-        <div className="absolute inset-0 rounded-lg bg-[#0a0a0c]" />
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={src}
-          alt=""
-          className="absolute inset-0 h-full w-full rounded-lg object-cover object-left-top"
-        />
-      </motion.div>
     </div>
   );
 };
 
-/* The keyboard deck — official chrome, shared identically by both the static
-   and cinematic paths (same fixed-size canvas) so the base never differs
-   between them, and is always a plain block-level element: no scale wrapper,
-   no negative z-index, so it can never be hidden, clipped, or seamed. */
-export const Base = ({ badge }: { badge?: React.ReactNode }) => {
+/* The keyboard base — the official Base area, dark by default (Umbra dark theme).
+   `-z-10` so the unfolding lid paints over it, exactly like the reference; they
+   are stacked siblings at the same width, so they read as one device. */
+const BaseArea = ({ showGradient, badge }: { showGradient?: boolean; badge?: React.ReactNode }) => {
   return (
-    <div className="relative overflow-hidden rounded-b-2xl rounded-t-[3px] bg-gray-200 dark:bg-[#232326]" style={{ width: NATIVE_W, height: NATIVE_BASE_H }}>
+    <div className="relative -z-10 h-[22rem] w-[32rem] overflow-hidden rounded-2xl bg-[#272729]">
+      {/* above keyboard bar */}
       <div className="relative h-10 w-full">
         <div className="absolute inset-x-0 mx-auto h-4 w-[80%] bg-[#050505]" />
       </div>
@@ -364,17 +184,89 @@ export const Base = ({ badge }: { badge?: React.ReactNode }) => {
       </div>
       <Trackpad />
       <div className="absolute inset-x-0 bottom-0 mx-auto h-2 w-20 rounded-tl-3xl rounded-tr-3xl bg-gradient-to-t from-[#272729] to-[#050505]" />
+      {/* No page-colored bottom fade: it created a light/dark smudge at the base in
+          light mode and clipped the keyboard in dark mode. The rounded, self-
+          contained dark base grounds cleanly on either theme without an overlay. */}
       {badge && <div className="absolute bottom-4 left-4">{badge}</div>}
+    </div>
+  );
+};
+
+export const Lid = ({
+  scaleX,
+  scaleY,
+  rotate,
+  translate,
+  src,
+}: {
+  scaleX: MotionValue<number>;
+  scaleY: MotionValue<number>;
+  rotate: MotionValue<number>;
+  translate: MotionValue<number>;
+  src?: string;
+}) => {
+  return (
+    <div className="relative [perspective:800px]">
+      <div
+        style={{
+          transform: "perspective(800px) rotateX(-25deg) translateZ(0px)",
+          transformOrigin: "bottom",
+          transformStyle: "preserve-3d",
+        }}
+        className="relative h-[12rem] w-[32rem] rounded-2xl bg-[#010101] p-2"
+      >
+        <div
+          style={{ boxShadow: "0px 2px 0px 2px #171717 inset" }}
+          className="absolute inset-0 flex items-center justify-center rounded-lg bg-[#010101]"
+        >
+          <span className="text-white">
+            <UmbraMark />
+          </span>
+        </div>
+      </div>
+      <motion.div
+        style={{
+          scaleX,
+          scaleY,
+          rotateX: rotate,
+          translateY: translate,
+          transformStyle: "preserve-3d",
+          transformOrigin: "top",
+        }}
+        className="absolute inset-0 h-96 w-[32rem] rounded-2xl bg-[#010101] p-2"
+      >
+        <div className="absolute inset-0 rounded-lg bg-[#272729]" />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={src} alt="Umbra morning report — findings, the Codex-prepared diff, and what still needs review" loading="lazy" decoding="async" className="absolute inset-0 h-full w-full rounded-lg object-cover object-left-top" />
+      </motion.div>
+    </div>
+  );
+};
+
+/* A static, fully-open lid for the reduced-motion fallback (no motion values). */
+const StaticLid = ({ src }: { src?: string }) => {
+  return (
+    <div className="relative [perspective:800px]">
+      <div
+        style={{ transform: "perspective(800px) rotateX(-25deg) translateZ(0px)", transformOrigin: "bottom" }}
+        className="relative h-[12rem] w-[32rem] rounded-2xl bg-[#010101] p-2"
+      >
+        <div style={{ boxShadow: "0px 2px 0px 2px #171717 inset" }} className="absolute inset-0 flex items-center justify-center rounded-lg bg-[#010101]">
+          <span className="text-white"><UmbraMark /></span>
+        </div>
+      </div>
+      <div className="absolute inset-0 h-96 w-[32rem] rounded-2xl bg-[#010101] p-2" style={{ transformOrigin: "top" }}>
+        <div className="absolute inset-0 rounded-lg bg-[#272729]" />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={src} alt="Umbra morning report — findings, the Codex-prepared diff, and what still needs review" loading="lazy" decoding="async" className="absolute inset-0 h-full w-full rounded-lg object-cover object-left-top" />
+      </div>
     </div>
   );
 };
 
 export const Trackpad = () => {
   return (
-    <div
-      className="mx-auto my-1 h-32 w-[40%] rounded-xl"
-      style={{ boxShadow: "0px 0px 1px 1px #00000020 inset" }}
-    />
+    <div className="mx-auto my-1 h-32 w-[40%] rounded-xl" style={{ boxShadow: "0px 0px 1px 1px #00000020 inset" }} />
   );
 };
 
@@ -383,64 +275,21 @@ export const Keypad = () => {
     <div className="mx-1 h-full [transform:translateZ(0)] rounded-md bg-[#050505] p-1 [will-change:transform]">
       {/* First Row */}
       <div className="mb-[2px] flex w-full shrink-0 gap-[2px]">
-        <KBtn className="w-10 items-end justify-start pb-[2px] pl-[4px]" childrenClassName="items-start">
-          esc
-        </KBtn>
-        <KBtn>
-          <IconBrightnessDown className="h-[6px] w-[6px]" />
-          <span className="mt-1 inline-block">F1</span>
-        </KBtn>
-        <KBtn>
-          <IconBrightnessUp className="h-[6px] w-[6px]" />
-          <span className="mt-1 inline-block">F2</span>
-        </KBtn>
-        <KBtn>
-          <IconTable className="h-[6px] w-[6px]" />
-          <span className="mt-1 inline-block">F3</span>
-        </KBtn>
-        <KBtn>
-          <IconSearch className="h-[6px] w-[6px]" />
-          <span className="mt-1 inline-block">F4</span>
-        </KBtn>
-        <KBtn>
-          <IconMicrophone className="h-[6px] w-[6px]" />
-          <span className="mt-1 inline-block">F5</span>
-        </KBtn>
-        <KBtn>
-          <IconMoon className="h-[6px] w-[6px]" />
-          <span className="mt-1 inline-block">F6</span>
-        </KBtn>
-        <KBtn>
-          <IconPlayerTrackPrev className="h-[6px] w-[6px]" />
-          <span className="mt-1 inline-block">F7</span>
-        </KBtn>
-        <KBtn>
-          <IconPlayerSkipForward className="h-[6px] w-[6px]" />
-          <span className="mt-1 inline-block">F8</span>
-        </KBtn>
-        <KBtn>
-          <IconPlayerTrackNext className="h-[6px] w-[6px]" />
-          <span className="mt-1 inline-block">F9</span>
-        </KBtn>
-        <KBtn>
-          <IconVolume3 className="h-[6px] w-[6px]" />
-          <span className="mt-1 inline-block">F10</span>
-        </KBtn>
-        <KBtn>
-          <IconVolume2 className="h-[6px] w-[6px]" />
-          <span className="mt-1 inline-block">F11</span>
-        </KBtn>
-        <KBtn>
-          <IconVolume className="h-[6px] w-[6px]" />
-          <span className="mt-1 inline-block">F12</span>
-        </KBtn>
-        <KBtn>
-          <div className="h-4 w-4 rounded-full bg-gradient-to-b from-neutral-900 from-20% via-black via-50% to-neutral-900 to-95% p-px">
-            <div className="h-full w-full rounded-full bg-black" />
-          </div>
-        </KBtn>
+        <KBtn className="w-10 items-end justify-start pb-[2px] pl-[4px]" childrenClassName="items-start">esc</KBtn>
+        <KBtn><IconBrightnessDown className="h-[6px] w-[6px]" /><span className="mt-1 inline-block">F1</span></KBtn>
+        <KBtn><IconBrightnessUp className="h-[6px] w-[6px]" /><span className="mt-1 inline-block">F2</span></KBtn>
+        <KBtn><IconTable className="h-[6px] w-[6px]" /><span className="mt-1 inline-block">F3</span></KBtn>
+        <KBtn><IconSearch className="h-[6px] w-[6px]" /><span className="mt-1 inline-block">F4</span></KBtn>
+        <KBtn><IconMicrophone className="h-[6px] w-[6px]" /><span className="mt-1 inline-block">F5</span></KBtn>
+        <KBtn><IconMoon className="h-[6px] w-[6px]" /><span className="mt-1 inline-block">F6</span></KBtn>
+        <KBtn><IconPlayerTrackPrev className="h-[6px] w-[6px]" /><span className="mt-1 inline-block">F7</span></KBtn>
+        <KBtn><IconPlayerSkipForward className="h-[6px] w-[6px]" /><span className="mt-1 inline-block">F8</span></KBtn>
+        <KBtn><IconPlayerTrackNext className="h-[6px] w-[6px]" /><span className="mt-1 inline-block">F9</span></KBtn>
+        <KBtn><IconVolume3 className="h-[6px] w-[6px]" /><span className="mt-1 inline-block">F10</span></KBtn>
+        <KBtn><IconVolume2 className="h-[6px] w-[6px]" /><span className="mt-1 inline-block">F11</span></KBtn>
+        <KBtn><IconVolume className="h-[6px] w-[6px]" /><span className="mt-1 inline-block">F12</span></KBtn>
+        <KBtn><div className="h-4 w-4 rounded-full bg-gradient-to-b from-neutral-900 from-20% via-black via-50% to-neutral-900 to-95% p-px"><div className="h-full w-full rounded-full bg-black" /></div></KBtn>
       </div>
-
       {/* Second row */}
       <div className="mb-[2px] flex w-full shrink-0 gap-[2px]">
         <KBtn><span className="block">~</span><span className="mt-1 block">`</span></KBtn>
@@ -456,16 +305,11 @@ export const Keypad = () => {
         <KBtn><span className="block">)</span><span className="block">0</span></KBtn>
         <KBtn><span className="block">&mdash;</span><span className="block">_</span></KBtn>
         <KBtn><span className="block">+</span><span className="block"> = </span></KBtn>
-        <KBtn className="w-10 items-end justify-end pb-[2px] pr-[4px]" childrenClassName="items-end">
-          delete
-        </KBtn>
+        <KBtn className="w-10 items-end justify-end pr-[4px] pb-[2px]" childrenClassName="items-end">delete</KBtn>
       </div>
-
       {/* Third row */}
       <div className="mb-[2px] flex w-full shrink-0 gap-[2px]">
-        <KBtn className="w-10 items-end justify-start pb-[2px] pl-[4px]" childrenClassName="items-start">
-          tab
-        </KBtn>
+        <KBtn className="w-10 items-end justify-start pb-[2px] pl-[4px]" childrenClassName="items-start">tab</KBtn>
         <KBtn><span className="block">Q</span></KBtn>
         <KBtn><span className="block">W</span></KBtn>
         <KBtn><span className="block">E</span></KBtn>
@@ -480,12 +324,9 @@ export const Keypad = () => {
         <KBtn><span className="block">{`}`}</span><span className="block">{`]`}</span></KBtn>
         <KBtn><span className="block">{`|`}</span><span className="block">{`\\`}</span></KBtn>
       </div>
-
       {/* Fourth Row */}
       <div className="mb-[2px] flex w-full shrink-0 gap-[2px]">
-        <KBtn className="w-[2.8rem] items-end justify-start pb-[2px] pl-[4px]" childrenClassName="items-start">
-          caps lock
-        </KBtn>
+        <KBtn className="w-[2.8rem] items-end justify-start pb-[2px] pl-[4px]" childrenClassName="items-start">caps lock</KBtn>
         <KBtn><span className="block">A</span></KBtn>
         <KBtn><span className="block">S</span></KBtn>
         <KBtn><span className="block">D</span></KBtn>
@@ -497,16 +338,11 @@ export const Keypad = () => {
         <KBtn><span className="block">L</span></KBtn>
         <KBtn><span className="block">{`:`}</span><span className="block">{`;`}</span></KBtn>
         <KBtn><span className="block">{`"`}</span><span className="block">{`'`}</span></KBtn>
-        <KBtn className="w-[2.85rem] items-end justify-end pb-[2px] pr-[4px]" childrenClassName="items-end">
-          return
-        </KBtn>
+        <KBtn className="w-[2.85rem] items-end justify-end pr-[4px] pb-[2px]" childrenClassName="items-end">return</KBtn>
       </div>
-
       {/* Fifth Row */}
       <div className="mb-[2px] flex w-full shrink-0 gap-[2px]">
-        <KBtn className="w-[3.65rem] items-end justify-start pb-[2px] pl-[4px]" childrenClassName="items-start">
-          shift
-        </KBtn>
+        <KBtn className="w-[3.65rem] items-end justify-start pb-[2px] pl-[4px]" childrenClassName="items-start">shift</KBtn>
         <KBtn><span className="block">Z</span></KBtn>
         <KBtn><span className="block">X</span></KBtn>
         <KBtn><span className="block">C</span></KBtn>
@@ -517,11 +353,8 @@ export const Keypad = () => {
         <KBtn><span className="block">{`<`}</span><span className="block">{`,`}</span></KBtn>
         <KBtn><span className="block">{`>`}</span><span className="block">{`.`}</span></KBtn>
         <KBtn><span className="block">{`?`}</span><span className="block">{`/`}</span></KBtn>
-        <KBtn className="w-[3.65rem] items-end justify-end pb-[2px] pr-[4px]" childrenClassName="items-end">
-          shift
-        </KBtn>
+        <KBtn className="w-[3.65rem] items-end justify-end pr-[4px] pb-[2px]" childrenClassName="items-end">shift</KBtn>
       </div>
-
       {/* sixth Row */}
       <div className="mb-[2px] flex w-full shrink-0 gap-[2px]">
         <KBtn className="" childrenClassName="h-full justify-between py-[4px]">
@@ -574,23 +407,12 @@ export const KBtn = ({
   backlit?: boolean;
 }) => {
   return (
-    <div
-      className={cn(
-        "[transform:translateZ(0)] rounded-[4px] p-[0.5px] [will-change:transform]",
-        backlit && "bg-white/[0.2] shadow-xl shadow-white",
-      )}
-    >
+    <div className={cn("[transform:translateZ(0)] rounded-[4px] p-[0.5px] [will-change:transform]", backlit && "bg-white/[0.2] shadow-xl shadow-white")}>
       <div
         className={cn("flex h-6 w-6 items-center justify-center rounded-[3.5px] bg-[#0A090D]", className)}
         style={{ boxShadow: "0px -0.5px 2px 0 #0D0D0F inset, -0.5px 0px 2px 0 #0D0D0F inset" }}
       >
-        <div
-          className={cn(
-            "flex w-full flex-col items-center justify-center text-[5px] text-neutral-200",
-            childrenClassName,
-            backlit && "text-white",
-          )}
-        >
+        <div className={cn("flex w-full flex-col items-center justify-center text-[5px] text-neutral-200", childrenClassName, backlit && "text-white")}>
           {children}
         </div>
       </div>
@@ -617,12 +439,12 @@ export const OptionKey = ({ className }: { className: string }) => {
   );
 };
 
-/* Umbra's half-disc mark on the closed lid (replaces the Aceternity logo). */
+/* Umbra's eclipse-aperture mark on the closed lid (replaces the Aceternity logo). */
 const UmbraMark = () => {
   return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5">
-      <circle cx="12" cy="12" r="9" stroke="#5eead4" strokeWidth="2" />
-      <path d="M12 3a9 9 0 0 1 0 18Z" fill="#5eead4" />
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-3 w-3">
+      <circle cx="12" cy="12" r="9" stroke="#22d3ee" strokeWidth="2" />
+      <path d="M12 3a9 9 0 0 1 0 18Z" fill="#22d3ee" />
     </svg>
   );
 };

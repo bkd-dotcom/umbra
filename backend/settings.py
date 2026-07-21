@@ -97,6 +97,21 @@ def github_oauth() -> tuple[str, str] | None:
     return (cid, secret) if cid and secret else None
 
 
+def dev_secrets_in_use() -> list[str]:
+    """Names of security-critical secrets currently falling back to an insecure dev
+    default. Empty in a correctly-configured production deploy. Used to emit a loud
+    startup warning so a misconfigured prod never signs/encrypts with a placeholder
+    silently."""
+    missing: list[str] = []
+    if not os.getenv("SESSION_SECRET"):
+        missing.append("SESSION_SECRET")
+    if not os.getenv("UMBRA_FERNET_KEY"):
+        missing.append("UMBRA_FERNET_KEY")
+    if signing_key_is_ephemeral():
+        missing.append("UMBRA_SIGNING_KEY")
+    return missing
+
+
 def google_oauth() -> tuple[str, str] | None:
     cid, secret = os.getenv("GOOGLE_CLIENT_ID"), os.getenv("GOOGLE_CLIENT_SECRET")
     return (cid, secret) if cid and secret else None

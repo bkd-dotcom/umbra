@@ -121,6 +121,8 @@ function CrewDossierDesktop() {
   const [active, setActive] = useState(0);
   const [paused, setPaused] = useState(false);
 
+  // Auto rotation: 2.5s per station, paused on hover, focus-within, or any explicit
+  // interaction, and disabled under reduced-motion.
   useEffect(() => {
     if (reduce || paused) return;
     const t = setTimeout(() => setActive((p) => (p + 1) % AGENTS.length), 2500);
@@ -134,6 +136,8 @@ function CrewDossierDesktop() {
       className="grid gap-4 lg:grid-cols-[280px_1fr]"
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
+      onFocusCapture={() => setPaused(true)}
+      onBlurCapture={() => setPaused(false)}
     >
       {/* Roster rail — monochrome; only the unit on station is lit. */}
       <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
@@ -173,10 +177,20 @@ function CrewDossierDesktop() {
             </button>
           );
         })}
+        {/* Subtle rotation label — never implies live agent activity. */}
+        {!reduce && (
+          <div className="mt-1 hidden items-center gap-1.5 px-1 font-mono text-[9px] uppercase tracking-[0.16em] text-fog/45 lg:flex">
+            <span className="h-1 w-1 rounded-full bg-fog/40" /> Crew rotation · hover to hold
+          </div>
+        )}
       </div>
 
-      {/* Focused dossier — the primary object; one agent, full depth. */}
-      <GlowCard glow={`${agent.color}22`} className="relative min-h-[440px] overflow-hidden">
+      {/* Focused dossier — the primary object. FIXED height so the window never
+          resizes between agents (no vertical expand/jump on the next reveal). Both
+          cards share one css-grid cell and cross-fade; each card fills the fixed
+          height (h-full) with the artifact area flexing, so every station renders in
+          the exact same frame. */}
+      <GlowCard glow={`${agent.color}22`} className="relative grid h-[480px] overflow-hidden">
         {/* Control handoff — a single beam sweeps the top edge as the shift moves
             to this desk. Not a slide transition; the station just came online. */}
         {!reduce && (
@@ -190,14 +204,14 @@ function CrewDossierDesktop() {
             transition={{ duration: 0.8, ease: EASE }}
           />
         )}
-        <AnimatePresence mode="wait">
+        <AnimatePresence initial={false}>
           <motion.div
             key={agent.key}
-            initial={reduce ? false : { opacity: 0, y: 6, scale: 0.985, filter: "blur(8px)" }}
-            animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
-            exit={reduce ? undefined : { opacity: 0, scale: 0.99, filter: "blur(6px)" }}
+            initial={reduce ? false : { opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={reduce ? undefined : { opacity: 0, y: -8 }}
             transition={{ duration: 0.5, ease: EASE }}
-            className="flex h-full flex-col p-6 sm:p-8"
+            className="flex h-full flex-col overflow-hidden p-6 [grid-area:1/1] sm:p-8"
           >
             {/* Header — callsign monogram + codename + status on station */}
             <div className="flex items-start justify-between gap-4">
@@ -233,8 +247,11 @@ function CrewDossierDesktop() {
               <span className="truncate text-fog">{agent.logAction}</span>
             </div>
 
-            {/* Operational artifact — the agent doing its job, one thing, live. */}
-            <div className="mt-5 flex-1">
+            {/* Operational artifact — the agent doing its job, one thing, live.
+                Centered within the flexible space so agents with a shorter artifact
+                (Watchman, Janitor) sit balanced instead of leaving a gap above the
+                specialty ledger — every card reads evenly padded top-to-bottom. */}
+            <div className="flex flex-1 flex-col justify-center py-1">
               <Artifact agent={agent} reduce={!!reduce} />
             </div>
 
@@ -255,26 +272,78 @@ function CrewDossierDesktop() {
 }
 
 /* -----------------------------------------------------------------------------
-   Mobile crew carousel — accessible, manual, one-agent-at-a-time.
+   Mobile crew carousel — accessible, manual, one-agent-at-a-time, touch-native.
 
-   Design constraints (deliberate): no auto-rotation once mounted on a touch
-   surface (there is no hover-to-pause on touch, so anything that self-advances
-   while someone is mid-read is an anti-pattern); explicit Prev/Next buttons;
-   a visible "N / 5" position readout; the agent's name + role + FULL
-   description are always fully visible (never clipped/truncated); keyboard
-   reachable controls with visible focus rings; no horizontal page overflow —
-   the card itself never scrolls sideways, only the content beneath swaps.
+   Interaction: the dossier card is horizontally draggable. A deliberate drag
+   past a distance/velocity threshold advances exactly one agent and springs to
+   settle; anything short snaps back. dragDirectionLock keeps vertical page
+   scrolling free — a small vertical move never traps the page. No auto-rotation
+   (an anti-pattern on touch, where there is no hover-to-pause). Prev/Next
+   buttons, letter dots, keyboard, aria-live, and reduced-motion are all kept as
+   equal-footing controls. A segmented track (not a bare "N / 5") reads as a
+   real carousel position. Name + role + FULL description always visible.
 ----------------------------------------------------------------------------- */
+// The dossier changes with the SAME fade + subtle vertical settle as desktop
+// (no horizontal fly-out), regardless of whether the change came from a swipe,
+// a button, a tab, or a keyboard arrow. `dir` is retained only so the small
+// settle leans in the direction of travel.
+const SLIDE_VARIANTS = {
+  enter: (d: number) => ({ opacity: 0, y: d >= 0 ? 10 : -10 }),
+  center: { opacity: 1, y: 0 },
+  exit: (d: number) => ({ opacity: 0, y: d >= 0 ? -8 : 8 }),
+};
+
 function CrewCarouselMobile() {
   const reduce = useReducedMotion();
-  const [active, setActive] = useState(0);
+  const [[active, dir], setState] = useState<[number, number]>([0, 0]);
+  const [paused, setPaused] = useState(false);
   const agent = AGENTS[active];
   const total = AGENTS.length;
 
-  const go = (dir: 1 | -1) => setActive((p) => (p + dir + total) % total);
+  // Advance by direction; wrap. `dir` drives the slide-in side so the incoming
+  // card enters from the side the finger pushed toward.
+  const go = (d: 1 | -1) => setState(([p]) => [(p + d + total) % total, d]);
+  const jump = (i: number) => setState(([p]) => [i, i > p ? 1 : i < p ? -1 : 0]);
+
+  // Self-advancing rotation (2.5s/card), matching the specialists carousel. Paused
+  // on hover, focus, or an in-progress drag; disabled under reduced-motion.
+  useEffect(() => {
+    if (reduce || paused || total <= 1) return;
+    const t = setTimeout(() => go(1), 2500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, paused, reduce, total]);
+
+  // Distance OR velocity crosses the threshold → commit one step.
+  const SWIPE_DISTANCE = 56; // px, deliberate
+  const SWIPE_VELOCITY = 480; // px/s
+  const onDragEnd = (
+    _e: unknown,
+    info: { offset: { x: number }; velocity: { x: number } },
+  ) => {
+    setPaused(false);
+    const power = info.offset.x + info.velocity.x * 0.2;
+    if (power <= -SWIPE_DISTANCE || info.velocity.x <= -SWIPE_VELOCITY) go(1);
+    else if (power >= SWIPE_DISTANCE || info.velocity.x >= SWIPE_VELOCITY) go(-1);
+    // else: dragSnapToOrigin springs it back.
+  };
 
   return (
-    <div className="w-full min-w-0">
+    <div
+      className="w-full min-w-0"
+      role="group"
+      aria-roledescription="carousel"
+      aria-label="Night crew agents"
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+      onFocusCapture={() => setPaused(true)}
+      onBlurCapture={() => setPaused(false)}
+      onKeyDown={(e) => {
+        if (e.key === "ArrowRight") { e.preventDefault(); go(1); }
+        else if (e.key === "ArrowLeft") { e.preventDefault(); go(-1); }
+      }}
+      tabIndex={0}
+    >
       {/* Position readout + prev/next controls. */}
       <div className="flex items-center justify-between gap-3">
         <button
@@ -285,9 +354,18 @@ function CrewCarouselMobile() {
         >
           <ChevronLeft />
         </button>
-        <span className="font-mono text-[11px] tabular-nums text-fog" aria-live="polite">
-          <span className="text-cloud">{active + 1}</span> / {total}
-        </span>
+
+        {/* Segmented carousel track — reads as a real position, not a counter. */}
+        <div className="flex flex-1 items-center gap-1.5" aria-hidden>
+          {AGENTS.map((a, i) => (
+            <span
+              key={a.key}
+              className="h-1 flex-1 rounded-full transition-colors duration-300"
+              style={{ background: i === active ? a.color : "var(--surface-border)", boxShadow: i === active ? `0 0 8px ${a.color}` : "none" }}
+            />
+          ))}
+        </div>
+
         <button
           type="button"
           onClick={() => go(1)}
@@ -297,6 +375,11 @@ function CrewCarouselMobile() {
           <ChevronRight />
         </button>
       </div>
+
+      {/* Screen-reader status for the current position. */}
+      <p className="sr-only" aria-live="polite">
+        Agent {active + 1} of {total}: {agent.name}, {agent.role}
+      </p>
 
       {/* Roster dots — also directly selectable, keyboard reachable. */}
       <div className="mt-3 flex flex-wrap justify-center gap-2" role="tablist" aria-label="Select an agent">
@@ -309,7 +392,7 @@ function CrewCarouselMobile() {
               role="tab"
               aria-selected={on}
               aria-label={`${a.name} · ${a.role}`}
-              onClick={() => setActive(i)}
+              onClick={() => jump(i)}
               className="grid h-8 w-8 shrink-0 place-items-center rounded-full border font-mono text-[11px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan"
               style={on ? { color: a.color, borderColor: `${a.color}66`, background: `${a.color}14` } : { color: FOG, borderColor: "var(--surface-border)" }}
             >
@@ -319,66 +402,89 @@ function CrewCarouselMobile() {
         })}
       </div>
 
-      {/* Focused dossier — full name, role, and COMPLETE description always
-          visible (no truncate, no fixed clipped height). */}
-      <GlowCard glow={`${agent.color}22`} className="relative mt-4 overflow-hidden">
-        <AnimatePresence mode="wait">
+      {/* Draggable dossier. overflow-hidden clips the sliding card so nothing
+          bleeds past the section width. The card is always mounted with full
+          content, so it is never blank; AnimatePresence (no mode="wait") slides
+          the incoming card in as the outgoing one leaves. */}
+      {/* Both the outgoing and incoming dossier occupy the same grid cell, so the
+          shell height is always the current card's height and the console is never
+          blank during the cross-fade (no mode="wait", no popLayout collapse). */}
+      <div className="relative mt-4 grid h-[640px] overflow-hidden sm:h-[560px]">
+        <AnimatePresence initial={false} custom={dir}>
           <motion.div
             key={agent.key}
-            initial={reduce ? false : { opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={reduce ? undefined : { opacity: 0 }}
-            transition={{ duration: 0.35, ease: EASE }}
-            className="flex flex-col p-5 sm:p-6"
+            custom={dir}
+            drag={reduce ? false : "x"}
+            dragDirectionLock
+            dragSnapToOrigin
+            dragConstraints={{ left: 0, right: 0 }}
+            dragElastic={0.18}
+            onDragStart={() => setPaused(true)}
+            onDragEnd={onDragEnd}
+            variants={SLIDE_VARIANTS}
+            initial={reduce ? false : "enter"}
+            animate="center"
+            exit={reduce ? undefined : "exit"}
+            transition={{ duration: 0.42, ease: EASE }}
+            className="h-full touch-pan-y select-none [grid-area:1/1]"
           >
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex min-w-0 items-center gap-3">
-                <span
-                  className="grid h-12 w-12 shrink-0 place-items-center rounded-xl border font-mono text-lg font-semibold"
-                  style={{ color: agent.color, borderColor: `${agent.color}55`, background: `${agent.color}12` }}
-                >
-                  {agent.letter}
-                </span>
-                <div className="min-w-0">
-                  <div className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-fog">Night shift · Unit 0{active + 1}</div>
-                  <div className="font-serif text-[24px] leading-none tracking-[-0.02em]">{agent.name}</div>
-                  <div className="mt-1 font-mono text-[10.5px] tracking-[0.06em] text-fog">{agent.role}</div>
+            <GlowCard glow={`${agent.color}22`} className="relative h-full overflow-hidden">
+              <div className="flex h-full flex-col p-5 sm:p-6">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span
+                      className="grid h-12 w-12 shrink-0 place-items-center rounded-xl border font-mono text-lg font-semibold"
+                      style={{ color: agent.color, borderColor: `${agent.color}55`, background: `${agent.color}12` }}
+                    >
+                      {agent.letter}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-fog">Night shift · Unit 0{active + 1}</div>
+                      <div className="font-serif text-[24px] leading-none tracking-[-0.02em]">{agent.name}</div>
+                      <div className="mt-1 font-mono text-[10.5px] tracking-[0.06em] text-fog">{agent.role}</div>
+                    </div>
+                  </div>
+                  <span
+                    className="flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 font-mono text-[9.5px] uppercase tracking-[0.1em]"
+                    style={{ borderColor: `${agent.color}44`, color: agent.color, background: `${agent.color}0e` }}
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full" style={{ background: agent.color, boxShadow: `0 0 8px ${agent.color}` }} />
+                    {agent.status}
+                  </span>
+                </div>
+
+                {/* Full description — never clipped. */}
+                <p className="mt-4 text-[13.5px] leading-relaxed text-cloud/80">{agent.blurb}</p>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2 font-mono text-[10px]">
+                  <span className="uppercase tracking-[0.16em] text-fog/55">Last action</span>
+                  <span className="tabular-nums text-cloud/80" style={{ color: agent.color }}>{agent.logTime}</span>
+                  <span className="text-fog/50">·</span>
+                  <span className="text-fog">{agent.logAction}</span>
+                </div>
+
+                <div className="mt-4">
+                  <Artifact agent={agent} reduce={!!reduce} />
+                </div>
+
+                <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-[color:var(--surface-border)] pt-4">
+                  <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-fog">Specialty</span>
+                  {agent.specialty.map((s) => (
+                    <span key={s} className="rounded-md border border-[color:var(--surface-border)] px-2 py-0.5 font-mono text-[10px] text-fog">
+                      {s}
+                    </span>
+                  ))}
                 </div>
               </div>
-              <span
-                className="flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 font-mono text-[9.5px] uppercase tracking-[0.1em]"
-                style={{ borderColor: `${agent.color}44`, color: agent.color, background: `${agent.color}0e` }}
-              >
-                <span className="h-1.5 w-1.5 rounded-full" style={{ background: agent.color, boxShadow: `0 0 8px ${agent.color}` }} />
-                {agent.status}
-              </span>
-            </div>
-
-            {/* Full description — never clipped. */}
-            <p className="mt-4 text-[13.5px] leading-relaxed text-cloud/80">{agent.blurb}</p>
-
-            <div className="mt-3 flex flex-wrap items-center gap-2 font-mono text-[10px]">
-              <span className="uppercase tracking-[0.16em] text-fog/55">Last action</span>
-              <span className="tabular-nums text-cloud/80" style={{ color: agent.color }}>{agent.logTime}</span>
-              <span className="text-fog/50">·</span>
-              <span className="text-fog">{agent.logAction}</span>
-            </div>
-
-            <div className="mt-4">
-              <Artifact agent={agent} reduce={!!reduce} />
-            </div>
-
-            <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-[color:var(--surface-border)] pt-4">
-              <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-fog">Specialty</span>
-              {agent.specialty.map((s) => (
-                <span key={s} className="rounded-md border border-[color:var(--surface-border)] px-2 py-0.5 font-mono text-[10px] text-fog">
-                  {s}
-                </span>
-              ))}
-            </div>
+            </GlowCard>
           </motion.div>
         </AnimatePresence>
-      </GlowCard>
+      </div>
+
+      {/* Hint — disappears once a drag has happened is overkill; keep it quiet. */}
+      <p className="mt-3 text-center font-mono text-[10px] uppercase tracking-[0.14em] text-fog/45" aria-hidden>
+        swipe or use arrows
+      </p>
     </div>
   );
 }

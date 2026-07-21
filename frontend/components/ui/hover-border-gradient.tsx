@@ -13,12 +13,14 @@ export function HoverBorderGradient({
   onClick,
   className,
   type,
+  ariaLabel,
 }: {
   children: React.ReactNode;
   href?: string;
   onClick?: () => void;
   className?: string;
   type?: "button" | "submit";
+  ariaLabel?: string;
 }) {
   const reduce = useReducedMotion();
   const inner = (
@@ -55,14 +57,14 @@ export function HoverBorderGradient({
 
   if (href) {
     return (
-      <a href={href} className={shell}>
+      <a href={href} className={shell} aria-label={ariaLabel}>
         {sweep}
         {inner}
       </a>
     );
   }
   return (
-    <button type={type ?? "button"} onClick={onClick} className={shell}>
+    <button type={type ?? "button"} onClick={onClick} className={shell} aria-label={ariaLabel}>
       {sweep}
       {inner}
     </button>

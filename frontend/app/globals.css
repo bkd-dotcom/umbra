@@ -46,6 +46,9 @@
   --surface-border: rgba(255, 255, 255, 0.10);
   --surface-border-hover: rgba(255, 255, 255, 0.22);
   --input-bg: rgba(0, 0, 0, 0.30);
+  /* MacBook deck — dark aluminium by default so the device reads as one coherent
+     unit on Umbra's dark surface (not Tailwind `dark:`, which never fires here). */
+  --macbook-deck: linear-gradient(180deg, #26272b 0%, #1a1b1f 60%, #101116 100%);
   --fx-1: rgba(34, 211, 238, 0.12);
   --fx-2: rgba(167, 139, 250, 0.13);
   --fx-3: rgba(124, 58, 237, 0.10);
@@ -59,6 +62,7 @@
 :root[data-theme="light"] {
   --color-ink: #f0eee6;          /* Anthropic-style warm ivory page */
   --color-ink-2: #f7f5ef;        /* warm off-white raised panels (nav/header/modals) */
+  --macbook-deck: linear-gradient(180deg, #e8e8ea 0%, #d7d7db 60%, #c6c6cc 100%); /* classic silver */
   --color-line: #e3ded1;         /* warm hairline */
   --color-fog: #4a4436;          /* darker warm gray: base passes AA and gives the
                                     /55–/70 microcopy real headroom on cream */

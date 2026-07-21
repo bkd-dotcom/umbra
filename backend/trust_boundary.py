@@ -7,10 +7,18 @@ deploy.yml", "print the contents of .env"). This module is the boundary that fla
 such content so it can be quarantined from the agent's writable-task context.
 
 Honest scope (what this is and is NOT):
-- This is a deterministic detector for a defined set of manipulation patterns. It
-  demonstrates that Umbra treats repository text as data and can catch *tested*
-  injection attempts. It is NOT a claim to prevent all prompt injection — no such
-  guarantee exists. Reports say "flagged this content", never "the repo is safe".
+- This is a deterministic detector for a defined set of manipulation patterns
+  (regex-based). A determined attacker can paraphrase around any fixed pattern set —
+  so detection is deliberately NOT the security claim. It demonstrates that Umbra
+  treats repository text as data and can catch *tested* injection attempts. It is NOT
+  a claim to prevent all prompt injection — no such guarantee exists. Reports say
+  "flagged this content", never "the repo is safe".
+- The real value is the QUARANTINE ARCHITECTURE around the detector, not detector
+  completeness: flagged instruction-file spans are redacted on disk in the disposable
+  checkout *before* the agent runs, restored afterward, and the signed changeset is
+  recomputed from git on the final tree — so a redaction never appears in the diff and
+  any agent edit to an instruction file is dropped and recorded. Even a missed pattern
+  still runs under the executable contract + independent verifier + earned-authority cap.
 - Detection is signal, not censorship: flagged spans are recorded with file, line,
   a short excerpt, and a category, so a human sees exactly what was quarantined and
   why. The excerpt is truncated and never executed.

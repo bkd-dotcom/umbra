@@ -403,9 +403,12 @@ export default function Dashboard() {
   // exactly ONE registry entry atomically — its report, repo, and timestamp — so a
   // captured view can never mix scores/evidence from another repo. Unknown ids are
   // ignored (we never fabricate a proof that doesn't exist).
-  const openCaptured = useCallback((proofId: string = "calhacks") => {
+  const openCaptured = useCallback((proofId?: unknown) => {
     if (scanning) return;
-    const entry = getProof(proofId);
+    // Accept a string id; tolerate being wired directly as an onClick handler (where
+    // the arg is a click event) by falling back to the default proof.
+    const id = typeof proofId === "string" ? proofId : "calhacks";
+    const entry = getProof(id) ?? getProof("calhacks");
     if (!entry) return;
     resetActive();
     setResult(entry.report as unknown as ScanResult);
@@ -1155,7 +1158,7 @@ function ZoneLabel({ n, title, hint }: { n: string; title: string; hint?: string
 // Backend reachability indicator. When the API is unreachable a scan fails with a
 // bare "Failed to fetch"; this makes the fix explicit (and only shows the local
 // :8000 command when the client is actually pointed at localhost).
-function ApiStatus({ up, onOpenCaptured }: { up: boolean | null; onOpenCaptured?: () => void }) {
+function ApiStatus({ up, onOpenCaptured }: { up: boolean | null; onOpenCaptured?: (proofId: string) => void }) {
   if (up === null) return null; // still probing
   if (up) {
     return (
@@ -1182,7 +1185,7 @@ function ApiStatus({ up, onOpenCaptured }: { up: boolean | null; onOpenCaptured?
       {onOpenCaptured && (
         <button
           type="button"
-          onClick={onOpenCaptured}
+          onClick={() => onOpenCaptured("calhacks")}
           className="mt-2.5 inline-flex items-center gap-2 rounded-full border border-teal/40 bg-teal/10 px-3 py-1.5 font-mono text-[11px] text-teal transition-colors hover:bg-teal/20"
         >
           ▶ Open the captured proof scan instead <span className="text-teal/70">· works offline</span>
@@ -1196,7 +1199,7 @@ function ApiStatus({ up, onOpenCaptured }: { up: boolean | null; onOpenCaptured?
 // on where the live proof is before they start clicking. Guests only (judges
 // arriving from the landing page); a logged-in user working the platform never
 // sees the "For judges" onboarding card or its captured-scan shortcut.
-function JudgePath({ onOpenCaptured }: { onOpenCaptured: () => void }) {
+function JudgePath({ onOpenCaptured }: { onOpenCaptured: (proofId: string) => void }) {
   const steps = [
     ["01", "Run the Agent Admission Test", "The differentiator — Zone 02 below. Run a fixture (permitted → forbidden → capped) to watch the pipeline decide the authority a change earns, then verify the signed receipt."],
     ["02", "Read the Provider Ledger", "Every output labelled live / cache / unavailable — never fabricated."],
@@ -1223,7 +1226,7 @@ function JudgePath({ onOpenCaptured }: { onOpenCaptured: () => void }) {
       <div className="mt-3.5 flex flex-wrap items-center gap-3 border-t border-[color:var(--surface-border)] pt-3.5">
         <button
           type="button"
-          onClick={onOpenCaptured}
+          onClick={() => onOpenCaptured("calhacks")}
           className="inline-flex items-center gap-2 rounded-full border border-teal/40 bg-teal/10 px-3.5 py-1.5 font-mono text-[11px] text-teal transition-colors hover:bg-teal/20"
         >
           ▶ Open a captured scan <span className="text-teal/70">· instant, no wait</span>

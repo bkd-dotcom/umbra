@@ -159,6 +159,18 @@ def _user_context(request: Request) -> dict[str, object]:
     return {"github_token": store.get_github_token(key), "openai_key": store.get_openai_key(key), "allow_codex": allow_codex}
 
 
+def _is_founder(request: Request) -> bool:
+    """True only for a configured founder account. When no founder allowlist is set
+    (local dev), treat the session user as founder so local testing still works."""
+    founders = founder_ids()
+    user = request.session.get("user")
+    if not founders:
+        return bool(user)  # local/dev: any signed-in user
+    if not user:
+        return False
+    return f"{user.get('provider')}:{user.get('sub')}" in founders
+
+
 @app.post("/api/scan", tags=["agents"])
 async def scan_repo(request: ScanRequest, http: Request) -> dict[str, object]:
     _validate_repo(request.repo_url)
@@ -346,6 +358,11 @@ async def public_live_admission(request: PublicLiveRequest, http: Request) -> di
     # Genuine-Codex path.
     if not CodexClient.enabled():
         raise HTTPException(status_code=503, detail="Genuine Codex runs aren't enabled on this server. Open a verified captured run — it shows a real recorded Codex diff.")
+    # Founder-only: a genuine codex exec spends credits and takes minutes, so it is
+    # never an anonymous/judge action. Everyone else gets the captured proof (which
+    # already contains a real recorded Codex diff) or the deterministic executor.
+    if not _is_founder(http):
+        raise HTTPException(status_code=403, detail="Running a fresh Codex task on the server is founder-only (it spends Codex credits). The verified captured run already includes a real recorded Codex diff, and the deterministic executor is unlimited.")
     if ip in _CODEX_INFLIGHT:
         raise HTTPException(status_code=409, detail="A genuine-Codex run is already in progress for you — wait for it to finish.")
     ip_rem, global_rem = _codex_quota_remaining(ip)

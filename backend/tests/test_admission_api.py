@@ -179,12 +179,30 @@ def test_rejected_repo_does_not_charge_codex_quota(monkeypatch):
     _reset_quota(m)
 
 
+def test_codex_is_founder_only_for_anonymous(monkeypatch):
+    import backend.main as m
+    from backend.codex_client import CodexClient
+
+    monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
+    monkeypatch.setattr(CodexClient, "enabled", staticmethod(lambda: True))
+    _reset_quota(m)
+    before = client.get("/api/admit/public-live/repos").json()["codex_remaining_for_you"]
+    # Anonymous (no founder session) genuine-Codex request → 403, and NO quota spent.
+    r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/expressjs/express", "codex": True})
+    assert r.status_code == 403
+    assert "founder-only" in r.json()["detail"].lower()
+    after = client.get("/api/admit/public-live/repos").json()["codex_remaining_for_you"]
+    assert after == before
+    _reset_quota(m)
+
+
 def test_codex_charged_only_when_exhausted_blocks(monkeypatch):
     import backend.main as m
     from backend.codex_client import CodexClient
 
     monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
     monkeypatch.setattr(CodexClient, "enabled", staticmethod(lambda: True))
+    monkeypatch.setattr(m, "_is_founder", lambda req: True)  # reach the quota logic
     _reset_quota(m)
     # Pre-exhaust the per-IP daily Codex budget for the test client's IP.
     now = __import__("time").time()
@@ -201,6 +219,7 @@ def test_inflight_codex_run_blocks_duplicate(monkeypatch):
 
     monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
     monkeypatch.setattr(CodexClient, "enabled", staticmethod(lambda: True))
+    monkeypatch.setattr(m, "_is_founder", lambda req: True)  # reach the in-flight guard
     _reset_quota(m)
     # Simulate a run already in flight for this IP → duplicate must 409, not charge.
     m._CODEX_INFLIGHT.add("testclient")

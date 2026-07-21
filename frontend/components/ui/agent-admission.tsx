@@ -113,7 +113,7 @@ function CheckRow({ ok, name, detail, muted }: { ok: boolean | null; name: strin
   );
 }
 
-export function AgentAdmission({ repo = "", signedIn = false, onOpenCaptured }: { repo?: string; signedIn?: boolean; onOpenCaptured?: (proofId: string) => void }) {
+export function AgentAdmission({ repo = "", signedIn = false, founder = false, onOpenCaptured }: { repo?: string; signedIn?: boolean; founder?: boolean; onOpenCaptured?: (proofId: string) => void }) {
   const [fixture, setFixture] = useState(FIXTURES[0].id);
   const [running, setRunning] = useState(false);
   const [runKind, setRunKind] = useState<"live" | "fixture" | null>(null);
@@ -323,31 +323,41 @@ export function AgentAdmission({ repo = "", signedIn = false, onOpenCaptured }: 
               </div>
             )}
 
-            {/* 3. Genuine Codex — only when the server has it AND the caller has an
-                allowance left. Never a dead-end: disabled with the exact remaining
-                count, and points to captured proof otherwise. */}
+            {/* 3. Genuine Codex — FOUNDER-ONLY as an action. For everyone else
+                (logged-out judges, non-founders) it is a non-clickable note that
+                points to the captured proof, which already contains a real recorded
+                Codex diff — so a judge never consumes a credit-spending run, waits
+                minutes, or hits a rate-limit dead-end. */}
             {codexAvailable && deterministic.length > 0 && (
               <div className="mt-3 rounded-xl border border-violet/25 bg-violet/[0.05] p-4">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded-full border border-violet/40 bg-violet/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-violet">Genuine Codex</span>
-                  <span className="font-mono text-[9.5px] text-fog/60">a real <span className="text-cloud">codex exec</span> writes the diff · ~1–2 min · <span className="text-cloud">{codexRemaining}</span> run{codexRemaining === 1 ? "" : "s"} left for you today</span>
+                  <span className="font-mono text-[9.5px] text-fog/60">a real <span className="text-cloud">codex exec</span> writes the diff{founder ? <> · ~1–2 min · <span className="text-cloud">{codexRemaining}</span> run{codexRemaining === 1 ? "" : "s"} left today</> : null}</span>
                 </div>
-                {codexRemaining > 0 ? (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {deterministic.slice(0, 2).map((e) => (
-                      <button
-                        key={e.repo_id}
-                        onClick={() => runPublicLive(e.repo_url, true)}
-                        disabled={running}
-                        className="rounded-lg border border-violet/40 bg-violet/[0.08] px-3 py-1.5 font-mono text-[11px] text-cloud transition-colors hover:border-violet/60 disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        {running && runKind === "live" ? "running Codex…" : `▶ Codex · ${e.name}`}
-                      </button>
-                    ))}
-                  </div>
+                {founder ? (
+                  codexRemaining > 0 ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {deterministic.slice(0, 2).map((e) => (
+                        <button
+                          key={e.repo_id}
+                          onClick={() => runPublicLive(e.repo_url, true)}
+                          disabled={running}
+                          className="rounded-lg border border-violet/40 bg-violet/[0.08] px-3 py-1.5 font-mono text-[11px] text-cloud transition-colors hover:border-violet/60 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {running && runKind === "live" ? "running Codex…" : `▶ Codex · ${e.name}`}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-2 font-mono text-[9.5px] leading-snug text-amber/80">
+                      Founder genuine-Codex run for today is used up — the <span className="text-teal">verified captured run</span> above already shows a real recorded Codex diff.
+                    </p>
+                  )
                 ) : (
-                  <p className="mt-2 font-mono text-[9.5px] leading-snug text-amber/80">
-                    Your genuine-Codex run for today is used up — open a <span className="text-teal">verified captured run</span> above to see a real recorded Codex diff, or run the deterministic evaluation (unlimited).
+                  <p className="mt-2 font-mono text-[9.5px] leading-snug text-fog/60">
+                    A genuine <span className="text-cloud">codex exec</span> diff is included in the{" "}
+                    <button type="button" onClick={() => onOpenCaptured?.("calhacks")} className="text-teal underline decoration-dotted underline-offset-2 hover:text-teal/80">verified captured run</button>{" "}
+                    above — instant and verifiable. Running a fresh Codex task on the server is founder-only (it spends Codex credits).
                   </p>
                 )}
               </div>

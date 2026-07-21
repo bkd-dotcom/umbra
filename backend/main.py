@@ -271,14 +271,15 @@ def _prune(hits: dict[str, list[float]], window: float, now: float) -> None:
 
 
 def _deterministic_rate_ok(ip: str) -> tuple[bool, str]:
-    """Per-visitor + global hourly budget for deterministic live runs. Charged here
-    (no credits are spent, so charging on accept is fine)."""
+    """Per-VISITOR hourly budget for deterministic live runs. Each visitor starts
+    fresh at 0 and their count is fully independent of everyone else's — there is no
+    shared global pool, so one visitor can never exhaust another's allowance. No
+    Codex credits are spent, so charging on accept is fine. The per-IP cap remains
+    only as basic abuse protection (each deterministic run is a real clone + OSV)."""
     import time
 
     now = time.time()
     _prune(_DET_HITS, 3600.0, now)
-    if sum(len(v) for v in _DET_HITS.values()) >= DETERMINISTIC_GLOBAL_PER_HOUR:
-        return False, "The shared live-demo budget is busy this hour. Open a verified captured run instead — it's instant and unlimited."
     if len(_DET_HITS.get(ip, [])) >= DETERMINISTIC_PER_IP_PER_HOUR:
         return False, f"You've used your {DETERMINISTIC_PER_IP_PER_HOUR} live deterministic runs this hour. Open a verified captured run instead — instant, unlimited, no wait."
     _DET_HITS.setdefault(ip, []).append(now)

@@ -128,10 +128,25 @@ def test_deterministic_rate_limited(monkeypatch):
     monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
     _reset_quota(m)
     now = __import__("time").time()
-    # Saturate the global deterministic budget → next call is 429 before any clone.
-    m._DET_HITS["10.0.0.1"] = [now] * m.DETERMINISTIC_GLOBAL_PER_HOUR
+    # Per-VISITOR budget: saturate THIS visitor's own per-IP allowance → 429. Another
+    # visitor's usage never affects this one (no shared global pool).
+    m._DET_HITS["testclient"] = [now] * m.DETERMINISTIC_PER_IP_PER_HOUR
     r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/expressjs/express"})
     assert r.status_code == 429
+    _reset_quota(m)
+
+
+def test_deterministic_is_per_visitor_not_global(monkeypatch):
+    import backend.main as m
+
+    monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
+    _reset_quota(m)
+    now = __import__("time").time()
+    # A DIFFERENT visitor having used lots of runs must NOT block this visitor: their
+    # allowance is unique to them and still starts fresh at 0.
+    m._DET_HITS["10.0.0.99"] = [now] * (m.DETERMINISTIC_PER_IP_PER_HOUR * 20)
+    ok, _msg = m._deterministic_rate_ok("testclient")
+    assert ok is True  # this visitor is unaffected by another's usage
     _reset_quota(m)
 
 

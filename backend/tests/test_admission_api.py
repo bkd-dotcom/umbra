@@ -73,48 +73,66 @@ def test_admit_requires_input():
     assert client.post("/api/admit", json={}).status_code == 422
 
 
-# --- Judge-triggerable public LIVE admission (rate-limited, allowlisted) ----------
+# --- Judge-triggerable public LIVE admission (catalog + quota model) --------------
 
-def test_public_live_repos_list():
-    r = client.get("/api/admit/public-live/repos")
-    assert r.status_code == 200
-    body = r.json()
-    assert isinstance(body["repos"], list) and len(body["repos"]) >= 3
-    assert body["per_ip_per_hour"] >= 1
+def _reset_quota(m):
+    m._DET_HITS.clear()
+    m._CODEX_HITS.clear()
+    m._CODEX_IP_HITS.clear()
+    m._CODEX_INFLIGHT.clear()
+
+
+def test_public_live_catalog_shape_and_matches_allowlist():
+    from backend.public_catalog import DETERMINISTIC_ALLOWLIST
+
+    body = client.get("/api/admit/public-live/repos").json()
+    assert isinstance(body["entries"], list) and body["entries"]
+    # Back-compat flat fields still present.
+    assert isinstance(body["repos"], list) and body["per_ip_per_hour"] >= 1
+    assert "codex_available" in body and "codex_per_ip_per_day" in body
+    assert "codex_remaining_for_you" in body and "codex_remaining_global" in body
+    # Every deterministic_live entry the catalog advertises is in the allowlist the
+    # endpoint actually accepts — one source of truth, no drift.
+    for e in body["entries"]:
+        assert e["mode"] in {"captured", "deterministic_live", "founder_codex", "unavailable"}
+        if e["mode"] == "deterministic_live":
+            owner_repo = e["repo_url"].removeprefix("https://github.com/")
+            assert f"github.com/{owner_repo}" in DETERMINISTIC_ALLOWLIST
+    # A captured entry must carry a proof id and never consume quota.
+    captured = [e for e in body["entries"] if e["mode"] == "captured"]
+    assert captured and all(c["captured_proof_id"] and c["consumes_quota"] is False for c in captured)
 
 
 def test_public_live_rejects_non_allowlisted_repo(monkeypatch):
     import backend.main as m
 
-    # Force live enabled so we reach the allowlist check (not the 503 gate).
     monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
-    m._PUBLIC_LIVE_HITS.clear()
+    _reset_quota(m)
     r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/some/random-repo"})
     assert r.status_code == 400
-    assert "enabled for the live demo" in r.json()["detail"]
-
-
-def test_public_live_rate_limited(monkeypatch):
-    import backend.main as m
-
-    monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
-    m._PUBLIC_LIVE_HITS.clear()
-    # Saturate the GLOBAL hourly budget so the next call is 429 regardless of IP,
-    # before any clone happens.
-    now = __import__("time").time()
-    m._PUBLIC_LIVE_HITS["10.0.0.1"] = [now] * m._PUBLIC_LIVE_GLOBAL_HOUR
-    r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/expressjs/express"})
-    assert r.status_code == 429
-    m._PUBLIC_LIVE_HITS.clear()
+    assert "catalog" in r.json()["detail"].lower()
 
 
 def test_public_live_disabled_returns_503(monkeypatch):
     import backend.main as m
 
     monkeypatch.setattr(m, "live_repositories_enabled", lambda: False)
-    m._PUBLIC_LIVE_HITS.clear()
+    _reset_quota(m)
     r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/expressjs/express"})
     assert r.status_code == 503
+
+
+def test_deterministic_rate_limited(monkeypatch):
+    import backend.main as m
+
+    monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
+    _reset_quota(m)
+    now = __import__("time").time()
+    # Saturate the global deterministic budget → next call is 429 before any clone.
+    m._DET_HITS["10.0.0.1"] = [now] * m.DETERMINISTIC_GLOBAL_PER_HOUR
+    r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/expressjs/express"})
+    assert r.status_code == 429
+    _reset_quota(m)
 
 
 def test_public_live_codex_requires_cli_enabled(monkeypatch):
@@ -123,13 +141,99 @@ def test_public_live_codex_requires_cli_enabled(monkeypatch):
 
     monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
     monkeypatch.setattr(CodexClient, "enabled", staticmethod(lambda: False))
-    m._PUBLIC_LIVE_HITS.clear(); m._PUBLIC_CODEX_HITS.clear(); m._PUBLIC_CODEX_IP_HITS.clear()
-    # codex=true but the server has no Codex CLI → honest 503, no clone attempted.
+    _reset_quota(m)
     r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/expressjs/express", "codex": True})
     assert r.status_code == 503
     assert "Codex" in r.json()["detail"]
 
 
-def test_public_live_repos_reports_codex_availability():
-    r = client.get("/api/admit/public-live/repos").json()
-    assert "codex_available" in r and "codex_per_ip_per_day" in r
+def test_invalid_repo_does_not_charge_codex_quota(monkeypatch):
+    import backend.main as m
+    from backend.codex_client import CodexClient
+
+    monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
+    monkeypatch.setattr(CodexClient, "enabled", staticmethod(lambda: True))
+    _reset_quota(m)
+    before = client.get("/api/admit/public-live/repos").json()["codex_remaining_for_you"]
+    # Malformed repo → 422/400 with codex=true; must NOT decrement the Codex quota.
+    r = client.post("/api/admit/public-live", json={"repo_url": "not a url", "codex": True})
+    assert r.status_code in (400, 422)
+    after = client.get("/api/admit/public-live/repos").json()["codex_remaining_for_you"]
+    assert after == before
+    _reset_quota(m)
+
+
+def test_rejected_repo_does_not_charge_codex_quota(monkeypatch):
+    import backend.main as m
+    from backend.codex_client import CodexClient
+
+    monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
+    monkeypatch.setattr(CodexClient, "enabled", staticmethod(lambda: True))
+    _reset_quota(m)
+    before = client.get("/api/admit/public-live/repos").json()["codex_remaining_for_you"]
+    # Valid GitHub URL but not in the catalog → 400; must NOT charge Codex quota.
+    r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/torvalds/linux", "codex": True})
+    assert r.status_code == 400
+    after = client.get("/api/admit/public-live/repos").json()["codex_remaining_for_you"]
+    assert after == before
+    _reset_quota(m)
+
+
+def test_codex_charged_only_when_exhausted_blocks(monkeypatch):
+    import backend.main as m
+    from backend.codex_client import CodexClient
+
+    monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
+    monkeypatch.setattr(CodexClient, "enabled", staticmethod(lambda: True))
+    _reset_quota(m)
+    # Pre-exhaust the per-IP daily Codex budget for the test client's IP.
+    now = __import__("time").time()
+    m._CODEX_IP_HITS["testclient"] = [now] * m.CODEX_PER_IP_PER_DAY
+    r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/expressjs/express", "codex": True})
+    assert r.status_code == 429
+    assert "captured" in r.json()["detail"].lower()
+    _reset_quota(m)
+
+
+def test_inflight_codex_run_blocks_duplicate(monkeypatch):
+    import backend.main as m
+    from backend.codex_client import CodexClient
+
+    monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
+    monkeypatch.setattr(CodexClient, "enabled", staticmethod(lambda: True))
+    _reset_quota(m)
+    # Simulate a run already in flight for this IP → duplicate must 409, not charge.
+    m._CODEX_INFLIGHT.add("testclient")
+    before = client.get("/api/admit/public-live/repos").json()["codex_remaining_for_you"]
+    r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/expressjs/express", "codex": True})
+    assert r.status_code == 409
+    after = client.get("/api/admit/public-live/repos").json()["codex_remaining_for_you"]
+    assert after == before
+    _reset_quota(m)
+
+
+# --- Repo URL normalization (root cause of "only acceptable GitHub repos") --------
+
+def test_parse_public_repo_accepts_common_forms():
+    from backend.integrations.github import parse_public_repo
+
+    for value in [
+        "https://github.com/expressjs/express",
+        "http://github.com/expressjs/express",
+        "github.com/expressjs/express",          # scheme-less (was rejected before)
+        "www.github.com/expressjs/express",
+        "expressjs/express",                      # bare owner/repo
+        "https://github.com/expressjs/express.git",
+        "https://github.com/expressjs/express/",
+    ]:
+        assert parse_public_repo(value) == "expressjs/express", value
+
+
+def test_parse_public_repo_rejects_non_github_and_malformed():
+    import pytest
+
+    from backend.integrations.github import parse_public_repo
+
+    for bad in ["https://gitlab.com/a/b", "not a url", "https://github.com/onlyowner"]:
+        with pytest.raises(ValueError):
+            parse_public_repo(bad)

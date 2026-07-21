@@ -210,29 +210,28 @@ async def agent_admission(request: AdmissionRequest, http: Request) -> dict[str,
 
 
 # --- Judge-triggerable public LIVE admission -------------------------------------
-# A hard-capped endpoint so a judge can watch admission run against a REAL public
-# repo with a live clone + live OSV — with no sign-in and no risk of spending the
-# founder's Codex credits (allow_codex is never granted here, so the executor is a
-# deterministic policy evaluation, labelled honestly). Rate-limited per-IP and
-# globally so it can't be used to burn resources.
-_PUBLIC_LIVE_ALLOWLIST = {
-    "github.com/expressjs/express",
-    "github.com/pallets/flask",
-    "github.com/psf/requests",
-    "github.com/lodash/lodash",
-    "github.com/axios/axios",
-}
-_PUBLIC_LIVE_HITS: dict[str, list[float]] = {}
-_PUBLIC_LIVE_PER_IP_HOUR = 3
-_PUBLIC_LIVE_GLOBAL_HOUR = 30
+# The catalog in backend/public_catalog.py is the single source of truth for which
+# public repos are runnable and in what mode; the UI renders from it, so it can
+# never offer a button the backend rejects. Two independent budgets:
+#   - deterministic live (real clone + OSV, NO Codex credits) — looser, per-visitor.
+#   - genuine Codex (spends credits) — strict daily cap, quota charged only AFTER an
+#     eligible request is accepted and the Codex run actually starts (never on a
+#     click, invalid repo, rejected request, duplicate in-flight, or deterministic run).
+from backend.public_catalog import (
+    CODEX_GLOBAL_PER_DAY,
+    CODEX_PER_IP_PER_DAY,
+    DETERMINISTIC_ALLOWLIST,
+    DETERMINISTIC_GLOBAL_PER_HOUR,
+    DETERMINISTIC_PER_IP_PER_HOUR,
+    build_catalog,
+)
 
-# A SEPARATE, much stricter budget for genuine-Codex public runs (these spend the
-# founder's Codex credits and take longer), so a judge can watch a real `codex exec`
-# once without the endpoint becoming a credit-burn vector.
-_PUBLIC_CODEX_HITS: list[float] = []
-_PUBLIC_CODEX_PER_IP_DAY = 1
-_PUBLIC_CODEX_GLOBAL_DAY = 8
-_PUBLIC_CODEX_IP_HITS: dict[str, list[float]] = {}
+_DET_HITS: dict[str, list[float]] = {}
+_CODEX_HITS: list[float] = []
+_CODEX_IP_HITS: dict[str, list[float]] = {}
+# In-flight de-dupe: a genuine-Codex run currently executing per IP, so a double
+# click / duplicate request can't start (or charge) a second run.
+_CODEX_INFLIGHT: set[str] = set()
 
 
 def _client_ip(request: Request) -> str:
@@ -247,100 +246,127 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def _public_live_rate_ok(ip: str) -> tuple[bool, str]:
+def _prune(hits: dict[str, list[float]], window: float, now: float) -> None:
+    for key in list(hits):
+        hits[key] = [t for t in hits[key] if now - t < window]
+        if not hits[key]:
+            hits.pop(key, None)
+
+
+def _deterministic_rate_ok(ip: str) -> tuple[bool, str]:
+    """Per-visitor + global hourly budget for deterministic live runs. Charged here
+    (no credits are spent, so charging on accept is fine)."""
     import time
 
     now = time.time()
-    window = 3600.0
-    for key in list(_PUBLIC_LIVE_HITS):
-        _PUBLIC_LIVE_HITS[key] = [t for t in _PUBLIC_LIVE_HITS[key] if now - t < window]
-        if not _PUBLIC_LIVE_HITS[key]:
-            _PUBLIC_LIVE_HITS.pop(key, None)
-    total = sum(len(v) for v in _PUBLIC_LIVE_HITS.values())
-    if total >= _PUBLIC_LIVE_GLOBAL_HOUR:
-        return False, "The shared live-demo budget is used up for this hour — try a reproducible offline fixture instead (no wait, no limit)."
-    if len(_PUBLIC_LIVE_HITS.get(ip, [])) >= _PUBLIC_LIVE_PER_IP_HOUR:
-        return False, f"You've used your {_PUBLIC_LIVE_PER_IP_HOUR} live runs this hour — the offline fixtures reproduce the same pipeline with no limit."
-    _PUBLIC_LIVE_HITS.setdefault(ip, []).append(now)
+    _prune(_DET_HITS, 3600.0, now)
+    if sum(len(v) for v in _DET_HITS.values()) >= DETERMINISTIC_GLOBAL_PER_HOUR:
+        return False, "The shared live-demo budget is busy this hour. Open a verified captured run instead — it's instant and unlimited."
+    if len(_DET_HITS.get(ip, [])) >= DETERMINISTIC_PER_IP_PER_HOUR:
+        return False, f"You've used your {DETERMINISTIC_PER_IP_PER_HOUR} live deterministic runs this hour. Open a verified captured run instead — instant, unlimited, no wait."
+    _DET_HITS.setdefault(ip, []).append(now)
     return True, ""
 
 
-def _public_codex_rate_ok(ip: str) -> tuple[bool, str]:
-    """Strict daily budget for genuine-Codex public runs (credit-spending)."""
+def _codex_quota_remaining(ip: str) -> tuple[int, int]:
+    """(remaining_for_ip, remaining_global) WITHOUT charging."""
     import time
 
     now = time.time()
-    day = 86400.0
-    global _PUBLIC_CODEX_HITS
-    _PUBLIC_CODEX_HITS = [t for t in _PUBLIC_CODEX_HITS if now - t < day]
-    for key in list(_PUBLIC_CODEX_IP_HITS):
-        _PUBLIC_CODEX_IP_HITS[key] = [t for t in _PUBLIC_CODEX_IP_HITS[key] if now - t < day]
-        if not _PUBLIC_CODEX_IP_HITS[key]:
-            _PUBLIC_CODEX_IP_HITS.pop(key, None)
-    if len(_PUBLIC_CODEX_HITS) >= _PUBLIC_CODEX_GLOBAL_DAY:
-        return False, "The shared genuine-Codex demo budget is used up for today. Run the same repo with the deterministic executor (no Codex), or the offline fixtures — both are unlimited."
-    if len(_PUBLIC_CODEX_IP_HITS.get(ip, [])) >= _PUBLIC_CODEX_PER_IP_DAY:
-        return False, "You've used your genuine-Codex run for today. The deterministic and offline paths reproduce the full pipeline with no limit."
-    _PUBLIC_CODEX_HITS.append(now)
-    _PUBLIC_CODEX_IP_HITS.setdefault(ip, []).append(now)
-    return True, ""
+    _prune(_CODEX_IP_HITS, 86400.0, now)
+    global _CODEX_HITS
+    _CODEX_HITS = [t for t in _CODEX_HITS if now - t < 86400.0]
+    ip_rem = max(0, CODEX_PER_IP_PER_DAY - len(_CODEX_IP_HITS.get(ip, [])))
+    global_rem = max(0, CODEX_GLOBAL_PER_DAY - len(_CODEX_HITS))
+    return ip_rem, global_rem
+
+
+def _codex_charge(ip: str) -> None:
+    """Charge one genuine-Codex run against both budgets. Called ONLY once a run is
+    accepted and about to start."""
+    import time
+
+    now = time.time()
+    _CODEX_HITS.append(now)
+    _CODEX_IP_HITS.setdefault(ip, []).append(now)
 
 
 class PublicLiveRequest(BaseModel):
-    repo_url: str = Field(description="A public repo from the demo allowlist to run a live admission against")
+    repo_url: str = Field(description="A public repo from the catalog to run a live admission against")
     codex: bool = Field(default=False, description="Run a GENUINE bounded Codex task (strict daily cap) instead of the deterministic executor")
 
 
 @app.get("/api/admit/public-live/repos", tags=["agents"])
-async def public_live_repos() -> dict[str, object]:
-    """The allowlist of public repos a judge can run a live admission against."""
-    return {
-        "repos": sorted(_PUBLIC_LIVE_ALLOWLIST),
-        "per_ip_per_hour": _PUBLIC_LIVE_PER_IP_HOUR,
-        "codex_available": CodexClient.enabled(),
-        "codex_per_ip_per_day": _PUBLIC_CODEX_PER_IP_DAY,
-    }
+async def public_live_repos(http: Request) -> dict[str, object]:
+    """The declared public-repo catalog the UI renders from (single source of truth),
+    plus the caller's remaining genuine-Codex allowance so the UI can disable the
+    Codex control before a click when the budget is gone."""
+    catalog = build_catalog()
+    ip_rem, global_rem = _codex_quota_remaining(_client_ip(http))
+    catalog["codex_remaining_for_you"] = ip_rem
+    catalog["codex_remaining_global"] = global_rem
+    return catalog
 
 
 @app.post("/api/admit/public-live", tags=["agents"])
 async def public_live_admission(request: PublicLiveRequest, http: Request) -> dict[str, object]:
-    """Run a LIVE admission (real clone + live OSV) on an allowlisted public repo —
-    no sign-in, rate-limited.
+    """Run a LIVE admission (real clone + live OSV) on an allowlisted public repo.
 
-    - Default (``codex=false``): the deterministic executor (no Codex credits),
-      labelled honestly, on the looser per-hour budget.
-    - ``codex=true``: a GENUINE bounded ``codex exec`` produces the diff (executor
-      ``codex-cli``) on a strict daily budget, so a judge can watch a real Codex run
-      without turning the endpoint into a credit-burn vector. Requires the server to
-      have the Codex CLI enabled; otherwise falls back with a clear message."""
+    - Default (``codex=false``): deterministic executor (NO Codex credits), per-visitor
+      hourly budget.
+    - ``codex=true``: a GENUINE bounded ``codex exec`` (executor ``codex-cli``); the
+      strict daily quota is charged ONLY after the request is validated, eligible, not
+      a duplicate in-flight, and the run is about to start."""
     if not live_repositories_enabled():
-        raise HTTPException(status_code=503, detail="Live repositories are disabled on this server. Use a reproducible offline fixture instead.")
+        raise HTTPException(status_code=503, detail="Live repositories are disabled on this server. Open a verified captured run instead — instant and unlimited.")
+    # Validate + normalize FIRST — an invalid/rejected repo never touches any quota.
     owner_repo = _validate_repo(request.repo_url)
     normalized = f"github.com/{owner_repo}"
-    if normalized not in _PUBLIC_LIVE_ALLOWLIST:
-        raise HTTPException(status_code=400, detail=f"Only these public repos are enabled for the live demo: {', '.join(sorted(_PUBLIC_LIVE_ALLOWLIST))}.")
+    if normalized not in DETERMINISTIC_ALLOWLIST:
+        allowed = ", ".join(sorted(s.removeprefix("github.com/") for s in DETERMINISTIC_ALLOWLIST))
+        raise HTTPException(status_code=400, detail=f"'{owner_repo}' isn't in the live-demo catalog. Enabled repos: {allowed}. (Or open a verified captured run — instant and unlimited.)")
     ip = _client_ip(http)
     want_codex = bool(request.codex)
-    if want_codex:
-        if not CodexClient.enabled():
-            raise HTTPException(status_code=503, detail="Genuine Codex runs aren't enabled on this server. The deterministic executor and offline fixtures run the same pipeline with no limit.")
-        ok, msg = _public_codex_rate_ok(ip)
+
+    if not want_codex:
+        # Deterministic path: no credits spent; charge the per-visitor budget on accept.
+        ok, msg = _deterministic_rate_ok(ip)
         if not ok:
             raise HTTPException(status_code=429, detail=msg)
-    else:
-        ok, msg = _public_live_rate_ok(ip)
-        if not ok:
-            raise HTTPException(status_code=429, detail=msg)
+        try:
+            report = await orchestrator.admit(normalized, token=None, use_codex=False)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"Live admission failed: {exc}") from exc
+        return report
+
+    # Genuine-Codex path.
+    if not CodexClient.enabled():
+        raise HTTPException(status_code=503, detail="Genuine Codex runs aren't enabled on this server. Open a verified captured run — it shows a real recorded Codex diff.")
+    if ip in _CODEX_INFLIGHT:
+        raise HTTPException(status_code=409, detail="A genuine-Codex run is already in progress for you — wait for it to finish.")
+    ip_rem, global_rem = _codex_quota_remaining(ip)
+    if global_rem <= 0:
+        raise HTTPException(status_code=429, detail="The shared genuine-Codex demo budget is used up for today. Open a verified captured run (a real recorded Codex diff), or run the deterministic executor — both unlimited.")
+    if ip_rem <= 0:
+        raise HTTPException(status_code=429, detail="You've used your genuine-Codex run for today. Open a verified captured run (a real recorded Codex diff), or run the deterministic executor — both unlimited.")
+    # Eligible + not a duplicate → reserve in-flight, charge quota, then run. Charging
+    # only here guarantees a click/invalid/rejected/duplicate never spends quota.
+    _CODEX_INFLIGHT.add(ip)
+    _codex_charge(ip)
     try:
-        # token=None → public clone. use_codex True → genuine `codex exec` (executor
-        # labelled codex-cli); False → deterministic (labelled deterministic).
-        report = await orchestrator.admit(normalized, token=None, use_codex=want_codex)
+        report = await orchestrator.admit(normalized, token=None, use_codex=True)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Live admission failed: {exc}") from exc
+    finally:
+        _CODEX_INFLIGHT.discard(ip)
     return report
 
 

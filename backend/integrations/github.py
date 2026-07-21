@@ -9,10 +9,14 @@ import httpx
 
 def parse_public_repo(repo_url: str) -> str:
     value = repo_url.strip().rstrip("/")
-    if value.count("/") == 1 and not value.startswith("http"):
-        value = f"https://github.com/{value}"
+    # Accept bare "owner/repo" and scheme-less "github.com/owner/repo" (and
+    # "www.github.com/…") in addition to full https URLs — normalize to a URL first
+    # so urlparse resolves the host instead of dumping everything into the path.
+    if not value.lower().startswith(("http://", "https://")):
+        value = f"https://{value.lstrip('/')}" if value.lower().startswith(("github.com/", "www.github.com/")) else f"https://github.com/{value.lstrip('/')}"
     parsed = urlparse(value)
-    if parsed.netloc.lower() != "github.com":
+    host = parsed.netloc.lower().removeprefix("www.")
+    if host != "github.com":
         raise ValueError("Umbra currently accepts GitHub repository URLs only.")
     bits = [part for part in parsed.path.split("/") if part]
     if len(bits) < 2:

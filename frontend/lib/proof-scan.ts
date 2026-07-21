@@ -591,3 +591,36 @@ export const PROOF_SCAN = {
     }
   ]
 } as const;
+
+// -----------------------------------------------------------------------------
+// Proof registry — the ONE keyed source the dashboard hydrates from for
+// `?proof=<id>` and the "Verified captured public runs" section. Each entry is a
+// genuine captured run. Do NOT add a repo here unless a real captured record
+// exists (no fabricated scores/receipts). Today there is exactly one real capture.
+export type ProofEntry = {
+  proof_id: string;
+  repo: string;            // canonical owner/name
+  repo_url: string;
+  captured_at: string;
+  report: typeof PROOF_SCAN;
+  // Whether a genuine Ed25519 admission receipt was captured for this run. The
+  // CalHacks capture is a SCAN (provider ledger + SHA-256 evidence hash), not an
+  // admission run, so it has no signed receipt — stated honestly, never faked.
+  has_signed_receipt: false;
+};
+
+export const PROOF_REGISTRY: Record<string, ProofEntry> = {
+  calhacks: {
+    proof_id: "calhacks",
+    repo: PROOF_REPO,
+    repo_url: "https://github.com/Pranav-Karra-3301/calhacks-12",
+    captured_at: PROOF_CAPTURED_AT,
+    report: PROOF_SCAN,
+    has_signed_receipt: false,
+  },
+};
+
+export function getProof(id: string | null | undefined): ProofEntry | null {
+  if (!id) return null;
+  return PROOF_REGISTRY[id.toLowerCase()] ?? null;
+}

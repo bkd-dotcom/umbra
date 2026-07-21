@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 
 import { GlowCard } from "@/components/ui/glow-card";
@@ -52,6 +52,27 @@ type AdmissionReport = {
   receipt?: ReceiptEnvelope;
 };
 
+// The backend-declared public-repo catalog (single source of truth for what's runnable).
+type CatalogEntry = {
+  repo_id: string;
+  repo_url: string;
+  name: string;
+  mode: "captured" | "deterministic_live" | "founder_codex" | "unavailable";
+  available: boolean;
+  disabled_reason: string | null;
+  consumes_quota: boolean;
+  captured_proof_id: string | null;
+  captured_at?: string;
+};
+type PublicCatalog = {
+  entries: CatalogEntry[];
+  limits: { deterministic_per_ip_per_hour: number; deterministic_global_per_hour: number; codex_per_ip_per_day: number; codex_global_per_day: number };
+  codex_available: boolean;
+  live_enabled: boolean;
+  codex_remaining_for_you?: number;
+  codex_remaining_global?: number;
+};
+
 const FIXTURES = [
   { id: "permitted-dependency-fix", label: "Permitted fix", hint: "in-scope bump → earns L2" },
   { id: "adversarial-readme-injection", label: "Adversarial README", hint: "prompt-injection quarantined" },
@@ -92,7 +113,7 @@ function CheckRow({ ok, name, detail, muted }: { ok: boolean | null; name: strin
   );
 }
 
-export function AgentAdmission({ repo = "", signedIn = false }: { repo?: string; signedIn?: boolean }) {
+export function AgentAdmission({ repo = "", signedIn = false, onOpenCaptured }: { repo?: string; signedIn?: boolean; onOpenCaptured?: (proofId: string) => void }) {
   const [fixture, setFixture] = useState(FIXTURES[0].id);
   const [running, setRunning] = useState(false);
   const [runKind, setRunKind] = useState<"live" | "fixture" | null>(null);
@@ -102,6 +123,18 @@ export function AgentAdmission({ repo = "", signedIn = false }: { repo?: string;
   const [receiptCheck, setReceiptCheck] = useState<string | null>(null);
   const [braked, setBraked] = useState(false);
   const [brakeNote, setBrakeNote] = useState<string | null>(null);
+  // The backend-declared catalog — the ONE source of runnable public repos. The UI
+  // renders only what the backend marks available, so no button can 404/400.
+  const [catalog, setCatalog] = useState<PublicCatalog | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API}/api/admit/public-live/repos`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((c: PublicCatalog | null) => { if (!cancelled && c) setCatalog(c); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   const repoLabel = repo.replace(/^https?:\/\//, "").replace(/^github\.com\//, "").replace(/\.git$/, "").replace(/\/$/, "");
   const canRunLive = !!repoLabel && signedIn;
@@ -139,19 +172,22 @@ export function AgentAdmission({ repo = "", signedIn = false }: { repo?: string;
   // rate-limited server-side. A real clone + live OSV; the executor is a
   // deterministic policy evaluation (never spends Codex credits), labelled honestly.
   const runPublicLive = useCallback(async (repoUrl: string, codex = false) => {
+    if (running) return; // prevent double-clicks / duplicate in-flight requests
     setRunning(true); setRunKind("live"); setError(null); setReport(null); setReceiptCheck(null); setBraked(false); setBrakeNote(null);
     try {
       const res = await fetch(`${API}/api/admit/public-live`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo_url: repoUrl, codex }) });
-      if (res.status === 429) { const b = await res.json().catch(() => ({})); throw new Error(b.detail || "Rate limit reached — try a reproducible offline fixture (no limit)."); }
-      if (res.status === 503) { const b = await res.json().catch(() => ({})); throw new Error(b.detail || "Live repos are disabled on this server. Try a reproducible offline fixture below."); }
+      if (res.status === 429 || res.status === 409) { const b = await res.json().catch(() => ({})); throw new Error(b.detail || "That live path is busy right now — open a verified captured run instead (instant, unlimited)."); }
+      if (res.status === 503) { const b = await res.json().catch(() => ({})); throw new Error(b.detail || "Live repos are disabled on this server. Open a verified captured run instead."); }
       if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.detail || `Live admission failed (${res.status})`); }
       setReport(await res.json());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Live admission request failed.");
     } finally {
       setRunning(false);
+      // Refresh remaining Codex allowance after a genuine-Codex attempt.
+      if (codex) fetch(`${API}/api/admit/public-live/repos`, { credentials: "include" }).then((r) => (r.ok ? r.json() : null)).then((c) => c && setCatalog(c)).catch(() => {});
     }
-  }, []);
+  }, [running]);
 
   const brake = useCallback(async (repoArg: string) => {
     setBraked(true);
@@ -223,50 +259,102 @@ export function AgentAdmission({ repo = "", signedIn = false }: { repo?: string;
         </p>
       </div>
 
-      {/* Judge-triggerable LIVE run on an allowlisted public repo — no sign-in,
-          rate-limited. Two modes: deterministic (unlimited-ish) or a GENUINE bounded
-          `codex exec` (strict daily cap), both labelled honestly in the report. */}
-      <div className="mt-3 rounded-xl border border-cyan/25 bg-cyan/[0.05] p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="rounded-full border border-cyan/40 bg-cyan/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-cyan">Live · no sign-in</span>
-          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fog/70">Run a live admission on a public repo</span>
-        </div>
-        <div className="mt-2.5 flex flex-wrap gap-2">
-          {["expressjs/express", "pallets/flask", "psf/requests", "lodash/lodash", "axios/axios"].map((slug) => (
-            <button
-              key={slug}
-              onClick={() => runPublicLive(`https://github.com/${slug}`, false)}
-              disabled={running}
-              className="rounded-lg border border-cyan/30 bg-[color:var(--surface)] px-3 py-1.5 font-mono text-[11px] text-cloud transition-colors hover:border-cyan/50 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {running && runKind === "live" ? "running…" : slug}
-            </button>
-          ))}
-        </div>
-        <p className="mt-2 font-mono text-[9.5px] leading-snug text-fog/55">
-          A real clone + live OSV against the chosen repo. Rate-limited. The executor is a deterministic policy
-          evaluation — no Codex credits spent — labelled honestly in the report.
-        </p>
-        {/* Genuine Codex — the real thing, strict daily cap so it can't burn credits. */}
-        <div className="mt-3 border-t border-cyan/15 pt-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full border border-violet/40 bg-violet/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-violet">Genuine Codex</span>
-            <span className="font-mono text-[9.5px] text-fog/60">watch a real <span className="text-cloud">codex exec</span> write the diff · ~1–2 min · 1/day</span>
-          </div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {["expressjs/express", "axios/axios"].map((slug) => (
-              <button
-                key={slug}
-                onClick={() => runPublicLive(`https://github.com/${slug}`, true)}
-                disabled={running}
-                className="rounded-lg border border-violet/40 bg-violet/[0.08] px-3 py-1.5 font-mono text-[11px] text-cloud transition-colors hover:border-violet/60 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {running && runKind === "live" ? "running Codex…" : `▶ Codex · ${slug}`}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
+      {/* ── Public-repo runs, backend-catalog-driven ─────────────────────────────
+          Hierarchy: (1) verified captured runs (instant, unlimited, judge-safe),
+          (2) live deterministic (no Codex credits), (3) founder-only genuine Codex.
+          Only entries the backend marks available render a clickable button. */}
+      {(() => {
+        const entries = catalog?.entries ?? [];
+        const captured = entries.filter((e) => e.mode === "captured");
+        const deterministic = entries.filter((e) => e.mode === "deterministic_live");
+        const codexRemaining = catalog?.codex_remaining_for_you ?? 0;
+        const codexAvailable = !!catalog?.codex_available;
+        return (
+          <>
+            {/* 1. Verified captured public runs — the judge-facing default. */}
+            {captured.length > 0 && (
+              <div className="mt-3 rounded-xl border border-teal/25 bg-teal/[0.05] p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full border border-teal/40 bg-teal/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-teal">Captured · verified</span>
+                  <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fog/70">Verified captured public runs — instant, unlimited</span>
+                </div>
+                <p className="mt-2 font-mono text-[9.5px] leading-snug text-fog/55">
+                  A recorded run — not a new scan. No live clone, no Codex spend, no rate limit. Opens the
+                  captured report with its provider ledger and SHA-256 evidence integrity.
+                </p>
+                <div className="mt-2.5 flex flex-wrap gap-2">
+                  {captured.map((e) => (
+                    <button
+                      key={e.repo_id}
+                      onClick={() => onOpenCaptured?.(e.captured_proof_id || e.repo_id)}
+                      disabled={!onOpenCaptured}
+                      className="rounded-lg border border-teal/40 bg-[color:var(--surface)] px-3 py-1.5 text-left font-mono text-[11px] text-cloud transition-colors hover:border-teal/60 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      ▶ {e.name}{e.captured_at ? <span className="text-fog/50"> · {e.captured_at}</span> : null}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 2. Live deterministic — only when the backend enabled it. */}
+            {deterministic.length > 0 && (
+              <div className="mt-3 rounded-xl border border-cyan/25 bg-cyan/[0.05] p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full border border-cyan/40 bg-cyan/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-cyan">Live · no sign-in</span>
+                  <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fog/70">Live deterministic evaluation — no Codex credits</span>
+                </div>
+                <p className="mt-2 font-mono text-[9.5px] leading-snug text-fog/55">
+                  A real clone + live OSV against the chosen repo. Rate-limited per visitor. The executor is a
+                  deterministic policy evaluation — <span className="text-cloud">no Codex credits are spent</span> — labelled honestly in the report.
+                </p>
+                <div className="mt-2.5 flex flex-wrap gap-2">
+                  {deterministic.map((e) => (
+                    <button
+                      key={e.repo_id}
+                      onClick={() => runPublicLive(e.repo_url, false)}
+                      disabled={running}
+                      className="rounded-lg border border-cyan/30 bg-[color:var(--surface)] px-3 py-1.5 font-mono text-[11px] text-cloud transition-colors hover:border-cyan/50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {running && runKind === "live" ? "running…" : e.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 3. Genuine Codex — only when the server has it AND the caller has an
+                allowance left. Never a dead-end: disabled with the exact remaining
+                count, and points to captured proof otherwise. */}
+            {codexAvailable && deterministic.length > 0 && (
+              <div className="mt-3 rounded-xl border border-violet/25 bg-violet/[0.05] p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full border border-violet/40 bg-violet/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-violet">Genuine Codex</span>
+                  <span className="font-mono text-[9.5px] text-fog/60">a real <span className="text-cloud">codex exec</span> writes the diff · ~1–2 min · <span className="text-cloud">{codexRemaining}</span> run{codexRemaining === 1 ? "" : "s"} left for you today</span>
+                </div>
+                {codexRemaining > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {deterministic.slice(0, 2).map((e) => (
+                      <button
+                        key={e.repo_id}
+                        onClick={() => runPublicLive(e.repo_url, true)}
+                        disabled={running}
+                        className="rounded-lg border border-violet/40 bg-violet/[0.08] px-3 py-1.5 font-mono text-[11px] text-cloud transition-colors hover:border-violet/60 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {running && runKind === "live" ? "running Codex…" : `▶ Codex · ${e.name}`}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-2 font-mono text-[9.5px] leading-snug text-amber/80">
+                    Your genuine-Codex run for today is used up — open a <span className="text-teal">verified captured run</span> above to see a real recorded Codex diff, or run the deterministic evaluation (unlimited).
+                  </p>
+                )}
+              </div>
+            )}
+          </>
+        );
+      })()}
 
       {/* Secondary: reproducible public evals (offline, deterministic — no auth). */}
       <div className="mt-3">

@@ -25,7 +25,7 @@ const ShiftDossier = dynamic(() => import("@/components/ui/shift-dossier").then(
 const AuditTimeline = dynamic(() => import("@/components/ui/audit-timeline").then((m) => m.AuditTimeline), { ssr: false });
 const AgentAdmission = dynamic(() => import("@/components/ui/agent-admission").then((m) => m.AgentAdmission), { ssr: false, loading: () => <div className="h-40 animate-pulse rounded-2xl border border-[color:var(--surface-border)] bg-[color:var(--surface)]" /> });
 import { DiffView } from "@/components/ui/diff-view";
-import { PROOF_SCAN, PROOF_REPO, PROOF_CAPTURED_AT } from "@/lib/proof-scan";
+import { PROOF_SCAN, PROOF_REPO, PROOF_CAPTURED_AT, getProof } from "@/lib/proof-scan";
 import { EASE } from "@/lib/motion";
 import { useModalA11y } from "@/lib/use-modal-a11y";
 
@@ -220,6 +220,9 @@ export default function Dashboard() {
   // When set, the dashboard is showing the bundled real-but-captured proof scan
   // (instant, no wait) rather than a live run — labelled CAPTURED SCAN, never live.
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
+  // The proof id currently hydrated (e.g. "calhacks"), so a captured view is bound
+  // to exactly one registry entry and can never blend with another repo's data.
+  const [activeProofId, setActiveProofId] = useState<string | null>(null);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [triageList, setTriageList] = useState<TriageRec[]>([]);
   const [prList, setPrList] = useState<PrRecord[]>([]);
@@ -227,6 +230,23 @@ export default function Dashboard() {
   const stepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const elapsedTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const scanAbort = useRef<AbortController | null>(null);
+  // Monotonic token: bumped on every active-view switch. Any async load (scan,
+  // saved-scan fetch) captures the token at start and only applies its result if
+  // the token still matches — so a stale response from a previously selected repo
+  // can never overwrite the current selection.
+  const runToken = useRef(0);
+  // Atomically clear ALL active-report state (report + captured + saved-view +
+  // proof id). Every switch calls this first so no field from a prior repo/proof
+  // can survive into the next selection. Returns the new run token.
+  const resetActive = useCallback(() => {
+    runToken.current += 1;
+    setResult(null);
+    setCapturedAt(null);
+    setActiveProofId(null);
+    setViewingSaved(null);
+    setScanError(null);
+    return runToken.current;
+  }, []);
   const [elapsed, setElapsed] = useState(0);
 
   // Onboarding guide dismissal persists across reloads (client-only; read after
@@ -343,7 +363,8 @@ export default function Dashboard() {
     const url = normalizeRepoUrl(target ?? repoUrl);
     if (scanning || !url) return;
     if (target && target !== repoUrl) setRepoUrl(target);
-    setScanning(true); setScanError(null); setResult(null); setStep(0); setElapsed(0); setViewingSaved(null); setCapturedAt(null);
+    const token = resetActive(); // atomically drop any prior report/proof/saved view
+    setScanning(true); setStep(0); setElapsed(0);
     scrollToTop();
     // The step checklist advances on a slow cadence but is CAPPED at the second-to-last
     // step until the real response arrives — so the UI never claims "report assembled"
@@ -357,11 +378,13 @@ export default function Dashboard() {
       const res = await fetch(`${API}/api/scan`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", signal: controller.signal, body: JSON.stringify({ repo_url: url, model, reasoning_effort: effort, agents: crew === "quick" ? ["watchman"] : undefined }) });
       if (!res.ok) throw new Error(`scan returned ${res.status}`);
       const data: ScanResult = await res.json();
+      if (runToken.current !== token) return; // user switched away — ignore stale result
       setStep(SCAN_STEPS.length - 1); // only now is the report actually assembled
       setResult(data);
       // Persist the FULL report so this scan can be re-opened later without re-scanning.
       fetch(`${API}/api/my/scans`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo_full_name: repoFullName(url), umbra_score: data.umbra_score, source: data.source ?? "demo-cache", vuln_count: (data.vulnerabilities ?? []).length, report: data }) }).then(loadHistory).catch(() => {});
     } catch (e) {
+      if (runToken.current !== token) return;
       if ((e as Error).name === "AbortError") setScanError("Scan cancelled.");
       else setScanError((e as Error).message);
     } finally {
@@ -370,21 +393,27 @@ export default function Dashboard() {
       scanAbort.current = null;
       setScanning(false);
     }
-  }, [repoUrl, scanning, loadHistory, model, effort, crew]);
+  }, [repoUrl, scanning, loadHistory, model, effort, crew, resetActive]);
 
   const cancelScan = useCallback(() => {
     scanAbort.current?.abort();
   }, []);
 
-  // Open the bundled captured proof scan instantly (no backend round-trip) so a
-  // judge sees a working scan without the ~90s live wait. The JSON is genuine scan
-  // output; `as const` narrows it to readonly, hence the structural cast.
-  const openCaptured = useCallback(() => {
+  // Open a bundled captured proof by id (instant, view-only, no backend). Hydrates
+  // exactly ONE registry entry atomically — its report, repo, and timestamp — so a
+  // captured view can never mix scores/evidence from another repo. Unknown ids are
+  // ignored (we never fabricate a proof that doesn't exist).
+  const openCaptured = useCallback((proofId: string = "calhacks") => {
     if (scanning) return;
-    setScanError(null); setViewingSaved(null); setResult(PROOF_SCAN as unknown as ScanResult); setCapturedAt(PROOF_CAPTURED_AT);
-    setRepoUrl(`github.com/${PROOF_REPO}`); // align the scan input with the captured report
+    const entry = getProof(proofId);
+    if (!entry) return;
+    resetActive();
+    setResult(entry.report as unknown as ScanResult);
+    setCapturedAt(entry.captured_at);
+    setActiveProofId(entry.proof_id);
+    setRepoUrl(`github.com/${entry.repo}`); // align the input with the captured report
     scrollToTop();
-  }, [scanning]);
+  }, [scanning, resetActive]);
 
   // Landing handoff: `/dashboard?repo=owner/name` pre-fills the target and kicks
   // off one public scan so a judge arriving from the hero sees a live result
@@ -399,7 +428,10 @@ export default function Dashboard() {
     // the platform keeps their own session even if they follow that landing link.
     if (params.get("proof")) {
       booted.current = true;
-      if (user === null) openCaptured();
+      // Hydrate ONLY the requested proof id (e.g. calhacks). Unknown ids fall back
+      // to the default real capture rather than inventing data. Judge-facing, so
+      // guests only; a logged-in user keeps their session.
+      if (user === null) openCaptured(params.get("proof") || "calhacks");
       return;
     }
     // `/dashboard?scan=<id>` opens a specific saved report — the target of the
@@ -408,9 +440,13 @@ export default function Dashboard() {
     const scanId = params.get("scan");
     if (scanId && user) {
       booted.current = true;
+      const token = resetActive();
       fetch(`${API}/api/my/scans/${encodeURIComponent(scanId)}`, creds)
         .then((r) => (r.ok ? r.json() : null))
-        .then((s: Scan | null) => { if (s?.report) { setResult(s.report); setViewingSaved(s.ran_at ? new Date(s.ran_at).toLocaleString() : s.repo_full_name); scrollToTop(); } })
+        .then((s: Scan | null) => {
+          if (runToken.current !== token) return; // stale — user switched away
+          if (s?.report) { setResult(s.report); setViewingSaved(s.ran_at ? new Date(s.ran_at).toLocaleString() : s.repo_full_name); scrollToTop(); }
+        })
         .catch(() => {});
       return;
     }
@@ -436,11 +472,11 @@ export default function Dashboard() {
     // Older history rows were saved before full reports were persisted — re-run
     // them instead of showing a dead link, so every row stays actionable.
     if (!s.report) { launchScan(`https://github.com/${s.repo_full_name}`); return; }
+    resetActive(); // atomically drop any prior report/proof before loading this one
     setResult(s.report);
     setViewingSaved(s.ran_at ? new Date(s.ran_at).toLocaleString() : s.repo_full_name);
-    setScanError(null);
     scrollToTop();
-  }, [launchScan]);
+  }, [launchScan, resetActive]);
 
   const saveKey = useCallback(async () => {
     if (!keyInput.trim().startsWith("sk-")) return;
@@ -515,11 +551,14 @@ export default function Dashboard() {
   const guest = user === null;
   const me: User | null = user; // narrowed: User | null (guest = null)
   const canPr = !!me?.github_connected;
-  // What the Current-Shift / Findings zones display: the live result, or — for a
-  // logged-out visitor with no live result yet — a labelled sample shift.
+  // What the Current-Shift / Findings zones display, derived from ONE source: the
+  // active `result` (a live scan, a saved report, or a hydrated captured proof — all
+  // set atomically via resetActive). Only when a guest has NO active result do we
+  // fall back to the clearly-labelled sample shift; a captured proof always sets
+  // `result`, so the sample can never blend with proof data.
   const shift = result ?? (guest ? DEMO_RESULT : null);
-  const showingDemo = !result && guest;
-  const captured = !!capturedAt; // viewing the bundled real-but-captured proof scan
+  const showingDemo = !result && guest; // sample preview only; false whenever any result/proof is active
+  const captured = !!capturedAt && !!activeProofId; // a hydrated captured proof view
   const shiftVulns = shift?.vulnerabilities ?? [];
   const shiftDeps = shift?.dependencies ?? [];
   const shiftRepo = shift?.repo_url ? repoFullName(shift.repo_url) : repoUrl ? repoFullName(repoUrl) : "no target";
@@ -619,14 +658,14 @@ export default function Dashboard() {
         {viewingSaved && (
           <div className="mt-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-cyan/30 bg-cyan/5 px-4 py-3 text-[13px]">
             <span className="text-fog">Viewing a saved report{result?.repo_url ? ` for ${repoFullName(result.repo_url)}` : ""} · {viewingSaved}</span>
-            <button onClick={() => { setResult(null); setViewingSaved(null); }} className="font-mono text-[12px] text-cyan hover:underline">Back to scanning →</button>
+            <button onClick={() => resetActive()} className="font-mono text-[12px] text-cyan hover:underline">Back to scanning →</button>
           </div>
         )}
 
         {captured && (
           <div className="mt-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber/30 bg-amber/5 px-4 py-3 text-[13px]">
-            <span className="min-w-0 text-fog">Viewing a <span className="text-amber">real scan captured {capturedAt}</span> on <span className="break-all text-cloud">{PROOF_REPO}</span> — shown instantly, no wait. Every result below is genuine output from that run. <span className="text-fog/80">Captured snapshot: PR actions are disabled here — launch a live scan to open branch-only PRs.</span></span>
-            <button onClick={() => { setResult(null); setCapturedAt(null); }} className="shrink-0 font-mono text-[12px] text-cyan hover:underline">Back to scanning →</button>
+            <span className="min-w-0 text-fog">Viewing a <span className="text-amber">real scan captured {capturedAt}</span> on <span className="break-all text-cloud">{shiftRepo}</span> — shown instantly, no wait. Every result below is genuine output from that run. <span className="text-fog/80">Captured snapshot: PR actions are disabled here — launch a live scan to open branch-only PRs.</span></span>
+            <button onClick={() => resetActive()} className="shrink-0 font-mono text-[12px] text-cyan hover:underline">Back to scanning →</button>
           </div>
         )}
 
@@ -666,7 +705,7 @@ export default function Dashboard() {
       {!scanning && (
         <section className="relative mt-14">
           <ZoneLabel n="02" title="Agent Admission" hint="does the agent obey this repo's rules?" />
-          <AgentAdmission repo={targetRepo} signedIn={!!me} />
+          <AgentAdmission repo={targetRepo} signedIn={!!me} onOpenCaptured={openCaptured} />
         </section>
       )}
 

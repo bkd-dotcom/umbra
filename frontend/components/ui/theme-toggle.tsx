@@ -14,12 +14,12 @@ type Theme = "dark" | "light";
  *  Persists to localStorage; the no-flash script in layout sets the initial theme
  *  before paint so there's no flicker. */
 export function ThemeToggle({ variant = "fixed" }: { variant?: "fixed" | "inline" }) {
-  const [theme, setTheme] = useState<Theme>("dark");
+  const [theme, setTheme] = useState<Theme>("light");
   const [mounted, setMounted] = useState(false);
   const pathname = usePathname();
 
   useEffect(() => {
-    const current = (document.documentElement.dataset.theme as Theme) || "dark";
+    const current = (document.documentElement.dataset.theme as Theme) || "light";
     setTheme(current);
     setMounted(true);
   }, []);

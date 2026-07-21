@@ -69,10 +69,11 @@ export const MacbookScroll = ({
     return () => window.removeEventListener("resize", compute);
   }, []);
 
-  // Final scale of the open screen. Desktop is pinned (no lift), so the scale must
-  // fit the sticky stage below the nav without the tall open screen clipping above
-  // the viewport — 1.25 reads large and premium while staying fully in frame.
-  const finalScale = tier === "desktop" ? 1.25 : tier === "tablet" ? 1.35 : 1.2;
+  // Final scale of the open screen. Kept modest on desktop so the full open
+  // composition (title + scaled lid + base) fits inside the pinned stage even on a
+  // shorter/resized desktop viewport — preventing the title from colliding with the
+  // section above and the base from immersing into the section below.
+  const finalScale = tier === "desktop" ? 1.15 : tier === "tablet" ? 1.3 : 1.2;
   // Desktop lifts the screen far (official). On small screens we PIN the device in
   // a sticky stage instead (below), so there is NO lift — the report never drifts
   // up behind the sticky nav and never leaves the device context.
@@ -116,14 +117,17 @@ export const MacbookScroll = ({
         ref={ref}
         className="relative isolate"
         aria-hidden
-        // Track = stage height (fits composition) + a short pin travel (40vh).
-        style={{ height: "calc(clamp(340px, 52vh, 560px) + 40vh)" }}
+        // Track = stage height (fits composition) + a short pin travel.
+        style={{ height: "calc(clamp(460px, 70vh, 700px) + 40vh)" }}
       >
-        <div className="sticky top-[80px] flex h-[clamp(340px,52vh,560px)] flex-col items-center justify-center [perspective:800px]">
-          <motion.div style={{ opacity: textOpacity }} className="mb-6 px-4 text-center">
+        <div className="sticky top-[80px] h-[clamp(460px,70vh,700px)] [perspective:800px]">
+          {/* Title absolutely pinned at the top (fades out, takes no flow space) so
+              it never collides with the section above; the device is centered with a
+              top offset so it stays fully inside the stage — no immersion below. */}
+          <motion.div style={{ opacity: textOpacity }} className="absolute inset-x-0 top-0 z-10 px-4 pt-1 text-center">
             {title}
           </motion.div>
-          <div className="flex scale-[0.6] flex-col items-center sm:scale-[0.78]">
+          <div className="flex h-full scale-[0.58] flex-col items-center justify-center pt-16 sm:scale-[0.7]">
             <Lid src={src} scaleX={scaleX} scaleY={scaleY} rotate={rotate} translate={translate} />
             <BaseArea showGradient={showGradient} badge={badge} />
           </div>
@@ -143,16 +147,19 @@ export const MacbookScroll = ({
       ref={ref}
       className="relative isolate"
       aria-hidden
-      style={{ height: "calc(clamp(600px, 86vh, 900px) + 50vh)" }}
+      style={{ height: "calc(clamp(600px, 88vh, 940px) + 50vh)" }}
     >
-      {/* Title sits ABOVE the device in normal flow. The stage is tall enough to
-          fully CONTAIN the open composition (title + scaled lid + base) so the base
-          never spills past the stage bottom into the next section. Anchored high. */}
-      <div className="sticky top-12 flex h-[clamp(600px,86vh,900px)] flex-col items-center justify-start gap-3 pt-1 [perspective:800px]">
-        <motion.div style={{ opacity: textOpacity }} className="px-4 text-center">
+      {/* The title is ABSOLUTELY positioned at the top of the stage so it never
+          takes flow space (which would push the device down and out the bottom) and
+          never collides with the section above. The device is vertically CENTERED
+          with a top offset that leaves clear space below the title — so on desktop
+          there's a visible gap between the paragraph and the laptop, and the device
+          stays fully inside the stage (no immersion into the next section). */}
+      <div className="sticky top-12 h-[clamp(600px,88vh,940px)] [perspective:800px]">
+        <motion.div style={{ opacity: textOpacity }} className="absolute inset-x-0 top-0 z-10 px-4 pt-2 text-center">
           {title}
         </motion.div>
-        <div className="flex flex-col items-center">
+        <div className="flex h-full flex-col items-center justify-center pt-28">
           <Lid src={src} scaleX={scaleX} scaleY={scaleY} rotate={rotate} translate={translate} />
           <BaseArea showGradient={showGradient} badge={badge} />
         </div>

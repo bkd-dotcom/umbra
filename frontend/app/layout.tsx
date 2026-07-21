@@ -4,8 +4,8 @@ import "./globals.css";
 import { SmoothScroll } from "@/components/ui/smooth-scroll";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 
-// Set the saved theme before first paint so there's no flash (default: dark).
-const NO_FLASH = `(function(){try{var t=localStorage.getItem('umbra-theme');document.documentElement.dataset.theme=(t==='light'?'light':'dark');}catch(e){document.documentElement.dataset.theme='dark';}})();`;
+// Set the saved theme before first paint so there's no flash (default: light).
+const NO_FLASH = `(function(){try{var t=localStorage.getItem('umbra-theme');document.documentElement.dataset.theme=(t==='dark'?'dark':'light');}catch(e){document.documentElement.dataset.theme='light';}})();`;
 
 // Editorial serif display (the high-end / Anthropic-calm touch) + a clean
 // geometric sans for UI + mono for the honesty ledger and terminal.
@@ -46,7 +46,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" data-theme="dark" className={`${sans.variable} ${serif.variable} ${mono.variable}`}>
+    <html lang="en" data-theme="light" className={`${sans.variable} ${serif.variable} ${mono.variable}`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: NO_FLASH }} />
       </head>

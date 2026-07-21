@@ -62,7 +62,30 @@ gcloud run services add-iam-policy-binding umbra \
   --role="roles/run.invoker"
 ```
 
-### 2b. Tell the app which identity to trust
+### 2b. Let the Cloud Scheduler service agent mint the OIDC token
+
+**Easy to miss — the job fails before it ever reaches Umbra without this.** To
+attach an OIDC token as `umbra-scheduler`, the Cloud Scheduler *service agent* must
+be allowed to act as (mint tokens for) that service account. Grant it
+`roles/iam.serviceAccountTokenCreator` **on the scheduler SA** (not project-wide):
+
+```bash
+PROJECT_NUMBER="$(gcloud projects describe <PROJECT_ID> --format='value(projectNumber)')"
+SCHEDULER_AGENT="service-${PROJECT_NUMBER}@gcp-sa-cloudscheduler.iam.gserviceaccount.com"
+
+# (First-time only) ensure the Scheduler service agent exists:
+gcloud beta services identity create --service=cloudscheduler.googleapis.com --project=<PROJECT_ID>
+
+gcloud iam service-accounts add-iam-policy-binding "${SCHED_SA}" \
+  --member="serviceAccount:${SCHEDULER_AGENT}" \
+  --role="roles/iam.serviceAccountTokenCreator"
+```
+
+Without this binding, Cloud Scheduler cannot generate the OIDC token and the job
+errors out at the scheduler side (you'll see it in the job's run history), before
+Umbra is ever called.
+
+### 2c. Tell the app which identity to trust
 
 ```bash
 # The app accepts an OIDC token ONLY from this exact service account,
@@ -78,7 +101,7 @@ expiry, the audience, and that the token's verified `email` equals
 neither OIDC nor the legacy key configured, the endpoint 503s — it is never
 publicly triggerable.
 
-### 2c. Create the Cloud Scheduler job with OIDC (no secret in the job)
+### 2d. Create the Cloud Scheduler job with OIDC (no secret in the job)
 
 ```bash
 gcloud scheduler jobs create http umbra-run-due-scans \
@@ -116,20 +139,31 @@ UMBRA_SCHEDULER_OIDC_AUDIENCE="https://<your-cloud-run-url>"
 
 ---
 
-## 4. Real end-to-end inbox test (required)
+## 4. Post-deploy verification order (required)
 
-Provider acceptance ≠ inbox delivery. After deploy, verify a message actually
-arrives:
+Provider acceptance ≠ inbox delivery. After the infrastructure above is in place,
+verify in this exact order and only call scheduling "working" after steps 5 and 6
+both succeed:
 
-1. Sign in to the dashboard and save a scan for a repo.
-2. Click **Email latest report now** in Scheduled Reports. It sends only to your
-   **own account address** (there is deliberately no arbitrary-recipient field).
-3. Confirm the message lands in your inbox (check spam too). If it doesn't arrive
-   while the UI showed "Accepted for delivery", the issue is downstream of Resend
-   acceptance (domain reputation, SPF/DKIM, filtering) — investigate in Resend's
-   dashboard/logs.
-4. Optionally trigger the scheduler once (or wait for the cron tick) and confirm a
-   scheduled send records `accepted_for_delivery` and the email arrives.
+1. **Deploy** the current build.
+2. Confirm **`/api/health`**, the dashboard loads, and the scheduled-report UI shows
+   scheduling as enabled (not "email not configured").
+3. Create a **test schedule a few minutes ahead** (it sends only to your own account
+   email — there is no arbitrary-recipient field).
+4. Confirm **Cloud Scheduler invokes the endpoint successfully** — check the job's
+   run history (a `PERMISSION_DENIED` there usually means the step 2b token-creator
+   binding is missing; a 401/403 from Umbra means the SA/audience env is wrong).
+5. Confirm the schedule row records **`accepted_for_delivery`** (Resend accepted).
+6. Confirm the message **actually arrives in the inbox** (check spam too). If it
+   showed `accepted_for_delivery` but never arrives, the issue is downstream of
+   Resend acceptance (domain reputation, SPF/DKIM, filtering) — investigate in
+   Resend's dashboard/logs.
+
+**Not working until steps 5 AND 6 both succeed.** `accepted_for_delivery` alone is
+provider acceptance, not inbox delivery — the UI says exactly that and nothing more.
+
+You can also sanity-check immediate send at any time: **Email latest report now** in
+Scheduled Reports sends the latest saved report to your own account address.
 
 ---
 

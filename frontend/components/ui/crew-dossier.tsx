@@ -99,6 +99,24 @@ const AGENTS: Agent[] = [
 ];
 
 export function CrewDossier() {
+  return (
+    <>
+      {/* Desktop (lg+) — monochrome roster rail + auto-rotating focused dossier. */}
+      <div className="hidden lg:block">
+        <CrewDossierDesktop />
+      </div>
+      {/* Mobile/tablet (below lg) — an accessible, MANUAL one-agent-at-a-time
+          carousel. No auto-rotation (a carousel that moves itself while someone
+          is reading a description is an anti-pattern on touch, where there is no
+          hover-to-pause). Full name + role + description always visible. */}
+      <div className="lg:hidden">
+        <CrewCarouselMobile />
+      </div>
+    </>
+  );
+}
+
+function CrewDossierDesktop() {
   const reduce = useReducedMotion();
   const [active, setActive] = useState(0);
   const [paused, setPaused] = useState(false);
@@ -235,6 +253,146 @@ export function CrewDossier() {
     </div>
   );
 }
+
+/* -----------------------------------------------------------------------------
+   Mobile crew carousel — accessible, manual, one-agent-at-a-time.
+
+   Design constraints (deliberate): no auto-rotation once mounted on a touch
+   surface (there is no hover-to-pause on touch, so anything that self-advances
+   while someone is mid-read is an anti-pattern); explicit Prev/Next buttons;
+   a visible "N / 5" position readout; the agent's name + role + FULL
+   description are always fully visible (never clipped/truncated); keyboard
+   reachable controls with visible focus rings; no horizontal page overflow —
+   the card itself never scrolls sideways, only the content beneath swaps.
+----------------------------------------------------------------------------- */
+function CrewCarouselMobile() {
+  const reduce = useReducedMotion();
+  const [active, setActive] = useState(0);
+  const agent = AGENTS[active];
+  const total = AGENTS.length;
+
+  const go = (dir: 1 | -1) => setActive((p) => (p + dir + total) % total);
+
+  return (
+    <div className="w-full min-w-0">
+      {/* Position readout + prev/next controls. */}
+      <div className="flex items-center justify-between gap-3">
+        <button
+          type="button"
+          onClick={() => go(-1)}
+          aria-label="Previous agent"
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-[color:var(--surface-border)] bg-[color:var(--surface)] text-cloud transition-colors hover:border-cyan/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan"
+        >
+          <ChevronLeft />
+        </button>
+        <span className="font-mono text-[11px] tabular-nums text-fog" aria-live="polite">
+          <span className="text-cloud">{active + 1}</span> / {total}
+        </span>
+        <button
+          type="button"
+          onClick={() => go(1)}
+          aria-label="Next agent"
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-[color:var(--surface-border)] bg-[color:var(--surface)] text-cloud transition-colors hover:border-cyan/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan"
+        >
+          <ChevronRight />
+        </button>
+      </div>
+
+      {/* Roster dots — also directly selectable, keyboard reachable. */}
+      <div className="mt-3 flex flex-wrap justify-center gap-2" role="tablist" aria-label="Select an agent">
+        {AGENTS.map((a, i) => {
+          const on = i === active;
+          return (
+            <button
+              key={a.key}
+              type="button"
+              role="tab"
+              aria-selected={on}
+              aria-label={`${a.name} · ${a.role}`}
+              onClick={() => setActive(i)}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-full border font-mono text-[11px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan"
+              style={on ? { color: a.color, borderColor: `${a.color}66`, background: `${a.color}14` } : { color: FOG, borderColor: "var(--surface-border)" }}
+            >
+              {a.letter}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Focused dossier — full name, role, and COMPLETE description always
+          visible (no truncate, no fixed clipped height). */}
+      <GlowCard glow={`${agent.color}22`} className="relative mt-4 overflow-hidden">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={agent.key}
+            initial={reduce ? false : { opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={reduce ? undefined : { opacity: 0 }}
+            transition={{ duration: 0.35, ease: EASE }}
+            className="flex flex-col p-5 sm:p-6"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <span
+                  className="grid h-12 w-12 shrink-0 place-items-center rounded-xl border font-mono text-lg font-semibold"
+                  style={{ color: agent.color, borderColor: `${agent.color}55`, background: `${agent.color}12` }}
+                >
+                  {agent.letter}
+                </span>
+                <div className="min-w-0">
+                  <div className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-fog">Night shift · Unit 0{active + 1}</div>
+                  <div className="font-serif text-[24px] leading-none tracking-[-0.02em]">{agent.name}</div>
+                  <div className="mt-1 font-mono text-[10.5px] tracking-[0.06em] text-fog">{agent.role}</div>
+                </div>
+              </div>
+              <span
+                className="flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 font-mono text-[9.5px] uppercase tracking-[0.1em]"
+                style={{ borderColor: `${agent.color}44`, color: agent.color, background: `${agent.color}0e` }}
+              >
+                <span className="h-1.5 w-1.5 rounded-full" style={{ background: agent.color, boxShadow: `0 0 8px ${agent.color}` }} />
+                {agent.status}
+              </span>
+            </div>
+
+            {/* Full description — never clipped. */}
+            <p className="mt-4 text-[13.5px] leading-relaxed text-cloud/80">{agent.blurb}</p>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2 font-mono text-[10px]">
+              <span className="uppercase tracking-[0.16em] text-fog/55">Last action</span>
+              <span className="tabular-nums text-cloud/80" style={{ color: agent.color }}>{agent.logTime}</span>
+              <span className="text-fog/50">·</span>
+              <span className="text-fog">{agent.logAction}</span>
+            </div>
+
+            <div className="mt-4">
+              <Artifact agent={agent} reduce={!!reduce} />
+            </div>
+
+            <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-[color:var(--surface-border)] pt-4">
+              <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-fog">Specialty</span>
+              {agent.specialty.map((s) => (
+                <span key={s} className="rounded-md border border-[color:var(--surface-border)] px-2 py-0.5 font-mono text-[10px] text-fog">
+                  {s}
+                </span>
+              ))}
+            </div>
+          </motion.div>
+        </AnimatePresence>
+      </GlowCard>
+    </div>
+  );
+}
+
+const ChevronLeft = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
+    <path d="M15 18l-6-6 6-6" />
+  </svg>
+);
+const ChevronRight = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
+    <path d="M9 18l6-6-6-6" />
+  </svg>
+);
 
 /* --- Operational artifacts --------------------------------------------------
    One shared chrome, one live signal each. Motion communicates activity only. */

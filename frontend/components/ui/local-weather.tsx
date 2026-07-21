@@ -90,7 +90,7 @@ export function LocalWeather({ className = "" }: { className?: string }) {
   const label = weather ? "Local time and weather" : "Local time";
   return (
     <div
-      className={`hidden items-center gap-1.5 rounded-full px-3 py-1.5 font-mono text-[11px] text-fog sm:flex ${className}`}
+      className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-1.5 font-mono text-[10.5px] text-fog sm:gap-1.5 sm:px-3 sm:text-[11px] ${className}`}
       style={{ background: "color-mix(in oklab, var(--color-fog) 8%, transparent)" }}
       aria-label={label}
       title={label}
@@ -99,7 +99,8 @@ export function LocalWeather({ className = "" }: { className?: string }) {
       {weather && <span className="tabular-nums text-fog">{weather.temp}{weather.unit}</span>}
       {weather && <span className="text-fog/40" aria-hidden>·</span>}
       <span className="tabular-nums text-fog">{time}</span>
-      <span className="text-fog">local</span>
+      {/* "local" label drops below sm where every pixel of nav width matters. */}
+      <span className="hidden text-fog sm:inline">local</span>
     </div>
   );
 }

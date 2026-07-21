@@ -14,6 +14,7 @@ import { SignInDialog } from "@/components/ui/sign-in-dialog";
 import { FounderDialog } from "@/components/ui/founder-dialog";
 import { Reveal, RevealGroup } from "@/components/ui/reveal";
 import { LocalWeather } from "@/components/ui/local-weather";
+import { SingleRunTypewriter } from "@/components/ui/typewriter";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { MacbookScroll } from "@/components/ui/macbook-scroll";
 import { ChatGptThread } from "@/components/ui/chatgpt-thread";
@@ -67,9 +68,9 @@ export default function Landing() {
         initial={{ y: -20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ duration: 0.6 }}
-        className={`sticky top-3 z-40 mt-3 flex items-center justify-between rounded-2xl px-5 py-3 transition-all duration-300 ${scrolled ? "glass shadow-[var(--shadow-card)]" : ""}`}
+        className={`sticky top-3 z-40 mt-3 flex items-center justify-between gap-2 rounded-2xl px-3 py-2.5 transition-all duration-300 sm:px-5 sm:py-3 ${scrolled ? "glass shadow-[var(--shadow-card)]" : ""}`}
       >
-        <a href="/" aria-label="Umbra home" className="flex items-center rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-cyan">
+        <a href="/" aria-label="Umbra home" className="flex min-w-0 shrink-0 items-center rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-cyan">
           <UmbraLogo size={22} />
         </a>
         {/* Center nav — simple hover-underline links (Aceternity-style). */}
@@ -81,11 +82,12 @@ export default function Landing() {
             </a>
           ))}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 shrink-0 items-center gap-1.5 sm:gap-3">
           <LocalWeather />
           <ThemeToggle variant="inline" />
-          <HoverBorderGradient onClick={() => setSignIn(true)} className="px-4 py-2 text-xs">
-            Sign in <span className="text-cyan">↗</span>
+          <HoverBorderGradient onClick={() => setSignIn(true)} className="px-3 py-2 text-xs sm:px-4">
+            <span className="hidden sm:inline">Sign in</span>
+            <span className="sm:hidden">In</span> <span className="text-cyan">↗</span>
           </HoverBorderGradient>
         </div>
       </motion.nav>
@@ -127,12 +129,23 @@ export default function Landing() {
             An autonomous engineer you can actually trust — because every change is governed.
           </motion.p>
 
-          {/* Stable capability line — visible on first paint, no entrance gate. */}
+          {/* Capability line — a single-run typewriter (types the setup, deletes
+              once, types the payoff, stops for good). First paint already shows
+              the full first sentence, so the hero is never blank. */}
           <motion.p
             initial={false}
             className="mt-4 max-w-[68ch] font-mono text-[clamp(13px,1.55vw,15px)] leading-relaxed text-fog"
           >
-            Coding agents can change your repo. Umbra makes those changes <span className="text-teal">governable</span>: it tests whether an agent obeys <span className="text-cyan">your repository&apos;s rules</span>, then grants only the authority it <span className="text-amber">earns</span> — and proves it with a <span className="text-pink">signed receipt</span>. It <span className="text-cloud">never merges</span>.
+            <SingleRunTypewriter
+              first="Coding agents can change your repo."
+              final="Umbra makes every proposed change governable."
+            />
+          </motion.p>
+          <motion.p
+            initial={false}
+            className="mt-2.5 max-w-[68ch] font-mono text-[clamp(13px,1.55vw,15px)] leading-relaxed text-fog"
+          >
+            It tests whether an agent obeys <span className="text-cyan">your repository&apos;s rules</span>, then grants only the authority it <span className="text-amber">earns</span> — and proves it with a <span className="text-pink">signed receipt</span>. It <span className="text-cloud">never merges</span>.
           </motion.p>
 
           {/* Primary judge action — visible on first paint (no entrance gate), above
@@ -259,8 +272,14 @@ export default function Landing() {
         />
       </section>
 
-      {/* What the night crew does — parallax artifact tiles. */}
-      <section className="relative -mx-6 overflow-hidden rounded-[2rem] border border-violet/10 bg-[radial-gradient(70%_80%_at_15%_0%,rgba(167,139,250,0.10),transparent_58%),linear-gradient(180deg,rgba(255,255,255,0.035),transparent)] px-6 py-20 md:-mx-10 md:px-10">
+      {/* What the night crew does — parallax artifact tiles. A background wash
+          gives this section its own "room" without an outer card frame clipping
+          content — the wash lives in its own absolutely-positioned, self-clipped
+          layer behind the content, never on the section that holds the text. */}
+      <section className="relative py-20 md:py-24">
+        <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden" aria-hidden>
+          <div className="absolute inset-0" style={{ background: "radial-gradient(70% 80% at 15% 0%, rgba(167,139,250,0.10), transparent 58%), linear-gradient(180deg, rgba(255,255,255,0.035), transparent)" }} />
+        </div>
         <div className="pointer-events-none absolute right-6 top-6 hidden font-mono text-[10px] uppercase tracking-[0.28em] text-violet/40 md:block">unit manifest</div>
         <HeroParallax
           heading={<h2 className="font-serif text-[clamp(28px,4vw,46px)] leading-[1.05] tracking-[-0.02em] text-cloud">Bounded specialists, one shift.</h2>}
@@ -276,8 +295,13 @@ export default function Landing() {
         />
       </section>
 
-      {/* Evidence — "does it actually work?" answered first, with a real artifact. */}
-      <section id="evidence" className="relative -mx-6 overflow-hidden rounded-[2rem] border border-cyan/10 bg-[radial-gradient(70%_90%_at_100%_0%,rgba(34,211,238,0.10),transparent_60%),linear-gradient(180deg,rgba(34,211,238,0.035),transparent)] px-6 py-24 md:-mx-10 md:px-10">
+      {/* Evidence — "does it actually work?" answered first, with a real artifact.
+          Background wash is its own self-clipped layer so no outer card frame can
+          ever cut off content at any breakpoint. */}
+      <section id="evidence" className="relative py-24">
+        <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden" aria-hidden>
+          <div className="absolute inset-0" style={{ background: "radial-gradient(70% 90% at 100% 0%, rgba(34,211,238,0.10), transparent 60%), linear-gradient(180deg, rgba(34,211,238,0.035), transparent)" }} />
+        </div>
         <SectionFX accent="#22d3ee" variant="left" />
         <div className="pointer-events-none absolute inset-0 grid-bg opacity-[0.035]" aria-hidden />
         <div className="relative z-10">
@@ -293,7 +317,7 @@ export default function Landing() {
           </p>
         </Reveal>
 
-        <div className="mt-9 grid gap-5 lg:grid-cols-[1.25fr_1fr]">
+        <div className="mt-9 grid grid-cols-1 gap-5 lg:grid-cols-[1.25fr_1fr]">
           {/* Watchman — CVE case file (the "holy crap it works" artifact) */}
           <Reveal>
             <TiltCard glow="rgba(251,113,133,0.20)" className="h-full">
@@ -478,8 +502,14 @@ export default function Landing() {
       </section>
 
       {/* Umbra inside ChatGPT — proof it isn't trapped in a dashboard. Placed
-          before the report so the OpenAI surface lands ahead of the payoff. */}
-      <section id="chatgpt" data-chapter="In ChatGPT" className="chapter relative -mx-6 overflow-hidden rounded-[2rem] border border-teal/10 bg-[radial-gradient(70%_80%_at_100%_100%,rgba(16,163,127,0.10),transparent_58%),linear-gradient(180deg,rgba(16,163,127,0.035),transparent)] px-6 py-24 md:-mx-10 md:px-10">
+          before the report so the OpenAI surface lands ahead of the payoff.
+          Background wash is its own self-clipped layer (not the section itself)
+          so the ChatGPT window, composer, and message text can never be clipped
+          by an outer rounded/overflow-hidden card frame. */}
+      <section id="chatgpt" data-chapter="In ChatGPT" className="chapter relative py-24">
+        <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden" aria-hidden>
+          <div className="absolute inset-0" style={{ background: "radial-gradient(70% 80% at 100% 100%, rgba(16,163,127,0.10), transparent 58%), linear-gradient(180deg, rgba(16,163,127,0.035), transparent)" }} />
+        </div>
         <SectionFX accent="#10a37f" variant="right" />
         <div className="pointer-events-none absolute left-6 top-6 hidden font-mono text-[10px] uppercase tracking-[0.28em] text-teal/45 md:block">gpt action surface</div>
         <Reveal variants={slideRight}>
@@ -493,7 +523,7 @@ export default function Landing() {
             The read-only actions are public; no sign-in required.
           </p>
         </Reveal>
-        <div className="mt-9 grid items-start gap-6 lg:grid-cols-[1.35fr_0.65fr]">
+        <div className="mt-9 grid grid-cols-1 items-start gap-6 lg:grid-cols-[1.35fr_0.65fr]">
           {/* The proof: a live-looking ChatGPT thread, grounded + honest. */}
           <Reveal parallax={0}>
             <ChatGptThread />

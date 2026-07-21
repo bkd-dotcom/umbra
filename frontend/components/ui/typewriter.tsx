@@ -118,6 +118,68 @@ export function Typewriter({
   );
 }
 
+/* Single-run typewriter for the hero capability line: types the FIRST sentence
+   (already fully typed at first paint — no blank hero), holds, deletes once,
+   types the FINAL sentence, then stops permanently (no loop, no repeat).
+   Reduced-motion renders the final sentence only, immediately, statically.
+   Screen readers get a stable, always-present sr-only final sentence — the
+   animated text is aria-hidden so nothing mid-type is ever announced. */
+export function SingleRunTypewriter({
+  first,
+  final,
+  className,
+  caretClassName,
+  typingMs = 28,
+  deletingMs = 16,
+  holdMs = 1100,
+}: {
+  first: string;
+  final: string;
+  className?: string;
+  caretClassName?: string;
+  typingMs?: number;
+  deletingMs?: number;
+  holdMs?: number;
+}) {
+  const reduce = useReducedMotion();
+  // First paint already shows the full first sentence (never blank).
+  const [text, setText] = useState(first);
+  const [phase, setPhase] = useState<"hold" | "deleting" | "typing" | "done">("hold");
+
+  useEffect(() => {
+    if (reduce) { setText(final); setPhase("done"); return; }
+    if (phase === "hold") {
+      const t = setTimeout(() => setPhase("deleting"), holdMs);
+      return () => clearTimeout(t);
+    }
+    if (phase === "deleting") {
+      if (text === "") { setPhase("typing"); return; }
+      const t = setTimeout(() => setText((s) => s.slice(0, -1)), deletingMs);
+      return () => clearTimeout(t);
+    }
+    if (phase === "typing") {
+      if (text === final) { setPhase("done"); return; }
+      const t = setTimeout(() => setText(final.slice(0, text.length + 1)), typingMs);
+      return () => clearTimeout(t);
+    }
+    // "done" — stop permanently, no loop.
+  }, [text, phase, reduce, final, holdMs, deletingMs, typingMs]);
+
+  return (
+    <span className="relative inline-block">
+      <span className={className} aria-hidden="true">
+        {text || "\u00A0"}
+        {!reduce && phase !== "done" && (
+          <span className={caretClassName ?? "ml-0.5 inline-block h-[1em] w-[2px] translate-y-[0.12em] animate-pulse-glow bg-cyan"} aria-hidden />
+        )}
+      </span>
+      {/* Stable, final sentence for assistive tech — always present, no aria-live
+          (so it is read once, normally, never mid-animation). */}
+      <span className="sr-only">{final}</span>
+    </span>
+  );
+}
+
 const SoundIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-3.5 w-3.5" aria-hidden>
     <path d="M4 9v6h4l5 4V5L8 9H4Z" /><path d="M16 8.5a4 4 0 0 1 0 7" />

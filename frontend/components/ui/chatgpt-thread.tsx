@@ -61,20 +61,20 @@ export function ChatGptThread() {
   const reduce = useReducedMotion();
   return (
     <div className="overflow-hidden rounded-2xl border border-[color:var(--surface-border)] bg-[color:var(--surface)] shadow-[var(--shadow-card)] backdrop-blur-xl">
-      {/* window chrome */}
-      <div className="flex items-center gap-2.5 border-b border-[color:var(--surface-border)] px-4 py-3">
-        <span className="flex gap-1.5">
+      {/* window chrome — wraps rather than clipping on narrow viewports */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-[color:var(--surface-border)] px-4 py-3 sm:gap-2.5">
+        <span className="flex shrink-0 gap-1.5">
           <span className="h-2.5 w-2.5 rounded-full bg-rose-400/70" />
           <span className="h-2.5 w-2.5 rounded-full bg-amber/70" />
           <span className="h-2.5 w-2.5 rounded-full bg-teal/70" />
         </span>
-        <span className="ml-1 flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.16em] text-fog">
-          <span className="grid h-4 w-4 place-items-center rounded-full" style={{ background: "#10a37f" }}>
+        <span className="ml-1 flex min-w-0 items-center gap-2 font-mono text-[11px] uppercase tracking-[0.16em] text-fog">
+          <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full" style={{ background: "#10a37f" }}>
             <span className="text-[9px] text-white">◐</span>
           </span>
-          ChatGPT · Umbra GPT
+          <span className="truncate">ChatGPT · Umbra GPT</span>
         </span>
-        <span className="ml-auto rounded-full border border-[color:#10a37f55] bg-[#10a37f14] px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-[#34d399]">
+        <span className="ml-auto shrink-0 rounded-full border border-[color:#10a37f55] bg-[#10a37f14] px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-[#34d399]">
           public · no sign-in
         </span>
       </div>
@@ -88,7 +88,7 @@ export function ChatGptThread() {
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true, amount: 0.4 }}
             transition={{ duration: 0.5, ease: EASE, delay: reduce ? 0 : i * 0.12 }}
-            className={`flex gap-3.5 px-5 py-4 ${turn.role === "user" ? "bg-transparent" : "bg-[color:var(--surface-2)]"}`}
+            className={`flex gap-3 px-4 py-4 sm:gap-3.5 sm:px-5 ${turn.role === "user" ? "bg-transparent" : "bg-[color:var(--surface-2)]"}`}
           >
             {/* avatar */}
             {turn.role === "user" ? (
@@ -118,8 +118,8 @@ export function ChatGptThread() {
       </div>
 
       {/* composer (decorative) */}
-      <div className="flex items-center gap-3 border-t border-[color:var(--surface-border)] px-5 py-3.5">
-        <div className="flex-1 truncate rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-4 py-2.5 font-mono text-[12px] text-fog/60">
+      <div className="flex items-center gap-2 border-t border-[color:var(--surface-border)] px-4 py-3.5 sm:gap-3 sm:px-5">
+        <div className="min-w-0 flex-1 truncate rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-4 py-2.5 font-mono text-[12px] text-fog/60">
           Ask about any repo, incident, or file…
         </div>
         <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-white" style={{ background: "#10a37f" }}>

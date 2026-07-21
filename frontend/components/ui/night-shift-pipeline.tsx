@@ -214,19 +214,19 @@ export function NightShiftPipeline({
     return (
       <div className={cn("relative", className)}>
         {scene === 0 && <Intro mode={mode} />}
-        <div className="grid gap-5 sm:grid-cols-[minmax(0,1fr)] lg:grid-cols-[168px_minmax(0,1fr)] lg:gap-8">
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-[minmax(0,1fr)] lg:grid-cols-[168px_minmax(0,1fr)] lg:gap-8">
           {/* Editorial shift timeline — time, position, and a static 6-station line.
               The active station is emphasized by color/opacity only (no motion). */}
           <ShiftTimeline current={i} accent={stage.accent} />
           {/* The one dominant station for this scene, framed as an Operations
               Monitor: a restrained dark surface with a thin top bar (status dot +
               repo/context label). Container only — no clickable controls, no nav. */}
-          <div className="flex flex-col gap-5">
+          <div className="flex min-w-0 flex-col gap-5">
             {def.stages.map((s) => (
               <OperationsMonitor key={STAGES[s].n} accent={STAGES[s].accent} context={def.monitor.context} tone={def.monitor.tone} clock={STAGES[s].time}>
-                <div className="mb-3 flex items-baseline gap-3">
+                <div className="mb-3 flex flex-wrap items-baseline gap-3">
                   <span className="font-serif text-2xl leading-none" style={{ color: STAGES[s].accent }}>{String(STAGES[s].n).padStart(2, "0")}</span>
-                  <div>
+                  <div className="min-w-0">
                     <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-cloud">{STAGES[s].rail}</div>
                     <div className="font-mono text-[11px] text-fog">{STAGES[s].desc}</div>
                   </div>
@@ -283,14 +283,48 @@ function Intro({ mode }: { mode: Mode }) {
    it sits above the card in normal flow; nothing is pinned or height-forced. */
 function ShiftTimeline({ current, accent }: { current: number; accent: string }) {
   return (
-    <div className="lg:self-start">
+    <div className="min-w-0 lg:self-start">
       <div className="flex items-baseline gap-2.5 lg:flex-col lg:items-start lg:gap-1">
         <span className="font-mono text-[26px] leading-none tabular-nums tracking-[-0.02em] text-cloud">{STAGES[current].time}</span>
         <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-fog">
           <span style={{ color: accent }}>{String(current + 1).padStart(2, "0")}</span> / 06 · {STAGES[current].rail}
         </span>
       </div>
-      {/* Six-station vertical line. Past = dim filled, current = accent, future = hollow. */}
+
+      {/* Mobile/tablet — compact, informational-only station strip. Wraps (never
+          scrolls, never widens the page); a station never controls scroll. */}
+      <ol className="mt-3 flex flex-wrap gap-1.5 lg:hidden" aria-label="Night shift progress">
+        {STAGES.map((s, i) => {
+          const state = i < current ? "past" : i === current ? "current" : "future";
+          return (
+            <li key={s.n}>
+              <span
+                className="flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[10px] tabular-nums"
+                style={{
+                  borderColor: state === "current" ? accent : "var(--surface-border)",
+                  color: state === "current" ? "var(--color-cloud)" : "var(--color-fog)",
+                  background: state === "current" ? `${accent}14` : "transparent",
+                  opacity: state === "future" ? 0.6 : 1,
+                }}
+              >
+                <span
+                  aria-hidden
+                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{
+                    background: state === "current" ? accent : state === "past" ? "var(--surface-2)" : "transparent",
+                    border: state === "future" ? "1px solid var(--surface-border)" : "none",
+                    boxShadow: state === "current" ? `0 0 6px ${accent}` : "none",
+                  }}
+                />
+                {String(s.n).padStart(2, "0")} · {s.rail}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+
+      {/* Six-station vertical line (desktop editorial timeline). Past = dim
+          filled, current = accent, future = hollow. */}
       <ol className="mt-4 hidden lg:block" aria-label="Night shift progress">
         {STAGES.map((s, i) => {
           const state = i < current ? "past" : i === current ? "current" : "future";
@@ -351,19 +385,19 @@ function OperationsMonitor({
     >
       {/* Top bar — status dot · repo target · context label · clock. Not interactive. */}
       <div
-        className="flex items-center gap-2.5 border-b px-4 py-2.5"
+        className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b px-4 py-2.5"
         style={{ borderColor: "var(--surface-border)", background: "var(--surface-2)" }}
       >
         <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: t.dot, boxShadow: `0 0 8px ${t.dot}` }} aria-hidden />
-        <span className="truncate font-mono text-[11px] text-cloud" translate="no">{PROOF_REPO}</span>
-        <span className="hidden truncate font-mono text-[10px] text-fog sm:inline">· {context}</span>
+        <span className="min-w-0 max-w-[60%] truncate font-mono text-[11px] text-cloud sm:max-w-[40%]" translate="no">{PROOF_REPO}</span>
+        <span className="hidden min-w-0 truncate font-mono text-[10px] text-fog sm:inline">· {context}</span>
         <span className={cn("ml-auto shrink-0 rounded-full border px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em]", t.text)} style={{ borderColor: "var(--surface-border)", background: "var(--color-ink)" }}>
           {t.chip}
         </span>
         <span className="shrink-0 font-mono text-[10px] tabular-nums text-fog/70">{clock}</span>
       </div>
       {/* Body — real product evidence. */}
-      <div className="p-5" style={{ borderTop: `1px solid ${accent}22` }}>
+      <div className="min-w-0 p-4 sm:p-5" style={{ borderTop: `1px solid ${accent}22` }}>
         {children}
       </div>
     </div>
@@ -487,14 +521,14 @@ function TriagePanel({ D, still }: { D: Derived; still: boolean }) {
 function BlameBar({ still }: { still: boolean }) {
   return (
     <motion.div
-      className="flex items-center justify-between gap-3 rounded-lg border px-3.5 py-2.5"
+      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3.5 py-2.5 sm:gap-3"
       style={{ borderColor: "var(--surface-border)", background: "var(--input-bg)", borderLeft: "2px solid #fbbf24" }}
       initial={still ? false : { opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, ease: EASE }}
     >
-      <span className="flex items-center gap-2 font-mono text-[11.5px]">
-        <span className="text-amber">⌁ DETECTIVE</span>
+      <span className="flex min-w-0 flex-wrap items-center gap-2 font-mono text-[11.5px]">
+        <span className="shrink-0 text-amber">⌁ DETECTIVE</span>
         <span className="text-fog">introduced in commit <span className="text-cloud">a3f9c</span> · <span className="text-cloud">@dev</span> · 14 months ago</span>
       </span>
       <span className="shrink-0 rounded-full border px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-fog/80" style={{ borderColor: "var(--surface-border)" }}>
@@ -518,12 +552,12 @@ function RootCausePanel({ D, mode, still }: { D: Derived; mode: Mode; still: boo
         <div className="p-4 font-mono text-[12.5px]">
           {depsWindow.map((d) =>
             d.vulnerable ? (
-              <div key={d.name} className="rounded" style={{ background: "#fb71851a", borderLeft: "2px solid #fb7185aa", paddingLeft: 6 }}>
+              <div key={d.name} className="min-w-0 truncate rounded" style={{ background: "#fb71851a", borderLeft: "2px solid #fb7185aa", paddingLeft: 6 }}>
                 <span style={{ color: "#fb7185" }}>&quot;{d.name}&quot;: &quot;{d.version}&quot;,</span>
                 {D.topVuln?.cve && <span className="ml-2 text-fog/60">← flagged: {D.topVuln.cve}</span>}
               </div>
             ) : (
-              <div key={d.name} className="text-fog" style={{ paddingLeft: 6 }}>&quot;{d.name}&quot;: &quot;{d.version}&quot;,</div>
+              <div key={d.name} className="min-w-0 truncate text-fog" style={{ paddingLeft: 6 }}>&quot;{d.name}&quot;: &quot;{d.version}&quot;,</div>
             ),
           )}
         </div>
@@ -564,16 +598,21 @@ function DiffPanel({ D, still }: { D: Derived; still: boolean }) {
   const added = D.diffLines.find((l) => l.kind === "add");
   const patched = added?.text.match(/:\s*"([^"]+)"/)?.[1];
   return (
-    <div>
-      <div className="flex items-center gap-2.5">
-        <span className="truncate font-mono text-[12.5px] text-cloud">{D.diffFile || "package.json"}</span>
-        <span className="rounded border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] text-fog" style={{ borderColor: "var(--surface-border)" }}>diff</span>
+    <div className="min-w-0">
+      <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
+        <span className="min-w-0 truncate font-mono text-[12.5px] text-cloud">{D.diffFile || "package.json"}</span>
+        <span className="shrink-0 rounded border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] text-fog" style={{ borderColor: "var(--surface-border)" }}>diff</span>
         <span className="ml-auto shrink-0 rounded-full border px-2.5 py-1 font-mono text-[9.5px] uppercase tracking-[0.1em] text-teal" style={{ borderColor: "color-mix(in oklab, var(--color-teal) 35%, transparent)", background: "color-mix(in oklab, var(--color-teal) 8%, transparent)" }}>
           branch-only · never auto-merged
         </span>
       </div>
-      <div className="mt-2 overflow-hidden rounded-xl border py-1.5" style={{ borderColor: "var(--surface-border)", background: "var(--input-bg)" }}>
-        {lines.map((l, i) => <DiffRow key={i} line={l} i={i} still={still} />)}
+      {/* The diff body is the one place an intentional horizontal scroll is
+          allowed — wrapping code would damage the real diff. Everything else in
+          this panel wraps/stacks; only this inner scroller pans sideways. */}
+      <div className="mt-2 overflow-x-auto overflow-y-hidden rounded-xl border py-1.5" style={{ borderColor: "var(--surface-border)", background: "var(--input-bg)" }}>
+        <div className="min-w-max">
+          {lines.map((l, i) => <DiffRow key={i} line={l} i={i} still={still} />)}
+        </div>
       </div>
       <p className="mt-2.5 font-mono text-[11px] text-fog/80">
         Codex swapped the pin{patched ? (<> to <span className="text-teal">{patched}</span></>) : null} and stopped at a branch — you review and merge, never Umbra.
@@ -677,18 +716,18 @@ function GatePanel({ D, still }: { D: Derived; still: boolean }) {
   const risk = D.reviewerRisk ?? 0;
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between gap-3 rounded-xl border px-4 py-3" style={{ borderColor: "var(--surface-border)", background: "var(--input-bg)" }}>
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3" style={{ borderColor: "var(--surface-border)", background: "var(--input-bg)" }}>
+        <div className="min-w-0">
           <div className="font-mono text-[9.5px] uppercase tracking-[0.16em] text-fog">Autonomy</div>
-          <div className="font-mono text-[13px] text-cloud">Level {D.autonomyLevel} — {D.autonomyLabel}</div>
+          <div className="truncate font-mono text-[13px] text-cloud">Level {D.autonomyLevel} — {D.autonomyLabel}</div>
         </div>
         <AutoMergeToggle still={still} />
       </div>
 
       <div className="rounded-xl border p-4" style={{ borderColor: "var(--surface-border)", background: "var(--surface)" }}>
-        <div className="flex items-center justify-between gap-2 font-mono text-[12px]">
-          <span className="flex items-center gap-2 text-cloud">Reviewer · blast-radius risk <StatusPill status={D.reviewerStatus} accent="#a78bfa" /></span>
-          <span className="shrink-0 text-fog">{hasRisk ? `${risk}/100` : "— / 100"} · {D.reviewerRec ?? "human review required"}</span>
+        <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[12px]">
+          <span className="flex min-w-0 flex-wrap items-center gap-2 text-cloud">Reviewer · blast-radius risk <StatusPill status={D.reviewerStatus} accent="#a78bfa" /></span>
+          <span className="min-w-0 shrink-0 text-fog">{hasRisk ? `${risk}/100` : "— / 100"} · {D.reviewerRec ?? "human review required"}</span>
         </div>
         {hasRisk && (
           <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full" style={{ background: "var(--surface-2)" }}>

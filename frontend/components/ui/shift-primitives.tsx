@@ -108,9 +108,9 @@ export function ArtifactShell({ label, status, accent, children, still = false }
   const c = toneColor(status.tone, accent);
   return (
     <div className="overflow-hidden rounded-xl border border-[color:var(--surface-border)] bg-[color:var(--input-bg)]">
-      <div className="flex items-center justify-between border-b border-[color:var(--surface-border)] px-4 py-2.5">
-        <span className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-fog">{label}</span>
-        <span className="flex items-center gap-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em]" style={{ color: c }}>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-[color:var(--surface-border)] px-4 py-2.5">
+        <span className="min-w-0 truncate font-mono text-[9.5px] uppercase tracking-[0.18em] text-fog">{label}</span>
+        <span className="flex shrink-0 items-center gap-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em]" style={{ color: c }}>
           <span className={`h-1.5 w-1.5 rounded-full ${status.tone === "live" && !still ? "animate-pulse-glow" : ""}`} style={{ background: c, boxShadow: status.tone === "idle" ? "none" : `0 0 8px ${c}` }} /> {status.label}
         </span>
       </div>

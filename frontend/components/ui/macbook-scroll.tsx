@@ -1,6 +1,6 @@
 "use client";
-import React, { useEffect, useRef, useState } from "react";
-import { MotionValue, motion, useScroll, useTransform } from "motion/react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { MotionValue, motion, useReducedMotion, useScroll, useTransform } from "motion/react";
 import { cn } from "@/lib/utils";
 import {
   IconBrightnessDown,
@@ -24,13 +24,39 @@ import {
   IconCaretDownFilled,
 } from "@tabler/icons-react";
 
-/* A real Aceternity/Fey-style MacBook that opens as you scroll: the lid unfolds
-   about its hinge (rotateX), the whole unit scales up with genuine perspective
-   depth, and the screen shows the morning report. The screen is a pre-rendered
-   PNG (public/morning-report.png) so it never distorts under the scale animation
-   — the same technique Fey uses. The section is sticky-pinned so the laptop stays
-   centered while it opens, then releases. Whole thing is aria-hidden (decorative);
-   the surrounding section carries the real copy. */
+/* A real Aceternity/Fey-style MacBook. The screen is a pre-rendered PNG
+   (public/morning-report.png, natural 4:3) so it never distorts. Whole thing
+   is aria-hidden (decorative); the surrounding section carries the real copy.
+
+   The device (screen + keyboard deck) is a fixed-size "canvas" (NATIVE_W ×
+   NATIVE_H, matching the original pixel-perfect artwork) rendered inside a
+   <ScaledCanvas> that measures its own container width via ResizeObserver and
+   applies ONE uniform `transform: scale()` — never separate x/y scales, so
+   nothing ever distorts, and the reserved layout height always matches the
+   visual size exactly (no dead space, no reflow surprises).
+
+   Two render paths, chosen ONCE on mount via matchMedia (never guessed from
+   viewport width alone, since a phone can request "desktop site" and report a
+   wide innerWidth while still being a coarse-pointer touch device):
+
+   - SAFE STATIC (default on first paint / SSR, and permanent for touch/coarse
+     pointer, <1024px, or prefers-reduced-motion): a stable, NON-sticky, fully
+     open device at its natural aspect ratio. The keyboard/base is always
+     rendered directly beneath the screen in normal document flow — nothing
+     scales it away, clips it, or hides it behind the screen.
+
+   - CINEMATIC (only min-width:1024px AND hover:hover AND pointer:fine AND no
+     reduced-motion): a restrained sticky-pinned opening over a modest, bounded
+     track (not a multi-screen trap). The screen's reserved box height always
+     equals its FULLY OPEN height, so the base can never be overlapped/z-hidden
+     while the lid animates — unlike the old version, which sized the lid's box
+     to the CLOSED height and let the open screen visually spill over the deck. */
+
+const NATIVE_W = 512; // 32rem canvas — matches the source artwork's proportions
+const NATIVE_SCREEN_H = 384; // 4:3 aspect, matching morning-report.png (2048×1536)
+const NATIVE_BASE_H = 336; // keyboard deck height (21rem, unchanged from original)
+const HINGE_OVERLAP = 6; // tiny cosmetic seam only — never enough to cover a key
+
 export const MacbookScroll = ({
   src = "/morning-report.png",
   showGradient,
@@ -42,30 +68,134 @@ export const MacbookScroll = ({
   title?: string | React.ReactNode;
   badge?: React.ReactNode;
 }) => {
+  const reduce = useReducedMotion();
+  // Default to the SAFE static path on first render/SSR — a phone requesting
+  // "desktop site" has a coarse pointer and must land here, never in cinema.
+  const [cinema, setCinema] = useState(false);
+
+  useEffect(() => {
+    if (reduce) return; // reduced-motion always gets the static fully-open device
+    const mq = window.matchMedia("(min-width: 1024px) and (hover: hover) and (pointer: fine)");
+    const update = () => setCinema(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, [reduce]);
+
+  if (cinema && !reduce) return <MacbookCinematic src={src} showGradient={showGradient} title={title} badge={badge} />;
+  return <MacbookStatic src={src} title={title} badge={badge} />;
+};
+
+/** Measures its own rendered width and scales a fixed-size canvas to fit it
+ *  uniformly (one scale factor, never separate x/y — no distortion). The
+ *  wrapper's height is set to the exact scaled height, so there is never any
+ *  leftover dead space below the device. */
+function ScaledCanvas({
+  nativeWidth,
+  nativeHeight,
+  className,
+  children,
+}: {
+  nativeWidth: number;
+  nativeHeight: number;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  const outerRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+
+  useLayoutEffect(() => {
+    const el = outerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? nativeWidth;
+      setScale(w > 0 ? Math.min(1, w / nativeWidth) : 1);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [nativeWidth]);
+
+  return (
+    <div ref={outerRef} className={cn("relative w-full", className)} style={{ height: nativeHeight * scale }}>
+      <div style={{ width: nativeWidth, height: nativeHeight, transform: `scale(${scale})`, transformOrigin: "top left" }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------- Safe static -------------------------------
+   Non-sticky, natural document flow. The screen sits fully open at its
+   natural 4:3 aspect ratio; the base is a normal sibling directly beneath it
+   in the same fixed-size canvas — always visible, never scaled away, never
+   z-hidden, never off-screen. */
+function MacbookStatic({
+  src,
+  title,
+  badge,
+}: {
+  src: string;
+  title?: string | React.ReactNode;
+  badge?: React.ReactNode;
+}) {
+  return (
+    <div className="relative flex flex-col items-center py-10" aria-label="Morning Report product preview">
+      {title && <div className="mb-8 px-4 text-center md:mb-10">{title}</div>}
+      <ScaledCanvas
+        nativeWidth={NATIVE_W}
+        nativeHeight={NATIVE_SCREEN_H + NATIVE_BASE_H - HINGE_OVERLAP}
+        className="mx-auto max-w-[26rem] md:max-w-[32rem]"
+      >
+        <div aria-hidden style={{ width: NATIVE_W }}>
+          {/* Screen — fully open, natural aspect ratio, no fold/rotate. */}
+          <div className="relative rounded-2xl bg-[#0a0a0c] p-2" style={{ width: NATIVE_W, height: NATIVE_SCREEN_H }}>
+            <div className="absolute inset-0 rounded-lg bg-[#0a0a0c]" />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={src} alt="" className="absolute inset-0 h-full w-full rounded-lg object-cover object-left-top" />
+          </div>
+          {/* Base — directly beneath, in normal flow, always fully visible. */}
+          <div style={{ marginTop: -HINGE_OVERLAP }}>
+            <Base badge={badge} />
+          </div>
+        </div>
+      </ScaledCanvas>
+    </div>
+  );
+}
+
+/* ------------------------------- Cinematic ---------------------------------
+   Desktop, fine-pointer, hover-capable only. A single restrained opening
+   choreographed over a modest sticky track (not a multi-viewport trap). The
+   Lid's reserved box height always equals the FULLY OPEN screen height, so the
+   base can never be overlapped or z-hidden at any point in the animation. */
+function MacbookCinematic({
+  src,
+  showGradient,
+  title,
+  badge,
+}: {
+  src: string;
+  showGradient?: boolean;
+  title?: string | React.ReactNode;
+  badge?: React.ReactNode;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const { scrollYProgress } = useScroll({
     target: ref,
     offset: ["start start", "end end"],
   });
 
-  const [isMobile, setIsMobile] = useState(false);
-  useEffect(() => {
-    if (typeof window !== "undefined" && window.innerWidth < 768) setIsMobile(true);
-  }, []);
-
-  // Opening choreography, spread over the first ~55% of the tall track so it feels
-  // deliberate. scaleX/scaleY converge to the same value at rest → correct aspect,
-  // crisp image. rotate unfolds the lid from folded (-28°) to upright.
-  const scaleX = useTransform(scrollYProgress, [0, 0.55], [1.2, isMobile ? 1 : 1.5]);
-  const scaleY = useTransform(scrollYProgress, [0, 0.55], [0.6, isMobile ? 1 : 1.5]);
-  const translate = useTransform(scrollYProgress, [0, 1], [0, isMobile ? 0 : -90]);
-  const rotate = useTransform(scrollYProgress, [0.08, 0.14, 0.55], [-28, -28, 0]);
-  // Keep the handoff line with the open laptop, then fade as the section exits.
-  const textOpacity = useTransform(scrollYProgress, [0, 0.6, 0.82], [1, 1, 0]);
-  const textY = useTransform(scrollYProgress, [0, 0.82], [0, -28]);
+  // A single, bounded opening over a modest 130vh track — restrained, not a
+  // 220vh multi-scene pin. rotate unfolds the lid from folded (-28°) to
+  // upright (0°); scale converges to 1 at rest for a crisp, undistorted image.
+  const scale = useTransform(scrollYProgress, [0, 0.6], [0.86, 1]);
+  const rotate = useTransform(scrollYProgress, [0.05, 0.15, 0.6], [-28, -28, 0]);
+  const foldedOpacity = useTransform(scrollYProgress, [0, 0.12, 0.3], [1, 1, 0]);
+  const textOpacity = useTransform(scrollYProgress, [0, 0.55, 0.85], [1, 1, 0]);
+  const textY = useTransform(scrollYProgress, [0, 0.85], [0, -24]);
 
   return (
-    <div ref={ref} className="relative h-[220vh]" aria-label="Morning Report product preview">
+    <div ref={ref} className="relative h-[130vh]" aria-label="Morning Report product preview">
       {/* soft ambient behind the laptop */}
       <div className="pointer-events-none absolute left-1/2 top-[20vh] h-[46rem] w-[46rem] -translate-x-1/2 rounded-full bg-amber/10 blur-[150px]" aria-hidden />
       <div className="sticky top-0 flex h-screen flex-col items-center justify-center overflow-hidden [perspective:900px]" aria-hidden>
@@ -73,31 +203,21 @@ export const MacbookScroll = ({
           {title}
         </motion.div>
 
-        <div className="scale-[0.62] sm:scale-75 md:scale-100">
-          <Lid src={src} scaleX={scaleX} scaleY={scaleY} rotate={rotate} translate={translate} />
-          {/* Base — official keyboard chrome; -z-10 so the opening lid always
-              paints on top of it (no overlap seam). Negative margin tucks the
-              deck up under the lid so the hinge reads as one connected unit. */}
-          <div className="relative -z-10 mx-auto -mt-3 h-[21rem] w-[32rem] overflow-hidden rounded-b-2xl rounded-t-[3px] bg-gray-200 dark:bg-[#232326]">
-            <div className="relative h-10 w-full">
-              <div className="absolute inset-x-0 mx-auto h-4 w-[80%] bg-[#050505]" />
+        <ScaledCanvas
+          nativeWidth={NATIVE_W}
+          nativeHeight={NATIVE_SCREEN_H + NATIVE_BASE_H - HINGE_OVERLAP}
+          className="max-w-[32rem]"
+        >
+          <motion.div style={{ width: NATIVE_W, scale }}>
+            <Lid src={src} rotate={rotate} foldedOpacity={foldedOpacity} />
+            {/* Base — a plain sibling in normal flow at a fixed vertical
+                position (the Lid box height already equals the fully-open
+                screen height), so it can never disappear or seam. */}
+            <div style={{ marginTop: -HINGE_OVERLAP }}>
+              <Base badge={badge} />
             </div>
-            <div className="relative flex">
-              <div className="mx-auto h-full w-[10%] overflow-hidden">
-                <SpeakerGrid />
-              </div>
-              <div className="mx-auto h-full w-[80%]">
-                <Keypad />
-              </div>
-              <div className="mx-auto h-full w-[10%] overflow-hidden">
-                <SpeakerGrid />
-              </div>
-            </div>
-            <Trackpad />
-            <div className="absolute inset-x-0 bottom-0 mx-auto h-2 w-20 rounded-tl-3xl rounded-tr-3xl bg-gradient-to-t from-[#272729] to-[#050505]" />
-            {badge && <div className="absolute bottom-4 left-4">{badge}</div>}
-          </div>
-        </div>
+          </motion.div>
+        </ScaledCanvas>
       </div>
       {showGradient && (
         <div
@@ -107,31 +227,29 @@ export const MacbookScroll = ({
       )}
     </div>
   );
-};
+}
 
 export const Lid = ({
-  scaleX,
-  scaleY,
   rotate,
-  translate,
+  foldedOpacity,
   src,
 }: {
-  scaleX: MotionValue<number>;
-  scaleY: MotionValue<number>;
   rotate: MotionValue<number>;
-  translate: MotionValue<number>;
+  foldedOpacity: MotionValue<number>;
   src: string;
 }) => {
   return (
-    <div className="relative [perspective:800px]">
-      {/* folded back of the lid (seen while closed / partially open) */}
-      <div
+    <div className="relative [perspective:800px]" style={{ width: NATIVE_W, height: NATIVE_SCREEN_H }}>
+      {/* folded back of the lid — visible only in the closed/near-closed phase
+          (fades out as the screen opens); anchored to the SAME hinge line
+          (bottom of this box) as the screen, so there is never a mismatch. */}
+      <motion.div
         style={{
+          opacity: foldedOpacity,
           transform: "perspective(800px) rotateX(-25deg) translateZ(0px)",
           transformOrigin: "bottom",
-          transformStyle: "preserve-3d",
         }}
-        className="relative h-[12rem] w-[32rem] rounded-2xl bg-[#0a0a0c] p-2"
+        className="absolute inset-x-0 bottom-0 h-[12rem] w-full rounded-2xl bg-[#0a0a0c] p-2"
       >
         <div
           style={{ boxShadow: "0px 2px 0px 2px #171717 inset" }}
@@ -141,18 +259,17 @@ export const Lid = ({
             <UmbraMark />
           </span>
         </div>
-      </div>
-      {/* the screen — unfolds and scales up; shows the report image (no distortion) */}
+      </motion.div>
+      {/* the screen — unfolds about the SAME bottom hinge line; fixed box size
+          (never inset-0 against a shorter parent) so it can never spill over
+          the deck below. Natural aspect ratio, no distortion, no cropped edge. */}
       <motion.div
         style={{
-          scaleX,
-          scaleY,
           rotateX: rotate,
-          translateY: translate,
           transformStyle: "preserve-3d",
-          transformOrigin: "top",
+          transformOrigin: "bottom",
         }}
-        className="absolute inset-0 h-96 w-[32rem] rounded-2xl bg-[#0a0a0c] p-2"
+        className="absolute inset-0 rounded-2xl bg-[#0a0a0c] p-2"
       >
         <div className="absolute inset-0 rounded-lg bg-[#0a0a0c]" />
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -162,6 +279,34 @@ export const Lid = ({
           className="absolute inset-0 h-full w-full rounded-lg object-cover object-left-top"
         />
       </motion.div>
+    </div>
+  );
+};
+
+/* The keyboard deck — official chrome, shared identically by both the static
+   and cinematic paths (same fixed-size canvas) so the base never differs
+   between them, and is always a plain block-level element: no scale wrapper,
+   no negative z-index, so it can never be hidden, clipped, or seamed. */
+export const Base = ({ badge }: { badge?: React.ReactNode }) => {
+  return (
+    <div className="relative overflow-hidden rounded-b-2xl rounded-t-[3px] bg-gray-200 dark:bg-[#232326]" style={{ width: NATIVE_W, height: NATIVE_BASE_H }}>
+      <div className="relative h-10 w-full">
+        <div className="absolute inset-x-0 mx-auto h-4 w-[80%] bg-[#050505]" />
+      </div>
+      <div className="relative flex">
+        <div className="mx-auto h-full w-[10%] overflow-hidden">
+          <SpeakerGrid />
+        </div>
+        <div className="mx-auto h-full w-[80%]">
+          <Keypad />
+        </div>
+        <div className="mx-auto h-full w-[10%] overflow-hidden">
+          <SpeakerGrid />
+        </div>
+      </div>
+      <Trackpad />
+      <div className="absolute inset-x-0 bottom-0 mx-auto h-2 w-20 rounded-tl-3xl rounded-tr-3xl bg-gradient-to-t from-[#272729] to-[#050505]" />
+      {badge && <div className="absolute bottom-4 left-4">{badge}</div>}
     </div>
   );
 };

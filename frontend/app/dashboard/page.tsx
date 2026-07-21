@@ -1054,10 +1054,11 @@ function ScanOptions({ model, setModel, effort, setEffort, crew, setCrew }: {
           <SegmentedTabs layoutId="opt-crew" value={crew} onChange={setCrew} options={[{ value: "quick", label: "Quick · 1" }, { value: "full", label: "Full · 3" }]} />
         </OptionGroup>
       </div>
-      {/* Surface the concrete model + effort so "Fast / Balanced" isn't opaque —
-          the spec is real (these are the exact Codex model IDs the scan runs on). */}
+      {/* Surface the configured request so "Fast / Balanced" isn't opaque. This
+          is not runtime attestation; the provider ledger and signed receipt are
+          the source of truth for what actually ran. */}
       <p className="font-mono text-[11px] text-fog">
-        Codex model <span className="text-cloud">{model}</span> · reasoning <span className="text-cloud">{effort}</span> · {crew === "quick" ? "1 agent" : "3 agents"}
+        Configured Codex model <span className="text-cloud">{model}</span> · requested reasoning <span className="text-cloud">{effort}</span> · {crew === "quick" ? "1 agent" : "3 agents"}
       </p>
       <p className={`font-mono text-[11px] ${eta.warn ? "text-amber" : "text-fog"}`}>
         {eta.warn ? "⚠ " : "◔ "}Estimated {eta.label} · approximate{eta.warn ? " — may approach the 15-min limit; try Fast / Low / Quick" : ""}

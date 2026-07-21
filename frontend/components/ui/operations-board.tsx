@@ -159,7 +159,50 @@ export function OperationsBoard() {
             const lit = cell.tone === "signal" || cell.tone === "risk";
             const sig = cell.tone === "risk" ? RISK : a.color; // protagonist colour
             return (
-              <div key={a.key} className="flex items-center gap-3 px-4 py-3.5 sm:gap-4 sm:px-6">
+              <div key={a.key}>
+                {/* Compact, evidence-first row for touch screens. The desktop's
+                    four-column roster is useful at width, but it previously gave
+                    the actual agent readout only a sliver of a phone viewport. */}
+                <div className="flex items-start gap-3 px-4 py-3.5 sm:hidden">
+                  <span
+                    className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border font-mono text-[13px] font-semibold transition-colors duration-500"
+                    style={
+                      lit
+                        ? { color: sig, borderColor: `${sig}66`, background: `${sig}14`, boxShadow: `0 0 22px -10px ${sig}` }
+                        : { color: FOG, borderColor: "var(--surface-border)", background: "var(--surface)" }
+                    }
+                  >
+                    {a.letter}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span className="font-mono text-[11.5px] font-semibold tracking-[0.1em] text-cloud">{a.name}</span>
+                      <span
+                        className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em]"
+                        style={{ color: lit ? sig : cell.tone === "done" ? RESOLVE : FOG }}
+                      >
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: cell.tone === "idle" ? "transparent" : cell.tone === "done" ? RESOLVE : sig, border: cell.tone === "idle" ? `1px solid ${FOG}` : undefined }} />
+                        {cell.word}
+                      </span>
+                    </div>
+                    <AnimatePresence mode="wait">
+                      <motion.div
+                        key={cell.readout}
+                        initial={reduce ? false : { opacity: 0, y: 4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={reduce ? undefined : { opacity: 0, y: -4 }}
+                        transition={{ duration: 0.3, ease: EASE }}
+                        className={`mt-1 break-words font-mono text-[11px] leading-relaxed ${lit ? "text-cloud/85" : "text-cloud/55"}`}
+                      >
+                        {cell.readout}
+                      </motion.div>
+                    </AnimatePresence>
+                  </div>
+                </div>
+
+                {/* Desktop roster — four compact columns, retained where its
+                    simultaneous crew overview remains readable. */}
+                <div className="hidden items-center gap-4 px-6 py-3.5 sm:flex">
                 {/* L3 — identity monogram. Neutral at rest; its colour only when lit. */}
                 <span
                   className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border font-mono text-[13px] font-semibold transition-colors duration-500"
@@ -172,13 +215,13 @@ export function OperationsBoard() {
                   {a.letter}
                 </span>
 
-                <div className="w-[86px] shrink-0 sm:w-[118px]">
-                  <div className="font-mono text-[11.5px] font-semibold tracking-[0.1em] text-cloud sm:text-[12px]">{a.name}</div>
-                  <div className="hidden font-mono text-[9.5px] tracking-[0.06em] text-fog sm:block">{a.role}</div>
+                <div className="w-[118px] shrink-0">
+                  <div className="font-mono text-[12px] font-semibold tracking-[0.1em] text-cloud">{a.name}</div>
+                  <div className="font-mono text-[9.5px] tracking-[0.06em] text-fog">{a.role}</div>
                 </div>
 
                 {/* L5 — status: dot + word. Signal colour only when lit. */}
-                <div className="flex w-[70px] shrink-0 items-center gap-1.5 sm:w-[92px] sm:gap-2">
+                <div className="flex w-[92px] shrink-0 items-center gap-2">
                   <span className="relative grid h-3.5 w-3.5 place-items-center">
                     {cell.tone === "idle" ? (
                       <span className="h-2 w-2 rounded-full border" style={{ borderColor: FOG }} />
@@ -210,11 +253,12 @@ export function OperationsBoard() {
                       animate={{ opacity: 1, y: 0 }}
                       exit={reduce ? undefined : { opacity: 0, y: -6 }}
                       transition={{ duration: 0.35, ease: EASE }}
-                      className={`truncate font-mono text-[11px] sm:text-[12px] ${lit ? "text-cloud/85" : "text-cloud/50"}`}
+                    className={`truncate font-mono text-[12px] ${lit ? "text-cloud/85" : "text-cloud/50"}`}
                     >
                       {cell.readout}
                     </motion.div>
                   </AnimatePresence>
+                </div>
                 </div>
               </div>
             );
@@ -231,7 +275,7 @@ export function OperationsBoard() {
             animate={{ opacity: 1 }}
             exit={reduce ? undefined : { opacity: 0 }}
             transition={{ duration: 0.4 }}
-            className="truncate font-mono text-[11px] text-cyan/90"
+            className="break-words font-mono text-[11px] text-cyan/90 sm:truncate"
           >
             {frame.caption}
           </motion.span>

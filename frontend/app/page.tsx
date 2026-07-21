@@ -68,7 +68,7 @@ export default function Landing() {
         initial={{ y: -20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ duration: 0.6 }}
-        className={`sticky top-3 z-40 mt-3 flex items-center justify-between gap-2 rounded-2xl px-3 py-2.5 transition-all duration-300 sm:px-5 sm:py-3 ${scrolled ? "glass shadow-[var(--shadow-card)]" : ""}`}
+        className={`sticky top-3 z-40 mt-3 flex items-center justify-between gap-2 rounded-2xl px-3 py-2.5 transition-all duration-300 sm:px-5 sm:py-3 ${scrolled ? "glass !bg-ink/90 shadow-[var(--shadow-card)]" : ""}`}
       >
         <a href="/" aria-label="Umbra home" className="flex min-w-0 shrink-0 items-center rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-cyan">
           <UmbraLogo size={22} />
@@ -85,9 +85,8 @@ export default function Landing() {
         <div className="flex min-w-0 shrink-0 items-center gap-1.5 sm:gap-3">
           <LocalWeather />
           <ThemeToggle variant="inline" />
-          <HoverBorderGradient onClick={() => setSignIn(true)} className="px-3 py-2 text-xs sm:px-4">
-            <span className="hidden sm:inline">Sign in</span>
-            <span className="sm:hidden">In</span> <span className="text-cyan">↗</span>
+          <HoverBorderGradient onClick={() => setSignIn(true)} className="px-2.5 py-2 text-[11px] sm:px-4 sm:text-xs">
+            <span>Sign in</span> <span className="text-cyan">↗</span>
           </HoverBorderGradient>
         </div>
       </motion.nav>

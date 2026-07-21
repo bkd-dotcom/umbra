@@ -97,6 +97,10 @@ class AdmissionReport:
     model_identity: dict[str, Any] | None = None
     context_manifest: dict[str, Any] | None = None
     context_quarantined: int = 0
+    # Sandbox capability preflight result (set on genuine-Codex runs). When the
+    # sandbox can't initialize in this runtime, the run is BLOCKED before any agent
+    # is dispatched — no engineering/reasoning is produced, honestly reflected here.
+    sandbox: dict[str, Any] | None = None
 
     def to_public(self) -> dict[str, Any]:
         return {
@@ -125,6 +129,7 @@ class AdmissionReport:
             "model_identity": self.model_identity,
             "context_manifest": self.context_manifest,
             "context_quarantined": self.context_quarantined,
+            "sandbox": self.sandbox,
             "auto_merge": False,  # invariant, surfaced explicitly
             "human_review_required": True,
         }
@@ -430,6 +435,54 @@ def run_admission_on_checkout(
     file_changes: dict[str, str] = {}
     proposed: dict[str, Any] | None = None
     baseline_checks: ChecksReport | None = None
+    sandbox_probe: dict[str, Any] | None = None
+
+    # 3-pre. SANDBOX PREFLIGHT (genuine-Codex only). Before dispatching ANY agent to
+    #        Codex, verify the isolation sandbox can actually boot in this runtime,
+    #        using the exact sandbox mode a real run will use. If it can't, we BLOCK
+    #        before inspection: no clone work is wasted, no agents run, no Codex
+    #        allowance is spent, and we never claim engineering/reasoning occurred.
+    if want_codex:
+        sandbox_probe = CodexClient(model=None, reasoning_effort=None).preflight_sandbox()
+        if sandbox_probe.get("sandbox_status") == "unavailable":
+            blocked = AdmissionReport(
+                repo=repo_label,
+                task_type=contract.task_type,
+                executor="codex-cli-blocked",
+                contract=contract.to_public(),
+                contract_result=evaluate_contract([], contract).to_public(),
+                trust_boundary=tb.to_public(),
+                verifier=None,
+                checks=None,
+                baseline_checks=baseline_checks.to_public() if baseline_checks else None,
+                check_diagnosis=None,
+                changed_files=[],
+                proposed_change=None,
+                base_commit=base_commit,
+                diff=None,
+                codex_config=None,
+                model_identity=CodexClient(model=None, reasoning_effort=None).model_identity("codex-cli-blocked"),
+                context_manifest=None,
+                context_quarantined=tb.quarantined_count,
+                sandbox=sandbox_probe,
+                providers={
+                    # Advisories only if OSV actually ran (it did, to find the dep).
+                    "advisories": provider_hint if dep is not None else "unavailable",
+                    "change": "unavailable",
+                    "engineering": "unavailable",
+                    "reasoning": "unavailable",
+                    "checks": "unavailable",
+                    "verifier": "unavailable",
+                },
+            )
+            # Authority: no engineering was produced and nothing was verified → cap at
+            # OBSERVE. Never branch-PR, never auto-merge from a blocked run.
+            blocked.authority_level = 0
+            blocked.authority = "observe"
+            blocked.authority_label = "Observe — no change was produced"
+            blocked.outcome = "Codex was not started — the verified workspace-write sandbox profile is unavailable in this runtime, so no repository inspection, change, test, or reasoning output was produced."
+            blocked.blocked_reason = "sandbox_unavailable"
+            return blocked
 
     if dep is not None:
         # 3a. BASELINE: run the contract's required checks on the PRISTINE base
@@ -507,9 +560,17 @@ def run_admission_on_checkout(
         model_identity=model_identity,
         context_manifest=context_manifest,
         context_quarantined=tb.quarantined_count,
+        sandbox=sandbox_probe,
         providers={
             "advisories": provider_hint,
             "change": ("codex-cli" if executor == "codex-cli" else "deterministic"),
+            # Engineering reflects PRODUCED output: on the Codex path it mirrors the
+            # op's provider (codex-cli only if the run actually succeeded, else
+            # unavailable); on the deterministic path there is no coding model.
+            "engineering": (
+                (codex_config or {}).get("provider", "unavailable")
+                if executor == "codex-cli" else "deterministic"
+            ),
             "checks": "shell",
             "verifier": "deterministic",
         },

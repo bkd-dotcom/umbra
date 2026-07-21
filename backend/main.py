@@ -101,6 +101,10 @@ async def health() -> dict[str, object]:
     # real findings (OSV / git history / git-grep) run without Codex. Demo mode is
     # always ready (zero external dependencies).
     live_ready = live_repositories_enabled() and (codex_cli_enabled or cloud_scan)
+    # Effective Codex sandbox (configured vs effective + any downgrade) so the
+    # runtime never implies an unsafe mode is active when it isn't. Surfaced for
+    # founder diagnostics; harmless to expose (no secrets).
+    sandbox_config = CodexClient.effective_sandbox() if codex_cli_enabled else None
     return {
         "status": "ok",
         "service": "umbra",
@@ -108,6 +112,7 @@ async def health() -> dict[str, object]:
         "openai_configured": openai_configured,
         "codex_cli_enabled": codex_cli_enabled,
         "cloud_scan_enabled": cloud_scan,
+        "codex_sandbox": sandbox_config,
         "ready": demo_mode or openai_configured or live_ready,
     }
 
@@ -370,10 +375,27 @@ async def public_live_admission(request: PublicLiveRequest, http: Request) -> di
         raise HTTPException(status_code=429, detail="The shared genuine-Codex demo budget is used up for today. Open a verified captured run (a real recorded Codex diff), or run the deterministic executor — both unlimited.")
     if ip_rem <= 0:
         raise HTTPException(status_code=429, detail="You've used your genuine-Codex run for today. Open a verified captured run (a real recorded Codex diff), or run the deterministic executor — both unlimited.")
-    # Eligible + not a duplicate → reserve in-flight, charge quota, then run. Charging
-    # only here guarantees a click/invalid/rejected/duplicate never spends quota.
+    # SANDBOX PREFLIGHT before charging or cloning: if Codex's isolation sandbox
+    # can't initialize in this runtime, block up front — no clone, no agents, and
+    # ZERO Codex allowance consumed. Return a structured 200 so the UI renders the
+    # honest "Codex was not started" state (not a raw 500).
+    probe = CodexClient(model=None, reasoning_effort=None).preflight_sandbox()
+    if probe.get("sandbox_status") == "unavailable":
+        return {
+            "executor": "codex-cli-blocked",
+            "sandbox": probe,
+            "blocked_reason": "sandbox_unavailable",
+            "authority_level": 0,
+            "authority": "observe",
+            "authority_label": "Observe — no change was produced",
+            "outcome": "Codex was not started — the verified workspace-write sandbox profile is unavailable in this runtime, so no repository inspection, change, test, or reasoning output was produced.",
+            "providers": {"advisories": "unavailable", "change": "unavailable", "engineering": "unavailable", "reasoning": "unavailable", "checks": "unavailable", "verifier": "unavailable"},
+            "repo": normalized,
+        }
+    # Eligible + sandbox verified + not a duplicate → reserve in-flight, run, and
+    # charge the allowance ONLY after a run that actually produced Codex work (never
+    # on a click, invalid/rejected repo, duplicate, or a sandbox-blocked run).
     _CODEX_INFLIGHT.add(ip)
-    _codex_charge(ip)
     try:
         report = await orchestrator.admit(normalized, token=None, use_codex=True)
     except RuntimeError as exc:
@@ -384,6 +406,9 @@ async def public_live_admission(request: PublicLiveRequest, http: Request) -> di
         raise HTTPException(status_code=502, detail=f"Live admission failed: {exc}") from exc
     finally:
         _CODEX_INFLIGHT.discard(ip)
+    # Charge only when the run wasn't blocked before inspection.
+    if report.get("blocked_reason") != "sandbox_unavailable" and report.get("executor") != "codex-cli-blocked":
+        _codex_charge(ip)
     return report
 
 

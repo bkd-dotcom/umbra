@@ -60,6 +60,7 @@ def build_catalog() -> dict[str, Any]:
     """The full catalog the API returns and the UI renders from."""
     live_on = live_repositories_enabled()
     codex_on = CodexClient.enabled()
+    sandbox = _sandbox_status()  # cached capability probe
 
     entries: list[dict[str, Any]] = []
 
@@ -100,9 +101,33 @@ def build_catalog() -> dict[str, Any]:
             "codex_global_per_day": CODEX_GLOBAL_PER_DAY,
         },
         "codex_available": codex_on,
+        # Genuine Codex is only actually runnable when the CLI is enabled AND its
+        # isolation sandbox can initialize in this runtime. The UI disables the
+        # Codex control (and points to captured proof) when the sandbox is down.
+        "sandbox_status": sandbox.get("sandbox_status"),
+        "sandbox_runtime": sandbox.get("sandbox_runtime"),
+        "codex_runnable": bool(codex_on and sandbox.get("sandbox_status") in {"verified", "host_restricted"}),
         "live_enabled": live_on,
         # Back-compat: the old flat shape some callers/tests used.
         "repos": sorted(DETERMINISTIC_ALLOWLIST),
         "per_ip_per_hour": DETERMINISTIC_PER_IP_PER_HOUR,
         "codex_per_ip_per_day": CODEX_PER_IP_PER_DAY,
     }
+
+
+# Cache the sandbox capability probe: it launches `codex exec` once, so we don't
+# re-probe on every catalog fetch. Cleared implicitly on process restart (a fresh
+# deploy / revision re-probes). Only probes when the Codex CLI is enabled.
+_SANDBOX_CACHE: dict[str, Any] | None = None
+
+
+def _sandbox_status() -> dict[str, Any]:
+    global _SANDBOX_CACHE
+    if not CodexClient.enabled():
+        return {"sandbox_status": "unavailable", "sandbox_runtime": "none"}
+    if _SANDBOX_CACHE is None:
+        try:
+            _SANDBOX_CACHE = CodexClient(model=None, reasoning_effort=None).preflight_sandbox()
+        except Exception:  # noqa: BLE001 - never let a probe error break the catalog
+            _SANDBOX_CACHE = {"sandbox_status": "unavailable", "sandbox_runtime": "unknown"}
+    return _SANDBOX_CACHE

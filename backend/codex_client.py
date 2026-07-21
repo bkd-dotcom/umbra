@@ -176,13 +176,16 @@ class CodexClient:
     def _resolve_sandbox(read_only: bool) -> str:
         """Sandbox mode for ``codex exec``.
 
-        Codex's own Linux sandbox (Landlock/seccomp) cannot initialize under some
-        container runtimes (e.g. Cloud Run's gVisor), so ``codex exec`` exits
-        non-zero with no output regardless of the requested mode. ``UMBRA_CODEX_SANDBOX``
-        lets the deploy bypass that layer (``danger-full-access`` or ``bypass``);
-        the real guardrails still hold — disposable checkout, ``origin`` stripped,
-        hard no-push prompt, GitHub write creds never handed to the child, and the
-        container itself is the isolation boundary. Unset → today's safe defaults.
+        Codex's own Linux sandbox (Landlock/seccomp + namespaces) may be unavailable
+        under some container runtimes for a given profile — e.g. the verified
+        ``workspace-write`` profile cannot establish its network-namespace loopback
+        on this runtime (gVisor), so ``codex exec`` exits non-zero before doing work.
+        A preflight probe (``preflight_sandbox``) verifies the profile per-runtime
+        rather than assuming. ``UMBRA_CODEX_SANDBOX`` lets a deploy select an
+        unsandboxed profile (``danger-full-access``/``bypass``) — but ONLY when the
+        second flag ``UMBRA_ALLOW_UNSAFE_CODEX=true`` is also set; otherwise the
+        override is ignored (downgraded to a safe default) and logged, so an
+        accidental/leaked value can never silently run the agent unsandboxed.
         """
         override = os.getenv("UMBRA_CODEX_SANDBOX", "").strip().lower()
         unsafe = {"danger-full-access", "bypass"}
@@ -204,6 +207,107 @@ class CodexClient:
         if override in {"read-only", "workspace-write"}:
             return override
         return "read-only" if read_only else "workspace-write"
+
+    @staticmethod
+    def effective_sandbox(read_only: bool = False) -> dict[str, Any]:
+        """Report the CONFIGURED vs EFFECTIVE sandbox mode and any downgrade reason,
+        so founder diagnostics never imply an unsafe mode is active when it isn't.
+
+        Example: with ``UMBRA_CODEX_SANDBOX=danger-full-access`` but no
+        ``UMBRA_ALLOW_UNSAFE_CODEX=true``, ``configured`` is ``danger-full-access``
+        while ``effective`` is ``workspace-write`` and ``downgrade_reason`` explains
+        that the unsafe override was ignored.
+        """
+        configured = os.getenv("UMBRA_CODEX_SANDBOX", "").strip().lower() or "(unset)"
+        unsafe_allowed = os.getenv("UMBRA_ALLOW_UNSAFE_CODEX", "").strip().lower() in {"1", "true", "yes"}
+        effective = CodexClient._resolve_sandbox(read_only)
+        downgrade_reason = None
+        if configured in {"danger-full-access", "bypass"} and not unsafe_allowed:
+            downgrade_reason = (
+                f"Configured sandbox '{configured}' was IGNORED because "
+                "UMBRA_ALLOW_UNSAFE_CODEX is not set; using the safe default "
+                f"'{effective}'. (We intentionally do not enable an unsandboxed mode "
+                "just to make a run succeed.)"
+            )
+        return {
+            "configured": configured,
+            "effective": effective,
+            "unsafe_override_allowed": unsafe_allowed,
+            "downgrade_reason": downgrade_reason,
+        }
+
+    # --- Sandbox capability preflight -------------------------------------------
+    # Signatures that mean "the sandbox layer itself could not initialize" (a
+    # capability/config problem in this runtime), as opposed to a model/repo result.
+    _SANDBOX_FAIL_SIGNATURES = (
+        "bwrap:",
+        "rtm_newaddr",
+        "failed to create",
+        "no child process",
+        "operation not permitted",
+        "landlock",
+        "seccomp",
+        "namespace",
+        "unshare",
+        "clone3",
+        "permission denied (os error 13)",
+    )
+
+    def preflight_sandbox(self) -> dict[str, Any]:
+        """Probe whether Codex's sandbox can execute a HARMLESS command in this
+        runtime, using the EXACT sandbox mode a real run will use.
+
+        Does not clone a repo, call the model on real work, spend a Codex allowance,
+        or run any user/repo command — it runs `true` inside an empty throwaway dir.
+        Returns a structured status the caller uses to decide whether to dispatch
+        agents at all.
+
+        sandbox_status: 'verified' | 'host_restricted' | 'unavailable'
+        """
+        mode = self._resolve_sandbox(read_only=False)
+        eff = self.effective_sandbox(read_only=False)  # configured vs effective + downgrade reason
+        # Unsandboxed override (founder-approved) needs no probe — the container is
+        # the boundary and there is no bwrap/netns layer to fail.
+        if mode in {"danger-full-access", "bypass"}:
+            return {"sandbox_status": "verified", "sandbox_runtime": "container", "sandbox_mode": mode,
+                    "sandbox_error_code": None, "diagnostic": "Codex sandbox bypassed (container is the isolation boundary).",
+                    "enforcement": "container", "effective_config": eff}
+        with tempfile.TemporaryDirectory(prefix="umbra-codex-probe-") as tmp:
+            sandbox_args = ["--sandbox", mode]
+            # A trivial, side-effect-free instruction; --skip-git-repo-check so the
+            # throwaway dir needn't be a git repo. We only care whether the sandbox
+            # LAYER boots (exit code + stderr), not what the model says.
+            command = [
+                "codex", "exec", "--ephemeral", "--color", "never",
+                *sandbox_args, "--skip-git-repo-check", "-C", tmp,
+                "run the shell command `true` and stop. change nothing.",
+            ]
+            try:
+                r = self.runner(command, text=True, capture_output=True, timeout=120, check=False)
+            except (OSError, subprocess.SubprocessError) as exc:
+                return {"sandbox_status": "unavailable", "sandbox_runtime": "unknown", "sandbox_mode": mode,
+                        "sandbox_error_code": type(exc).__name__, "diagnostic": str(exc)[:300],
+                        "enforcement": "none", "effective_config": eff}
+            rc = getattr(r, "returncode", 1)
+            stderr = (getattr(r, "stderr", "") or "")
+            low = stderr.lower()
+            if rc == 0:
+                return {"sandbox_status": "verified", "sandbox_runtime": "bwrap", "sandbox_mode": mode,
+                        "sandbox_error_code": None, "diagnostic": "Sandbox initialized and executed a probe command.",
+                        "enforcement": "sandboxed", "effective_config": eff}
+            # Non-zero: is it a sandbox-capability failure (our target) or something else?
+            sandbox_capability_failure = any(sig in low for sig in self._SANDBOX_FAIL_SIGNATURES)
+            code = "bwrap_netns" if ("bwrap" in low or "rtm_newaddr" in low or "no child process" in low) else "sandbox_init"
+            return {
+                "sandbox_status": "unavailable",
+                "sandbox_runtime": "bwrap" if "bwrap" in low else "unknown",
+                "sandbox_mode": mode,
+                "sandbox_error_code": code if sandbox_capability_failure else f"exit_{rc}",
+                "diagnostic": self._sanitize_paths(stderr[-600:], Path(tmp)).strip() or f"codex exec exited {rc} with no stderr.",
+                "enforcement": "none",
+                "effective_config": eff,
+            }
+
 
     @staticmethod
     def _short_reason(stderr: str) -> str:
@@ -279,7 +383,10 @@ class CodexClient:
                 diff=diff,
                 tests_passed=completed.returncode == 0,
                 files=changed,
-                provider="codex-cli",
+                # Provider describes PRODUCED output, not an attempted launch: a
+                # non-zero exit (sandbox init failure, auth, etc.) means Codex did
+                # not produce engineering work, so it is 'unavailable', never green.
+                provider="codex-cli" if completed.returncode == 0 else "unavailable",
                 created_at=datetime.now(UTC).isoformat(),
                 command=command[:-1] + ["<agent prompt redacted from command replay>"],
                 stdout=self._sanitize_paths(completed.stdout[-12000:], repo_path),

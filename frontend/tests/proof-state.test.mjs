@@ -97,3 +97,27 @@ test("a fresh scan whose token is current DOES apply and clears proof state", ()
 });
 
 console.log(`\n${passed} passed`);
+
+// --- Sandbox-blocked admission render rules (source-level assertions) ------------
+import { readFileSync as _rf } from "node:fs";
+const aa = _rf(path.join(here, "../components/ui/agent-admission.tsx"), "utf8");
+
+test("blocked admission renders 'Codex was not started', not a reasoning replay", () => {
+  assert.match(aa, /Codex was not started/);
+  assert.match(aa, /codex-cli-blocked/);
+  assert.match(aa, /Sandbox unavailable/);
+});
+
+test("blocked state marks engineering AND reasoning unavailable (no success-green)", () => {
+  assert.match(aa, /engineering: unavailable/);
+  assert.match(aa, /reasoning: unavailable/);
+});
+
+test("blocked state routes to the verified captured run", () => {
+  assert.match(aa, /Open captured verified run/);
+});
+
+test("genuine Codex is gated by codexRunnable (sandbox verified)", () => {
+  assert.match(aa, /codexRunnable/);
+  assert.match(aa, /sandbox_status/);
+});

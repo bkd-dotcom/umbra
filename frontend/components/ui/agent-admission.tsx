@@ -42,6 +42,7 @@ type AdmissionReport = {
   outcome: string;
   blocked_reason: string | null;
   providers: Record<string, string>;
+  sandbox?: { sandbox_status?: string; sandbox_runtime?: string; sandbox_mode?: string; sandbox_error_code?: string | null; diagnostic?: string; enforcement?: string; effective_config?: { configured?: string; effective?: string; unsafe_override_allowed?: boolean; downgrade_reason?: string | null } } | null;
   base_commit: string | null;
   diff_hash: string | null;
   advisory_hash: string | null;
@@ -68,6 +69,9 @@ type PublicCatalog = {
   entries: CatalogEntry[];
   limits: { deterministic_per_ip_per_hour: number; deterministic_global_per_hour: number; codex_per_ip_per_day: number; codex_global_per_day: number };
   codex_available: boolean;
+  codex_runnable?: boolean;
+  sandbox_status?: string;
+  sandbox_runtime?: string;
   live_enabled: boolean;
   codex_remaining_for_you?: number;
   codex_remaining_global?: number;
@@ -269,6 +273,8 @@ export function AgentAdmission({ repo = "", signedIn = false, founder = false, o
         const deterministic = entries.filter((e) => e.mode === "deterministic_live");
         const codexRemaining = catalog?.codex_remaining_for_you ?? 0;
         const codexAvailable = !!catalog?.codex_available;
+        // Genuine Codex is only actually runnable when the server's sandbox verified.
+        const codexRunnable = catalog?.codex_runnable !== false && (catalog?.sandbox_status ?? "verified") !== "unavailable";
         return (
           <>
             {/* 1. Verified captured public runs — the judge-facing default. */}
@@ -334,7 +340,13 @@ export function AgentAdmission({ repo = "", signedIn = false, founder = false, o
                   <span className="rounded-full border border-violet/40 bg-violet/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-violet">Genuine Codex</span>
                   <span className="font-mono text-[9.5px] text-fog/60">a real <span className="text-cloud">codex exec</span> writes the diff{founder ? <> · ~1–2 min · <span className="text-cloud">{codexRemaining}</span> run{codexRemaining === 1 ? "" : "s"} left today</> : null}</span>
                 </div>
-                {founder ? (
+                {!codexRunnable ? (
+                  <p className="mt-2 font-mono text-[9.5px] leading-snug text-amber/80">
+                    Sandbox unavailable in this runtime, so a fresh Codex run can&rsquo;t start here. The{" "}
+                    <button type="button" onClick={() => onOpenCaptured?.("calhacks")} className="text-teal underline decoration-dotted underline-offset-2 hover:text-teal/80">verified captured run</button>{" "}
+                    already shows a real recorded Codex diff — instant and verifiable.
+                  </p>
+                ) : founder ? (
                   codexRemaining > 0 ? (
                     <div className="mt-2 flex flex-wrap gap-2">
                       {deterministic.slice(0, 2).map((e) => (
@@ -398,7 +410,57 @@ export function AgentAdmission({ repo = "", signedIn = false, founder = false, o
       {error && <p className="mt-4 font-mono text-[12px] text-[color:var(--sev-critical)]">{error}</p>}
 
       <AnimatePresence>
-        {report && (
+        {report && report.executor === "codex-cli-blocked" && (
+          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mt-6">
+            <div className="rounded-xl border border-amber/40 bg-amber/[0.06] p-5">
+              <div className="flex flex-wrap items-center gap-2">
+                <Chip tone="amber">Sandbox unavailable</Chip>
+                <Chip tone="fog">Codex CLI — blocked before inspection</Chip>
+              </div>
+              <h4 className="mt-3 font-serif text-[20px] leading-tight tracking-[-0.01em] text-cloud">Codex was not started</h4>
+              <p className="mt-2 max-w-[68ch] text-[13px] leading-relaxed text-fog">
+                Umbra could not establish its isolated command sandbox in this runtime, so <span className="text-cloud">no repository
+                inspection, change, test, or reasoning output was produced</span>. No Codex allowance was consumed. This is a runtime
+                sandbox capability issue — not a model, repository, or test result.
+              </p>
+              {/* Provider ledger for the blocked state — nothing shown as green/produced. */}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Chip tone="fog">engineering: unavailable</Chip>
+                <Chip tone="fog">reasoning: unavailable</Chip>
+                {report.providers?.advisories && report.providers.advisories !== "unavailable" && <Chip tone="fog">advisories: {report.providers.advisories}</Chip>}
+              </div>
+              {/* Technical diagnostic behind a disclosure. */}
+              {report.sandbox?.diagnostic && (
+                <details className="mt-3 rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] p-3">
+                  <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.14em] text-fog/70">Diagnostics</summary>
+                  <div className="mt-2 space-y-1 font-mono text-[11px] text-fog">
+                    {report.sandbox.sandbox_error_code && <div>error: <span className="text-cloud">{report.sandbox.sandbox_error_code}</span></div>}
+                    {report.sandbox.sandbox_runtime && <div>runtime: <span className="text-cloud">{report.sandbox.sandbox_runtime}</span>{report.sandbox.sandbox_mode ? ` · mode: ${report.sandbox.sandbox_mode}` : ""}</div>}
+                    {report.sandbox.effective_config && (
+                      <div>
+                        sandbox config: configured <span className="text-cloud">{report.sandbox.effective_config.configured}</span> → effective <span className="text-cloud">{report.sandbox.effective_config.effective}</span>
+                      </div>
+                    )}
+                    {report.sandbox.effective_config?.downgrade_reason && (
+                      <div className="text-amber/80">{report.sandbox.effective_config.downgrade_reason}</div>
+                    )}
+                    <pre className="mt-1 whitespace-pre-wrap break-words text-[10.5px] leading-snug text-fog/80">{report.sandbox.diagnostic}</pre>
+                  </div>
+                </details>
+              )}
+              {/* Route the judge to the verified captured proof. */}
+              <button
+                type="button"
+                onClick={() => onOpenCaptured?.("calhacks")}
+                disabled={!onOpenCaptured}
+                className="mt-4 inline-flex items-center gap-2 rounded-lg border border-teal/40 bg-teal/10 px-3.5 py-2 font-mono text-[11px] text-teal transition-colors hover:bg-teal/20 disabled:opacity-40"
+              >
+                ▶ Open captured verified run
+              </button>
+            </div>
+          </motion.div>
+        )}
+        {report && report.executor !== "codex-cli-blocked" && (
           <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mt-6 space-y-5">
             {/* Outcome banner + earned authority ladder */}
             <div className={`rounded-xl border p-4 ${effectiveLevel >= 2 ? "border-teal/40 bg-teal/5" : effectiveLevel <= 0 ? "border-rose-400/40 bg-rose-400/5" : "border-amber/40 bg-amber/5"}`}>

@@ -256,3 +256,122 @@ def test_parse_public_repo_rejects_non_github_and_malformed():
     for bad in ["https://gitlab.com/a/b", "not a url", "https://github.com/onlyowner"]:
         with pytest.raises(ValueError):
             parse_public_repo(bad)
+
+
+# --- Sandbox capability preflight (bwrap/loopback failure at the execution boundary) ---
+
+def _fake_completed(returncode=0, stdout="", stderr=""):
+    import subprocess as _sp
+    return _sp.CompletedProcess(args=["codex"], returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def test_preflight_classifies_bwrap_loopback_as_unavailable(monkeypatch):
+    from backend.codex_client import CodexClient
+
+    monkeypatch.setenv("UMBRA_ENABLE_CODEX_CLI", "true")
+    monkeypatch.delenv("UMBRA_CODEX_SANDBOX", raising=False)
+    monkeypatch.delenv("UMBRA_ALLOW_UNSAFE_CODEX", raising=False)
+    # Reproduce the exact production failure signature.
+    def runner(cmd, **kw):
+        return _fake_completed(returncode=1, stderr="bwrap: loopback: Failed RTM_NEWADDR: No child process")
+    probe = CodexClient(runner=runner).preflight_sandbox()
+    assert probe["sandbox_status"] == "unavailable"
+    assert probe["sandbox_error_code"] == "bwrap_netns"
+    assert "bwrap" in probe["diagnostic"].lower()
+
+
+def test_preflight_verified_when_probe_exits_zero(monkeypatch):
+    from backend.codex_client import CodexClient
+
+    monkeypatch.setenv("UMBRA_ENABLE_CODEX_CLI", "true")
+    monkeypatch.delenv("UMBRA_CODEX_SANDBOX", raising=False)
+    probe = CodexClient(runner=lambda cmd, **kw: _fake_completed(returncode=0, stdout="ok")).preflight_sandbox()
+    assert probe["sandbox_status"] == "verified"
+
+
+def test_blocked_preflight_prevents_dispatch_and_charges_no_quota(monkeypatch):
+    import backend.main as m
+    import backend.public_catalog as cat
+    from backend.codex_client import CodexClient
+
+    monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
+    monkeypatch.setattr(CodexClient, "enabled", staticmethod(lambda: True))
+    monkeypatch.setattr(m, "_is_founder", lambda req: True)
+    # Force the preflight to report the sandbox as unavailable.
+    monkeypatch.setattr(CodexClient, "preflight_sandbox", lambda self: {
+        "sandbox_status": "unavailable", "sandbox_runtime": "bwrap", "sandbox_mode": "workspace-write",
+        "sandbox_error_code": "bwrap_netns", "diagnostic": "bwrap: loopback: Failed RTM_NEWADDR", "enforcement": "none"})
+    # A spy that must NEVER be called (no clone/codex dispatch on a blocked preflight).
+    called = {"admit": False}
+    async def _no_admit(*a, **k):
+        called["admit"] = True
+        return {}
+    monkeypatch.setattr(m.orchestrator, "admit", _no_admit)
+    _reset_quota(m); cat._SANDBOX_CACHE = None
+    before = client.get("/api/admit/public-live/repos").json().get("codex_remaining_for_you")
+    r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/expressjs/express", "codex": True})
+    body = r.json()
+    assert r.status_code == 200
+    assert body["executor"] == "codex-cli-blocked" and body["blocked_reason"] == "sandbox_unavailable"
+    # No engineering/reasoning claimed, no branch-PR authority, no diff.
+    assert body["providers"]["engineering"] == "unavailable"
+    assert body["providers"]["reasoning"] == "unavailable"
+    assert body["authority_level"] == 0
+    assert called["admit"] is False        # dispatch was prevented
+    after = client.get("/api/admit/public-live/repos").json().get("codex_remaining_for_you")
+    assert after == before                 # zero quota consumed
+    _reset_quota(m); cat._SANDBOX_CACHE = None
+
+
+def test_verified_preflight_allows_normal_codex_path(monkeypatch):
+    import backend.main as m
+    from backend.codex_client import CodexClient
+
+    monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
+    monkeypatch.setattr(CodexClient, "enabled", staticmethod(lambda: True))
+    monkeypatch.setattr(m, "_is_founder", lambda req: True)
+    monkeypatch.setattr(CodexClient, "preflight_sandbox", lambda self: {"sandbox_status": "verified", "sandbox_runtime": "bwrap"})
+    ran = {"admit": False}
+    async def _admit(repo, token=None, use_codex=None):
+        ran["admit"] = True
+        return {"executor": "codex-cli", "providers": {"engineering": "codex-cli"}, "authority_level": 2, "blocked_reason": None}
+    monkeypatch.setattr(m.orchestrator, "admit", _admit)
+    _reset_quota(m)
+    r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/expressjs/express", "codex": True})
+    assert r.status_code == 200 and ran["admit"] is True
+    _reset_quota(m)
+
+
+def test_codex_operation_provider_unavailable_on_nonzero_exit(monkeypatch):
+    from pathlib import Path
+    from backend.codex_client import CodexClient
+    import tempfile, subprocess
+    monkeypatch.setenv("UMBRA_ENABLE_CODEX_CLI", "true")
+    monkeypatch.setenv("UMBRA_DEMO_MODE", "false")
+    d = Path(tempfile.mkdtemp())
+    subprocess.run(["git", "init"], cwd=d, capture_output=True)
+    op = CodexClient(runner=lambda cmd, **kw: _fake_completed(returncode=1, stderr="bwrap: loopback: Failed RTM_NEWADDR")).propose("fix it", repo_path=d)
+    # A failed run must NOT be labelled as produced codex-cli engineering.
+    assert op.provider == "unavailable"
+    assert op.tests_passed is False
+
+
+def test_effective_sandbox_reports_downgrade_without_unsafe_flag(monkeypatch):
+    from backend.codex_client import CodexClient
+    # danger-full-access configured, but no UMBRA_ALLOW_UNSAFE_CODEX → downgraded.
+    monkeypatch.setenv("UMBRA_CODEX_SANDBOX", "danger-full-access")
+    monkeypatch.delenv("UMBRA_ALLOW_UNSAFE_CODEX", raising=False)
+    eff = CodexClient.effective_sandbox()
+    assert eff["configured"] == "danger-full-access"
+    assert eff["effective"] == "workspace-write"   # safe default, NOT the unsafe mode
+    assert eff["unsafe_override_allowed"] is False
+    assert eff["downgrade_reason"] and "IGNORED" in eff["downgrade_reason"]
+
+
+def test_effective_sandbox_no_downgrade_when_safe_mode(monkeypatch):
+    from backend.codex_client import CodexClient
+    monkeypatch.setenv("UMBRA_CODEX_SANDBOX", "read-only")
+    monkeypatch.delenv("UMBRA_ALLOW_UNSAFE_CODEX", raising=False)
+    eff = CodexClient.effective_sandbox()
+    assert eff["configured"] == "read-only" and eff["effective"] == "read-only"
+    assert eff["downgrade_reason"] is None

@@ -162,10 +162,38 @@ def github_app_configured() -> bool:
 # All optional: when unset the feature is simply inert (the cron endpoint 503s and
 # the dashboard tells the user scheduling/email isn't enabled). No worker process.
 def cron_key() -> str | None:
-    """Shared secret the scheduler (e.g. Cloud Scheduler) sends in the
-    ``X-Umbra-Cron-Key`` header to authorize ``POST /api/cron/run-due-scans``.
-    When unset, that endpoint returns 503 so it can't be triggered anonymously."""
+    """LEGACY / local-dev fallback only. A shared secret the scheduler may send in
+    the ``X-Umbra-Cron-Key`` header to authorize ``POST /api/cron/run-due-scans``.
+
+    Production should authenticate the scheduler with a Google OIDC token instead
+    (see :func:`scheduler_oidc_audience` / :func:`scheduler_service_account`), which
+    keeps no shared secret in the scheduler job config. This key remains supported
+    for local development and backwards compatibility; when it is set the header
+    path still works, but OIDC is preferred and checked first."""
     return os.getenv("UMBRA_CRON_KEY") or None
+
+
+def scheduler_service_account() -> str | None:
+    """The email of the dedicated service account Cloud Scheduler uses to mint its
+    OIDC token (e.g. ``umbra-scheduler@PROJECT.iam.gserviceaccount.com``). When set,
+    ``/api/cron/run-due-scans`` accepts a Google OIDC token ONLY from this identity."""
+    return (os.getenv("UMBRA_SCHEDULER_SERVICE_ACCOUNT") or "").strip() or None
+
+
+def scheduler_oidc_audience() -> str | None:
+    """The expected ``aud`` of the scheduler's OIDC token — normally the Cloud Run
+    service URL (the endpoint the scheduler targets). Defaults to UMBRA_PUBLIC_URL
+    when unset so the common single-URL deploy needs no extra config."""
+    aud = (os.getenv("UMBRA_SCHEDULER_OIDC_AUDIENCE") or os.getenv("UMBRA_PUBLIC_URL") or "").strip()
+    return aud or None
+
+
+def scheduler_oidc_enabled() -> bool:
+    """OIDC scheduler auth is active ONLY when the configuration is complete: both a
+    dedicated scheduler service account AND an expected OIDC audience are set. A
+    service account without an audience is incomplete configuration (fail closed),
+    not an enabled mode — verification must always assert a concrete audience."""
+    return bool(scheduler_service_account() and scheduler_oidc_audience())
 
 
 def resend_api_key() -> str | None:
@@ -190,7 +218,9 @@ def email_configured() -> bool:
 
 
 def scheduling_configured() -> bool:
-    """True when scheduled scans can run (a cron shared-secret is set)."""
-    return cron_key() is not None
+    """True when scheduled scans can actually run — i.e. the due-scan endpoint has a
+    working authentication mechanism: either complete Google OIDC scheduler
+    configuration (production-preferred) OR the explicit legacy local-dev cron key."""
+    return scheduler_oidc_enabled() or (cron_key() is not None)
 
 

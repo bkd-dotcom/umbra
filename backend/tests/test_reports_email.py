@@ -152,6 +152,83 @@ def test_email_requires_auth():
     assert client.post("/api/my/reports/email", json={"repo": "owner/repo"}).status_code == 401
 
 
+# --- recipient hardening: never send to a caller-supplied address -----------
+def test_email_body_recipient_override_is_rejected(monkeypatch):
+    """A caller-supplied `email` field is rejected (422) by strict body parsing —
+    not silently dropped. The report is never redirected to a third party."""
+    monkeypatch.setenv("RESEND_API_KEY", "re_test")
+    store = _MemoryStore(); set_store(store)
+    key = _login(monkeypatch, email="me@example.com")
+    _saved_scan(store, key, "owner/repo")
+    monkeypatch.setattr(schedules, "send_report_email", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not send when body is rejected")))
+
+    r = client.post("/api/my/reports/email", json={"repo": "owner/repo", "email": "attacker@evil.test"})
+    assert r.status_code == 422  # extra="forbid" rejects the smuggled recipient
+    set_store(_MemoryStore())
+
+
+def test_email_uses_account_email_only(monkeypatch):
+    """Immediate send always targets the signed-in account email."""
+    monkeypatch.setenv("RESEND_API_KEY", "re_test")
+    store = _MemoryStore(); set_store(store)
+    key = _login(monkeypatch, email="me@example.com")
+    _saved_scan(store, key, "owner/repo")
+    sent: list[tuple] = []
+    monkeypatch.setattr(schedules, "send_report_email", lambda *a, **k: sent.append(a) or True)
+
+    r = client.post("/api/my/reports/email", json={"repo": "owner/repo"})
+    assert r.status_code == 200
+    assert r.json()["recipient"] == "me@example.com"
+    assert sent and sent[0][0] == "me@example.com"
+    set_store(_MemoryStore())
+
+
+def test_email_no_account_email_cannot_send(monkeypatch):
+    """A user with no account email cannot immediate-send → clear 409, no send."""
+    monkeypatch.setenv("RESEND_API_KEY", "re_test")
+    store = _MemoryStore(); set_store(store)
+    key = _login(monkeypatch, email="")  # no account email
+    _saved_scan(store, key, "owner/repo")
+    monkeypatch.setattr(schedules, "send_report_email", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not send without an account email")))
+
+    r = client.post("/api/my/reports/email", json={"repo": "owner/repo"})
+    assert r.status_code == 409
+    set_store(_MemoryStore())
+
+
+# --- schedule creation: account-email-only ----------------------------------
+def test_schedule_creation_rejects_different_email(monkeypatch):
+    store = _MemoryStore(); set_store(store)
+    _login(monkeypatch, email="me@example.com")
+    r = client.post("/api/my/schedules", json={
+        "repo_full_name": "owner/repo", "hour": 9, "minute": 0, "timezone": "UTC",
+        "cadence": "daily", "email": "someone-else@evil.test",
+    })
+    assert r.status_code == 422  # a different recipient isn't allowed
+    set_store(_MemoryStore())
+
+
+def test_schedule_creation_without_account_email_is_rejected(monkeypatch):
+    store = _MemoryStore(); set_store(store)
+    _login(monkeypatch, email="")  # no account email
+    r = client.post("/api/my/schedules", json={
+        "repo_full_name": "owner/repo", "hour": 9, "minute": 0, "timezone": "UTC", "cadence": "daily",
+    })
+    assert r.status_code == 422
+    set_store(_MemoryStore())
+
+
+def test_schedule_creation_uses_account_email(monkeypatch):
+    store = _MemoryStore(); set_store(store)
+    key = _login(monkeypatch, email="me@example.com")
+    r = client.post("/api/my/schedules", json={
+        "repo_full_name": "owner/repo", "hour": 9, "minute": 0, "timezone": "UTC", "cadence": "daily",
+    })
+    assert r.status_code == 200
+    assert store.list_schedules(key)[0]["email"] == "me@example.com"
+    set_store(_MemoryStore())
+
+
 # --- scheduled-run delivery status persistence ------------------------------
 def _due_schedule(store, key, email="a@b.com"):
     return store.save_schedule(key, {

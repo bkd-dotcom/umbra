@@ -36,7 +36,7 @@ from backend.notifications import (
 )
 from backend.orchestrator import orchestrator
 from backend.scheduling import compute_next_run
-from backend.settings import cookie_secure, cron_key, email_configured, founder_ids, frontend_origin, github_app_configured, github_app_webhook_secret, session_secret
+from backend.settings import cookie_secure, email_configured, founder_ids, frontend_origin, github_app_configured, github_app_webhook_secret, session_secret
 from backend.store import get_store
 from backend.webhooks import REVIEWABLE_ACTIONS, verify_github_signature
 
@@ -546,15 +546,23 @@ def _schedule_owner_key(schedule: dict) -> str | None:
 
 
 @app.post("/api/cron/run-due-scans", tags=["system"], include_in_schema=False)
-async def run_due_scans(x_umbra_cron_key: str = Header(default="")) -> dict[str, object]:
-    """Run every schedule whose next_run_at is due. Guarded by the shared cron key
-    (503 if the server has none configured, 401 on mismatch). Never auto-merges —
-    this only runs scans and sends reports."""
-    configured = cron_key()
-    if not configured:
-        raise HTTPException(status_code=503, detail="Scheduler is not configured on this server.")
-    if x_umbra_cron_key != configured:
-        raise HTTPException(status_code=401, detail="Invalid cron key.")
+async def run_due_scans(
+    authorization: str = Header(default=""),
+    x_umbra_cron_key: str = Header(default=""),
+) -> dict[str, object]:
+    """Run every schedule whose next_run_at is due. Authenticated as a SCHEDULER
+    (not a user session): production verifies a Google OIDC token from the dedicated
+    scheduler service account; a legacy shared ``X-Umbra-Cron-Key`` is accepted only
+    for local dev / backwards-compat. With neither configured the endpoint 503s so it
+    is never publicly triggerable. Never auto-merges — this only runs scans and sends
+    reports."""
+    from backend.scheduler_auth import authenticate_scheduler
+
+    auth = authenticate_scheduler(authorization, x_umbra_cron_key)
+    if not auth.ok:
+        if auth.reason == "unconfigured":
+            raise HTTPException(status_code=503, detail="Scheduler is not configured on this server.")
+        raise HTTPException(status_code=401, detail="Unauthorized scheduler request.")
 
     store = get_store()
     now = datetime.now(timezone.utc)

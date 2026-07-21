@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.auth import _user_key, get_current_user
 from backend.notifications import make_unsub_token, read_unsub_token, send_report_email
@@ -44,8 +44,10 @@ async def list_schedules(request: Request):
 
 @router.post("/api/my/schedules")
 async def create_schedule(request: Request, body: ScheduleBody):
-    """Create a scheduled morning report. Defaults the recipient to the account
-    email; computes the first UTC firing instant from the user's local time."""
+    """Create a scheduled morning report. Reports are sent ONLY to the signed-in
+    account email — the schedule recipient is never a free-form address (no
+    email-verification system exists, so an arbitrary recipient would let Umbra act
+    as a relay). Computes the first UTC firing instant from the user's local time."""
     user = get_current_user(request)
     repo = _slug(body.repo_full_name)
     if "/" not in repo:
@@ -54,9 +56,14 @@ async def create_schedule(request: Request, body: ScheduleBody):
         raise HTTPException(status_code=422, detail=f"cadence must be one of {list(VALID_CADENCES)}.")
     if not valid_timezone(body.timezone):
         raise HTTPException(status_code=422, detail=f"Unknown timezone: {body.timezone}.")
-    email = (body.email or user.get("email") or "").strip()
-    if not email:
-        raise HTTPException(status_code=422, detail="No email on file — provide one to receive reports.")
+    account = (user.get("email") or "").strip()
+    if not account:
+        raise HTTPException(status_code=422, detail="Your account has no email address. Reports are sent only to your signed-in account email.")
+    # A supplied recipient must match the account email exactly — no arbitrary target.
+    supplied = (body.email or "").strip()
+    if supplied and supplied.lower() != account.lower():
+        raise HTTPException(status_code=422, detail="Reports are sent only to your signed-in account email; a different recipient isn't allowed.")
+    email = account
     next_run = compute_next_run(body.hour, body.minute, body.timezone, body.cadence, datetime.now(timezone.utc))
     schedule = {
         "repo_full_name": repo,
@@ -106,11 +113,23 @@ async def set_notifications(request: Request, body: NotifyBody):
 
 class EmailReportBody(BaseModel):
     """Which SAVED report to email. Either a specific ``scan_id`` (must belong to
-    the caller) or a ``repo`` whose latest saved scan we send. An optional ``email``
-    overrides the account address for this one send."""
+    the caller) or a ``repo`` whose latest saved scan we send.
+
+    There is deliberately NO recipient field: an immediate send goes ONLY to the
+    caller's own signed-in account email. ``extra="forbid"`` so a request that
+    tries to smuggle an ``email`` (or any other field) is rejected with 422 rather
+    than silently dropped — closing the email-relay/spam surface explicitly."""
+    model_config = ConfigDict(extra="forbid")
     repo: str | None = Field(default=None, max_length=200)
     scan_id: str | None = Field(default=None, max_length=200)
-    email: str | None = Field(default=None, max_length=200)
+
+
+def _account_email(user: dict) -> str:
+    """The ONLY address Umbra will email a report to: the authenticated user's own
+    account email. We do not treat an unverified schedule recipient as approved —
+    there is no email-verification system, so anything else would let Umbra act as
+    an open relay."""
+    return (user.get("email") or "").strip()
 
 
 @router.post("/api/my/reports/email")
@@ -155,9 +174,10 @@ async def email_saved_report(request: Request, body: EmailReportBody):
     if store.notifications_opt_out(key):
         raise HTTPException(status_code=409, detail="Email notifications are turned off. Re-enable them in Scheduled Reports (toggle 'Email me when a report is ready') and try again.")
 
-    recipient = (body.email or user.get("email") or "").strip()
+    # Recipient is ALWAYS the caller's own account email — never caller-supplied.
+    recipient = _account_email(user)
     if not recipient:
-        raise HTTPException(status_code=409, detail="No email address on file — add one to receive the report.")
+        raise HTTPException(status_code=409, detail="Your account has no email address, so the report can't be sent. Reports are sent only to your signed-in account email.")
 
     if not email_configured():
         raise HTTPException(status_code=503, detail="Email delivery isn't configured on this server, so the report can't be sent. It's still saved in your history.")

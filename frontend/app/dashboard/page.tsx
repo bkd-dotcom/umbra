@@ -2573,7 +2573,6 @@ function ScheduledReportsPanel({ user, schedules, defaultRepo, onRefresh, onSetN
   const [repo, setRepo] = useState(defaultRepo);
   const [time, setTime] = useState("09:00");
   const [cadence, setCadence] = useState<"daily" | "weekdays">("daily");
-  const [email, setEmail] = useState(user.email ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // On-demand "email latest report now": per-repo send state so each row is independent.
@@ -2606,12 +2605,12 @@ function ScheduledReportsPanel({ user, schedules, defaultRepo, onRefresh, onSetN
     const [h, m] = time.split(":").map((n) => parseInt(n, 10));
     setBusy(true); setErr(null);
     try {
-      const r = await fetch(`${API}/api/my/schedules`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo_full_name: slug, hour: h || 0, minute: m || 0, timezone: tz, cadence, email: email.trim() || undefined }) });
+      const r = await fetch(`${API}/api/my/schedules`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo_full_name: slug, hour: h || 0, minute: m || 0, timezone: tz, cadence }) });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data?.detail || `Could not schedule (${r.status})`);
       onRefresh();
     } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
-  }, [repo, time, cadence, email, tz, onRefresh]);
+  }, [repo, time, cadence, tz, onRefresh]);
 
   const toggle = useCallback(async (s: Schedule) => {
     await fetch(`${API}/api/my/schedules/${s.id}/toggle`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ enabled: !s.enabled }) }).catch(() => {});
@@ -2655,10 +2654,13 @@ function ScheduledReportsPanel({ user, schedules, defaultRepo, onRefresh, onSetN
         </label>
       </div>
       <div className="mt-2.5 flex flex-wrap items-center gap-2.5">
-        <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" className="min-w-[220px] flex-1 rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--input-bg)] px-3 py-2 font-mono text-[13px] outline-none focus:border-cyan/50" />
+        <span className="flex min-w-[220px] flex-1 items-center gap-2 rounded-lg border border-[color:var(--surface-border)] bg-[color:var(--surface-2)] px-3 py-2 font-mono text-[13px] text-fog" title="Reports are sent only to your signed-in account email.">
+          <span className="text-[10px] uppercase tracking-[0.12em] text-fog/70">To</span>
+          <span className="truncate text-cloud">{user.email || "no account email"}</span>
+        </span>
         <Magnetic><StatefulButton loading={busy} onClick={create}>Schedule report</StatefulButton></Magnetic>
       </div>
-      <p className="mt-1.5 font-mono text-[10px] text-fog/70">Timezone: {tz} · every report email includes a one-click unsubscribe.</p>
+      <p className="mt-1.5 font-mono text-[10px] text-fog/70">Reports are sent only to your signed-in account email. Timezone: {tz} · every report email includes a one-click unsubscribe.</p>
       {err && <p className="mt-2 font-mono text-[11px] text-[color:var(--sev-critical)]">{err}</p>}
 
       {schedules.length > 0 && (

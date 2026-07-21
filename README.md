@@ -1,21 +1,28 @@
-# Umbra — The AI engineer that works the night shift
+<div align="center">
 
-Umbra is a **change-control plane for coding agents**. Before an agent is trusted
-*with* authority in your repo, Umbra tests whether it can be trusted *in* your
-repo: an **executable contract** bounds the change, untrusted repository text is
-**quarantined**, an **independent verifier** checks the result, and only the
-**authority the run earns** is granted — every action sealed in a **signed,
-independently verifiable receipt**. **Codex proposes patches in a disposable
-clone; Umbra never merges.**
+<img src="assets/umbra-logo.svg" width="72" height="72" alt="Umbra" />
 
-Built for **OpenAI Build Week 2026**. Recommended submission category: **Developer
-Tools / Agents** (see [SUBMISSION.md](SUBMISSION.md)).
+# Umbra
 
-## The Agent Admission Test (what makes Umbra different)
+**A change-control plane for coding agents.**
 
-"AI finds a CVE and opens a PR" is a crowded category. Umbra's defensible wedge is
-one layer up: **it decides whether an agent should be allowed to make a change at
-all, and proves why.** One governed pipeline runs before any PR:
+[umbra.engineer](https://umbra.engineer) · [MIT](LICENSE)
+
+</div>
+
+Coding agents can now change your repository. Umbra is the layer that decides how
+much authority a given change has earned — and proves it. Before an agent is
+trusted *with* authority in your repo, Umbra tests whether it can be trusted *in*
+your repo: an executable contract bounds the change, untrusted repository text is
+quarantined, an independent verifier checks the result, and only the authority the
+run earns is granted — every action sealed in a signed, independently verifiable
+receipt. Codex proposes patches in a disposable clone; Umbra never merges.
+
+## The Agent Admission Test
+
+"AI finds a CVE and opens a PR" is a crowded space. Umbra sits one layer above it:
+it decides whether an agent should be allowed to make a change at all, and proves
+why. One governed pipeline runs before any PR:
 
 ```
 load executable contract (.umbra/admission.yaml)
@@ -33,14 +40,14 @@ load executable contract (.umbra/admission.yaml)
   → seal it in an Ed25519-signed Remediation Receipt (binds base commit + diff + advisory + checks)
 ```
 
-Authority is a **result of evidence**, never a checkbox — a forbidden-path attempt,
-a failing required check, or a verifier block keeps it below branch-PR. `auto_merge`
+Authority is a result of evidence, never a checkbox — a forbidden-path attempt, a
+failing required check, or a verifier block keeps it below branch-PR. `auto_merge`
 is false at every level, and the earned passport actually gates PR creation (with a
-server-side Emergency Brake to revoke it). The offline fixtures run as a deterministic
-policy evaluation (no Codex, no network) so anyone can reproduce them; a live repo run
-executes a genuine bounded Codex task — the report labels which executor ran.
-Try it with zero setup on the dashboard's **Agent Admission** panel (five committed,
- offline fixtures) or via the API:
+server-side Emergency Brake to revoke it). The offline fixtures run as a
+deterministic policy evaluation (no Codex, no network) so anyone can reproduce them;
+a live repo run executes a genuine bounded Codex task — the report labels which
+executor ran. Try it with zero setup on the dashboard's Agent Admission panel (five
+committed offline fixtures) or via the API:
 
 ```bash
 # THE ONE-COMMAND PROOF (no sign-in, no network): admit a fixture + verify the signed receipt
@@ -78,7 +85,7 @@ and [`backend/receipt.py`](backend/receipt.py).
   - Plugin manifest: <https://umbra.engineer/.well-known/ai-plugin.json>
   - OpenAPI (actions): <https://umbra.engineer/openapi-actions.yaml>
   - Build instructions: [`custom_gpt/`](custom_gpt/instructions.md) — e.g. *"Scan github.com/expressjs/express"*
-- **Autonomous ("works while you sleep"):** drop [`.github/workflows/umbra.yml`](.github/workflows/umbra.yml)
+- **Autonomous:** drop [`.github/workflows/umbra.yml`](.github/workflows/umbra.yml)
   into any repo (add an `OPENAI_API_KEY` secret) — Umbra reviews every PR and runs a nightly scan
   that opens branch-only fix PRs. Or install the **Umbra GitHub App** once (any account/org, public or
   private repos, pick your repos in GitHub's UI) — every new PR gets an advisory review comment posted by
@@ -98,10 +105,10 @@ and [`backend/receipt.py`](backend/receipt.py).
   fabricated. See [docs/live-mode.md](docs/live-mode.md).
 - **Where Codex accelerated the build & the `/feedback` session ID:** see [docs/CODEX_USAGE.md](docs/CODEX_USAGE.md) for commit-level receipts (which Codex-authored commit built the contract, verifier, sandbox, receipts) and [SUBMISSION.md](SUBMISSION.md).
 
-## The accountability layer (what makes Umbra different)
+## The accountability layer
 
 An autonomous crew is only useful if you can trust what it did overnight. Umbra treats every
-finding and fix as an **auditable receipt**, not a claim to take on faith:
+finding and fix as an auditable receipt, not a claim to take on faith:
 
 - **Provider ledger** — every half of every run is labelled with what actually served it
   (`codex-cli` / `osv.dev` / `local-git` / `responses-api` / `cache-fallback` / `unavailable`).
@@ -317,7 +324,7 @@ and read-only (a zero-scope token just raises the public-read rate limit).
 ## Tests
 
 ```bash
-uv run pytest        # 230 tests (backend/tests)
+uv run pytest        # 284 tests (backend/tests)
 ```
 
 Frontend: `cd frontend && npm run build` (must produce a clean static export to `out/`).

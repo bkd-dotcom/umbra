@@ -670,16 +670,17 @@ def _decide_authority(report: AdmissionReport, contract_result, verifier_report,
     report.authority_label = AUTHORITY_LABEL[report.authority_level]
 
 
-def run_admission_live(repo_url: str, token: str | None = None) -> AdmissionReport:
+def run_admission_live(repo_url: str, token: str | None = None, use_codex: bool | None = None) -> AdmissionReport:
     """Run the admission test against a real public repository (clones a disposable
     checkout). Requires UMBRA_ENABLE_LIVE_REPOS; the OSV lookup is live and, when
-    UMBRA_ENABLE_CODEX_CLI=true, a genuine bounded Codex run produces the change."""
+    UMBRA_ENABLE_CODEX_CLI=true (or use_codex=True), a genuine bounded Codex run
+    produces the change. Pass use_codex=False to force the deterministic executor."""
     from backend.integrations.github import parse_public_repo
     from backend.integrations.repository import checkout_public_repo
 
     label = parse_public_repo(repo_url)
     with checkout_public_repo(repo_url, token) as repo_path:
-        return run_admission_on_checkout(repo_path, label)
+        return run_admission_on_checkout(repo_path, label, use_codex=use_codex)
 
 
 def run_admission_on_fixture(fixture_path: Path | str, repo_label: str) -> AdmissionReport:

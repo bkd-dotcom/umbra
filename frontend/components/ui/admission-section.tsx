@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import { Reveal } from "@/components/ui/reveal";
 import { GlowCard } from "@/components/ui/glow-card";
@@ -35,6 +36,23 @@ const COMPARISON: { them: string; they: string; us: string }[] = [
 
 export function AdmissionSection() {
   const reduce = useReducedMotion();
+  const [active, setActive] = useState(-1);
+  const [inView, setInView] = useState(false);
+
+  // Once the ladder scrolls into view, sweep an "active gate" through the six
+  // rungs on a loop so the pipeline reads as *executing*, not a static diagram.
+  // Disabled under reduced-motion.
+  useEffect(() => {
+    if (reduce || !inView) return;
+    let i = 0;
+    setActive(0);
+    const t = setInterval(() => {
+      i = (i + 1) % (LADDER.length + 2); // +2 = a brief "settled" pause after the last
+      setActive(i >= LADDER.length ? -1 : i);
+    }, 900);
+    return () => clearInterval(t);
+  }, [reduce, inView]);
+
   return (
     <section id="admission" data-chapter="Agent Admission" className="chapter relative isolate py-[clamp(48px,8vw,128px)]">
       <Reveal>
@@ -51,32 +69,61 @@ export function AdmissionSection() {
         </p>
       </Reveal>
 
-      {/* The trust ladder — six gates, left to right. This is the 10-second read. */}
-      <Reveal className="mt-9">
+      {/* The trust ladder — six gates, left to right. A sweeping "active gate"
+          makes it read as a pipeline executing. This is the 10-second read. */}
+      <motion.div
+        className="mt-9"
+        onViewportEnter={() => setInView(true)}
+        viewport={{ once: true, margin: "-10%" }}
+      >
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
-          {LADDER.map((step, i) => (
-            <motion.div
-              key={step.key}
-              initial={reduce ? false : { opacity: 0, y: 12 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-10%" }}
-              transition={{ delay: i * 0.06, duration: 0.4 }}
-              className="relative flex flex-col rounded-xl border p-4"
-              style={{ borderColor: "var(--surface-border)", background: "var(--surface)" }}
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-mono text-[10px] tabular-nums text-fog/50">0{i + 1}</span>
-                <span className="grid h-6 w-6 place-items-center rounded-md border font-mono text-[11px]" style={{ color: step.color, borderColor: `${step.color}55`, background: `${step.color}12` }}>✓</span>
-              </div>
-              <div className="mt-2 font-mono text-[11.5px] font-semibold uppercase tracking-[0.08em] text-cloud">{step.label}</div>
-              <div className="mt-1.5 text-[12px] leading-relaxed text-fog">{step.detail}</div>
-              {i < LADDER.length - 1 && (
-                <span aria-hidden className="pointer-events-none absolute -right-3 top-1/2 hidden -translate-y-1/2 font-mono text-fog/40 lg:block">→</span>
-              )}
-            </motion.div>
-          ))}
+          {LADDER.map((step, i) => {
+            const on = active === i;
+            const done = active === -1 || active > i;
+            return (
+              <motion.div
+                key={step.key}
+                initial={reduce ? false : { opacity: 0, y: 12 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true, margin: "-10%" }}
+                transition={{ delay: i * 0.06, duration: 0.4 }}
+                className="relative flex flex-col overflow-hidden rounded-xl border p-4 transition-colors duration-300"
+                style={{
+                  borderColor: on ? `${step.color}aa` : "var(--surface-border)",
+                  background: on ? `${step.color}12` : "var(--surface)",
+                  boxShadow: on ? `0 0 24px -8px ${step.color}` : "none",
+                }}
+              >
+                {/* top progress bar that fills while this gate is active */}
+                {!reduce && (
+                  <motion.span
+                    aria-hidden
+                    className="pointer-events-none absolute left-0 top-0 h-[2px]"
+                    style={{ background: step.color }}
+                    initial={{ width: "0%" }}
+                    animate={{ width: on ? "100%" : done ? "100%" : "0%", opacity: on ? 1 : done ? 0.35 : 0 }}
+                    transition={{ duration: on ? 0.85 : 0.3, ease: "linear" }}
+                  />
+                )}
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[10px] tabular-nums text-fog/50">0{i + 1}</span>
+                  <span
+                    className="grid h-6 w-6 place-items-center rounded-md border font-mono text-[11px] transition-transform duration-300"
+                    style={{ color: step.color, borderColor: `${step.color}55`, background: `${step.color}12`, transform: on ? "scale(1.12)" : "scale(1)" }}
+                  >
+                    ✓
+                  </span>
+                </div>
+                <div className="mt-2 font-mono text-[11.5px] font-semibold uppercase tracking-[0.08em] text-cloud">{step.label}</div>
+                <div className="mt-1.5 text-[12px] leading-relaxed text-fog">{step.detail}</div>
+                {i < LADDER.length - 1 && (
+                  <span aria-hidden className="pointer-events-none absolute -right-3 top-1/2 hidden -translate-y-1/2 font-mono text-fog/40 lg:block">→</span>
+                )}
+              </motion.div>
+            );
+          })}
         </div>
-      </Reveal>
+      </motion.div>
 
       {/* Two headline objects: the earned-authority passport (the component nobody
           else ships) + the real caught-bug (demonstrated impact, not a promise). */}

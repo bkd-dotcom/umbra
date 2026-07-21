@@ -242,7 +242,7 @@ class Orchestrator:
             return await asyncio.to_thread(self._codex_pr, repo_url, owner_repo, token, allow_codex, model, reasoning_effort, preview)
         return await asyncio.to_thread(self._bump_pr, repo_url, owner_repo, token, package, version, cve, preview)
 
-    async def admit(self, repo_url: str, token: str | None = None, fixture: str | None = None) -> dict[str, Any]:
+    async def admit(self, repo_url: str, token: str | None = None, fixture: str | None = None, use_codex: bool | None = None) -> dict[str, Any]:
         """Run the Agent Admission Test: does a coding agent obey THIS repo's rules?
 
         Two modes:
@@ -262,7 +262,7 @@ class Orchestrator:
                 raise ValueError(f"Unknown admission fixture: {fixture!r}.")
             report = await asyncio.to_thread(lambda: run_admission_on_fixture(path, f"eval/{fixture}").to_public())
         else:
-            report = await asyncio.to_thread(lambda: run_admission_live(repo_url, token).to_public())
+            report = await asyncio.to_thread(lambda: run_admission_live(repo_url, token, use_codex=use_codex).to_public())
         report["receipt"] = _sign_admission_receipt(report)
         return report
 

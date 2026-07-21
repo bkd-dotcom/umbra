@@ -115,3 +115,21 @@ def test_public_live_disabled_returns_503(monkeypatch):
     m._PUBLIC_LIVE_HITS.clear()
     r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/expressjs/express"})
     assert r.status_code == 503
+
+
+def test_public_live_codex_requires_cli_enabled(monkeypatch):
+    import backend.main as m
+    from backend.codex_client import CodexClient
+
+    monkeypatch.setattr(m, "live_repositories_enabled", lambda: True)
+    monkeypatch.setattr(CodexClient, "enabled", staticmethod(lambda: False))
+    m._PUBLIC_LIVE_HITS.clear(); m._PUBLIC_CODEX_HITS.clear(); m._PUBLIC_CODEX_IP_HITS.clear()
+    # codex=true but the server has no Codex CLI → honest 503, no clone attempted.
+    r = client.post("/api/admit/public-live", json={"repo_url": "https://github.com/expressjs/express", "codex": True})
+    assert r.status_code == 503
+    assert "Codex" in r.json()["detail"]
+
+
+def test_public_live_repos_reports_codex_availability():
+    r = client.get("/api/admit/public-live/repos").json()
+    assert "codex_available" in r and "codex_per_ip_per_day" in r

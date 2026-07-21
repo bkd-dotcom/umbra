@@ -18,10 +18,13 @@ import { Reveal } from "@/components/ui/reveal";
 import { scrollToTop } from "@/components/ui/smooth-scroll";
 import { LocalWeather } from "@/components/ui/local-weather";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
-import { ShiftDossier } from "@/components/ui/shift-dossier";
-import { AuditTimeline } from "@/components/ui/audit-timeline";
+import dynamic from "next/dynamic";
+// Below-the-fold, interactive panels — code-split so they don't ship in the
+// initial /dashboard bundle (they render only after a scan / in later zones).
+const ShiftDossier = dynamic(() => import("@/components/ui/shift-dossier").then((m) => m.ShiftDossier), { ssr: false });
+const AuditTimeline = dynamic(() => import("@/components/ui/audit-timeline").then((m) => m.AuditTimeline), { ssr: false });
+const AgentAdmission = dynamic(() => import("@/components/ui/agent-admission").then((m) => m.AgentAdmission), { ssr: false, loading: () => <div className="h-40 animate-pulse rounded-2xl border border-[color:var(--surface-border)] bg-[color:var(--surface)]" /> });
 import { DiffView } from "@/components/ui/diff-view";
-import { AgentAdmission } from "@/components/ui/agent-admission";
 import { PROOF_SCAN, PROOF_REPO, PROOF_CAPTURED_AT } from "@/lib/proof-scan";
 import { EASE } from "@/lib/motion";
 import { useModalA11y } from "@/lib/use-modal-a11y";

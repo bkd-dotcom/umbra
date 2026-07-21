@@ -138,12 +138,12 @@ export function AgentAdmission({ repo = "", signedIn = false }: { repo?: string;
   // Judge-triggerable LIVE run on an allowlisted public repo — no sign-in,
   // rate-limited server-side. A real clone + live OSV; the executor is a
   // deterministic policy evaluation (never spends Codex credits), labelled honestly.
-  const runPublicLive = useCallback(async (repoUrl: string) => {
+  const runPublicLive = useCallback(async (repoUrl: string, codex = false) => {
     setRunning(true); setRunKind("live"); setError(null); setReport(null); setReceiptCheck(null); setBraked(false); setBrakeNote(null);
     try {
-      const res = await fetch(`${API}/api/admit/public-live`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo_url: repoUrl }) });
+      const res = await fetch(`${API}/api/admit/public-live`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo_url: repoUrl, codex }) });
       if (res.status === 429) { const b = await res.json().catch(() => ({})); throw new Error(b.detail || "Rate limit reached — try a reproducible offline fixture (no limit)."); }
-      if (res.status === 503) throw new Error("Live repos are disabled on this server. Try a reproducible offline fixture below.");
+      if (res.status === 503) { const b = await res.json().catch(() => ({})); throw new Error(b.detail || "Live repos are disabled on this server. Try a reproducible offline fixture below."); }
       if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.detail || `Live admission failed (${res.status})`); }
       setReport(await res.json());
     } catch (e) {
@@ -224,8 +224,8 @@ export function AgentAdmission({ repo = "", signedIn = false }: { repo?: string;
       </div>
 
       {/* Judge-triggerable LIVE run on an allowlisted public repo — no sign-in,
-          rate-limited. Real clone + live OSV; executor is deterministic (no Codex
-          credits spent), labelled honestly in the report. */}
+          rate-limited. Two modes: deterministic (unlimited-ish) or a GENUINE bounded
+          `codex exec` (strict daily cap), both labelled honestly in the report. */}
       <div className="mt-3 rounded-xl border border-cyan/25 bg-cyan/[0.05] p-4">
         <div className="flex flex-wrap items-center gap-2">
           <span className="rounded-full border border-cyan/40 bg-cyan/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-cyan">Live · no sign-in</span>
@@ -235,7 +235,7 @@ export function AgentAdmission({ repo = "", signedIn = false }: { repo?: string;
           {["expressjs/express", "pallets/flask", "psf/requests", "lodash/lodash", "axios/axios"].map((slug) => (
             <button
               key={slug}
-              onClick={() => runPublicLive(`https://github.com/${slug}`)}
+              onClick={() => runPublicLive(`https://github.com/${slug}`, false)}
               disabled={running}
               className="rounded-lg border border-cyan/30 bg-[color:var(--surface)] px-3 py-1.5 font-mono text-[11px] text-cloud transition-colors hover:border-cyan/50 disabled:cursor-not-allowed disabled:opacity-40"
             >
@@ -244,10 +244,28 @@ export function AgentAdmission({ repo = "", signedIn = false }: { repo?: string;
           ))}
         </div>
         <p className="mt-2 font-mono text-[9.5px] leading-snug text-fog/55">
-          A real clone + live OSV against the chosen repo. Rate-limited (3/hour). The executor is a deterministic policy
-          evaluation — no Codex credits are spent — and the report labels it honestly. For a genuine Codex-authored diff,
-          open the captured proof scan or run the signed-in live path.
+          A real clone + live OSV against the chosen repo. Rate-limited. The executor is a deterministic policy
+          evaluation — no Codex credits spent — labelled honestly in the report.
         </p>
+        {/* Genuine Codex — the real thing, strict daily cap so it can't burn credits. */}
+        <div className="mt-3 border-t border-cyan/15 pt-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full border border-violet/40 bg-violet/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-violet">Genuine Codex</span>
+            <span className="font-mono text-[9.5px] text-fog/60">watch a real <span className="text-cloud">codex exec</span> write the diff · ~1–2 min · 1/day</span>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {["expressjs/express", "axios/axios"].map((slug) => (
+              <button
+                key={slug}
+                onClick={() => runPublicLive(`https://github.com/${slug}`, true)}
+                disabled={running}
+                className="rounded-lg border border-violet/40 bg-violet/[0.08] px-3 py-1.5 font-mono text-[11px] text-cloud transition-colors hover:border-violet/60 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {running && runKind === "live" ? "running Codex…" : `▶ Codex · ${slug}`}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Secondary: reproducible public evals (offline, deterministic — no auth). */}

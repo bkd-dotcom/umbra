@@ -25,10 +25,18 @@ from backend.codex_client import CodexClient
 from backend.integrations.github import parse_public_repo
 from backend.integrations.github_app import installation_token
 from backend.integrations.repository import cloud_scan_enabled, live_repositories_enabled
-from backend.notifications import make_unsub_token, send_report_email
+from backend.notifications import (
+    DELIVERY_ACCEPTED,
+    DELIVERY_EMAIL_REJECTED,
+    DELIVERY_EMAIL_UNAVAILABLE,
+    DELIVERY_SCAN_FAILED,
+    DELIVERY_SKIPPED_OPTED_OUT,
+    make_unsub_token,
+    send_report_email,
+)
 from backend.orchestrator import orchestrator
 from backend.scheduling import compute_next_run
-from backend.settings import cookie_secure, cron_key, founder_ids, frontend_origin, github_app_configured, github_app_webhook_secret, session_secret
+from backend.settings import cookie_secure, cron_key, email_configured, founder_ids, frontend_origin, github_app_configured, github_app_webhook_secret, session_secret
 from backend.store import get_store
 from backend.webhooks import REVIEWABLE_ACTIONS, verify_github_signature
 
@@ -559,10 +567,23 @@ async def run_due_scans(x_umbra_cron_key: str = Header(default="")) -> dict[str,
         if not (owner and repo):
             continue
         repo_url = f"https://github.com/{repo}"
+        # Advance next_run_at regardless of outcome so a failing repo doesn't wedge
+        # the schedule; compute it up front so every early-continue still advances.
+        try:
+            next_run = compute_next_run(int(schedule.get("hour", 0)), int(schedule.get("minute", 0)), schedule.get("timezone", "UTC"), schedule.get("cadence", "daily"), now)
+        except Exception:  # noqa: BLE001 - a bad schedule shouldn't break the batch
+            logging.getLogger("umbra.cron").exception("Failed to compute next run for schedule %s", schedule.get("id"))
+            next_run = schedule.get("next_run_at") or now.isoformat()
+
         try:
             result = await orchestrator.scan(repo_url)
-        except Exception:  # noqa: BLE001 - one repo failing must not stop the batch
+        except Exception as exc:  # noqa: BLE001 - one repo failing must not stop the batch
             logging.getLogger("umbra.cron").exception("Scheduled scan failed for %s", repo)
+            # Record the failure honestly: no report was produced, so nothing was sent.
+            store.update_schedule_run(
+                schedule.get("id"), now.isoformat(), next_run, None,
+                delivery_status=DELIVERY_SCAN_FAILED, delivery_detail=f"Scan failed: {exc}"[:300],
+            )
             continue
         ran += 1
         store.save_scan(owner, {
@@ -572,20 +593,36 @@ async def run_due_scans(x_umbra_cron_key: str = Header(default="")) -> dict[str,
             "vuln_count": len(result.get("vulnerabilities") or []),
             "report": result,
         })
-        # Email the report unless the owner opted out or email isn't configured.
+        # Find the id we just saved so the schedule can deep-link to this report.
+        recent = store.list_scans(owner, limit=1)
+        scan_id = recent[0].get("scan_id") if recent else None
+
+        # Determine the honest delivery outcome.
         recipient = (schedule.get("email") or "").strip()
-        if recipient and not store.notifications_opt_out(owner):
+        if store.notifications_opt_out(owner):
+            delivery_status = DELIVERY_SKIPPED_OPTED_OUT
+            delivery_detail = "Recipient has notifications turned off."
+        elif not recipient or not email_configured():
+            delivery_status = DELIVERY_EMAIL_UNAVAILABLE
+            delivery_detail = "No recipient on file." if not recipient else "Email delivery is not configured on this server."
+        else:
             base = os.getenv("UMBRA_PUBLIC_URL") or frontend_origin()
-            view_url = f"{base}/dashboard"
+            view_url = f"{base}/dashboard" + (f"?scan={scan_id}" if scan_id else "")
             unsub_url = f"{base}/api/unsubscribe?token={make_unsub_token(owner)}"
             if send_report_email(recipient, repo, result, view_url, unsub_url):
                 emailed += 1
-        # Advance the schedule in place so it does not immediately re-fire.
-        try:
-            next_run = compute_next_run(int(schedule.get("hour", 0)), int(schedule.get("minute", 0)), schedule.get("timezone", "UTC"), schedule.get("cadence", "daily"), now)
-            store.update_schedule_run(schedule.get("id"), now.isoformat(), next_run, None)
-        except Exception:  # noqa: BLE001 - a bad schedule shouldn't break the batch
-            logging.getLogger("umbra.cron").exception("Failed to advance schedule %s", schedule.get("id"))
+                delivery_status = DELIVERY_ACCEPTED
+                delivery_detail = f"Accepted for delivery to {recipient}."
+            else:
+                delivery_status = DELIVERY_EMAIL_REJECTED
+                delivery_detail = "The email provider rejected the report."
+
+        # Advance the schedule in place + persist the honest delivery outcome so a
+        # failed email is visible in GET /api/my/schedules, never silently OK.
+        store.update_schedule_run(
+            schedule.get("id"), now.isoformat(), next_run, scan_id,
+            delivery_status=delivery_status, delivery_detail=delivery_detail,
+        )
     return {"ran": ran, "emailed": emailed, "due": len(due)}
 
 

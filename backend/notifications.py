@@ -23,6 +23,27 @@ logger = logging.getLogger("umbra.notifications")
 
 _RESEND_URL = "https://api.resend.com/emails"
 
+# Honest delivery-status vocabulary recorded on a schedule after each run and
+# returned by the immediate-send endpoint. These describe exactly what happened —
+# "accepted_for_delivery" means Resend ACCEPTED the message (returned True), NOT
+# that it landed in an inbox. A failed email is one of the *_failed / *_rejected /
+# *_unavailable states so it is always visible to the user, never silently OK.
+DELIVERY_SCHEDULED = "scheduled"  # created, not yet run
+DELIVERY_SCAN_FAILED = "scan_failed"  # the scan itself errored; no report to send
+DELIVERY_EMAIL_UNAVAILABLE = "email_unavailable"  # no provider configured or no recipient
+DELIVERY_EMAIL_REJECTED = "email_rejected"  # provider returned an error / send failed
+DELIVERY_ACCEPTED = "accepted_for_delivery"  # Resend accepted (send_report_email → True)
+DELIVERY_SKIPPED_OPTED_OUT = "skipped_opted_out"  # recipient has notifications off
+
+DELIVERY_STATES = frozenset({
+    DELIVERY_SCHEDULED,
+    DELIVERY_SCAN_FAILED,
+    DELIVERY_EMAIL_UNAVAILABLE,
+    DELIVERY_EMAIL_REJECTED,
+    DELIVERY_ACCEPTED,
+    DELIVERY_SKIPPED_OPTED_OUT,
+})
+
 
 def _serializer() -> URLSafeSerializer:
     return URLSafeSerializer(session_secret(), salt="umbra-unsubscribe")

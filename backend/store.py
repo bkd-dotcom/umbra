@@ -166,11 +166,31 @@ class _MemoryStore:
         with self._lock:
             return [dict(s) for s in self._schedules.values() if s.get("enabled") and s.get("next_run_at") and s["next_run_at"] <= now_iso]
 
-    def update_schedule_run(self, schedule_id: str, last_run_at: str, next_run_at: str, last_scan_id: str | None) -> None:
+    def update_schedule_run(
+        self,
+        schedule_id: str,
+        last_run_at: str,
+        next_run_at: str,
+        last_scan_id: str | None,
+        delivery_status: str | None = None,
+        delivery_detail: str | None = None,
+    ) -> None:
+        """Advance a schedule after a run AND record its honest delivery outcome.
+
+        ``delivery_status`` is one of the states in
+        :data:`backend.notifications.DELIVERY_STATES` — e.g. "accepted_for_delivery"
+        (Resend accepted, NOT "delivered to inbox"), "email_rejected", "scan_failed",
+        "email_unavailable", or "skipped_opted_out". Persisting it here means a failed
+        email is visible in ``GET /api/my/schedules`` and never silently looks
+        successful. Kept optional so existing callers/tests stay valid."""
         with self._lock:
             rec = self._schedules.get(schedule_id)
             if rec:
                 rec.update({"last_run_at": last_run_at, "next_run_at": next_run_at, "last_scan_id": last_scan_id, "updated_at": _now()})
+                if delivery_status is not None:
+                    rec["last_delivery_status"] = delivery_status
+                    rec["last_delivery_detail"] = delivery_detail
+                    rec["last_delivery_at"] = last_run_at
 
     # --- Finding triage lifecycle ---
     # Per-user, per-finding triage state (open / snoozed / accepted_risk; pr_drafted
@@ -432,10 +452,24 @@ class _FirestoreStore:
         query = self._schedules_col().where("next_run_at", "<=", now_iso)
         return [{**(doc.to_dict() or {}), "id": doc.id} for doc in query.stream() if (doc.to_dict() or {}).get("enabled")]
 
-    def update_schedule_run(self, schedule_id: str, last_run_at: str, next_run_at: str, last_scan_id: str | None) -> None:
-        self._schedules_col().document(schedule_id).set(
-            {"last_run_at": last_run_at, "next_run_at": next_run_at, "last_scan_id": last_scan_id, "updated_at": _now()}, merge=True,
-        )
+    def update_schedule_run(
+        self,
+        schedule_id: str,
+        last_run_at: str,
+        next_run_at: str,
+        last_scan_id: str | None,
+        delivery_status: str | None = None,
+        delivery_detail: str | None = None,
+    ) -> None:
+        """Advance a schedule + record its honest delivery outcome (see the
+        MemoryStore docstring). ``delivery_status`` is optional so existing
+        callers stay valid; when present it is persisted alongside the run."""
+        payload: dict[str, Any] = {"last_run_at": last_run_at, "next_run_at": next_run_at, "last_scan_id": last_scan_id, "updated_at": _now()}
+        if delivery_status is not None:
+            payload["last_delivery_status"] = delivery_status
+            payload["last_delivery_detail"] = delivery_detail
+            payload["last_delivery_at"] = last_run_at
+        self._schedules_col().document(schedule_id).set(payload, merge=True)
 
     # --- Finding triage lifecycle ---
     # Top-level collection scoped by user_key; deterministic (hashed) doc id per

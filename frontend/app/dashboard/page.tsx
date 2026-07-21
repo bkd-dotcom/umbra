@@ -29,7 +29,7 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const creds: RequestInit = { credentials: "include" };
 
 type User = { name?: string; email?: string; avatar?: string; provider: string; login?: string; sub: string; github_connected?: boolean; github_login?: string; has_openai_key?: boolean; is_founder?: boolean; scheduling_enabled?: boolean; email_enabled?: boolean; notifications_opt_out?: boolean };
-type Schedule = { id: string; repo_full_name: string; hour: number; minute: number; timezone: string; cadence: string; email: string; enabled: boolean; next_run_at?: string | null; last_run_at?: string | null };
+type Schedule = { id: string; repo_full_name: string; hour: number; minute: number; timezone: string; cadence: string; email: string; enabled: boolean; next_run_at?: string | null; last_run_at?: string | null; last_delivery_status?: string | null; last_delivery_detail?: string | null; last_delivery_at?: string | null };
 type Repo = { name: string; full_name: string; url: string; private: boolean; stars: number };
 type Vuln = { package: string; version: string; cve: string; severity: string; owasp?: string; summary?: string };
 type Replay = { agent: string; prompt: string; codex_diff: string; tests: string; reasoning: string; timings: Record<string, number>; providers?: Record<string, string> };
@@ -1268,7 +1268,7 @@ function CommandHeader({ me, repo, phase, onLogout }: { me: User | null; repo: s
         <span className="hidden text-fog/30 sm:inline">·</span>
         <span className="hidden shrink-0 tabular-nums sm:inline">{clock}</span>
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex shrink-0 items-center gap-1.5 sm:gap-3">
         <LocalWeather />
         <ThemeToggle variant="inline" />
         {me?.is_founder && <span className="hidden rounded-full border border-violet/40 bg-violet/10 px-2.5 py-1 font-mono text-[10px] text-violet sm:inline">FOUNDER · LIVE CODEX</span>}
@@ -2554,6 +2554,18 @@ function RemediationRow({ repo, v, canPr, dismissed, onDismiss, onRestore, onOpe
   );
 }
 
+// Honest, human labels for the delivery-status states the backend persists after
+// each scheduled run. "accepted_for_delivery" is deliberately NOT "delivered" —
+// it means the provider accepted the message, not that it reached an inbox.
+const DELIVERY_LABELS: Record<string, { label: string; tone: "good" | "warn" | "bad" | "muted" }> = {
+  scheduled: { label: "Scheduled — not yet run", tone: "muted" },
+  accepted_for_delivery: { label: "Accepted for delivery", tone: "good" },
+  email_rejected: { label: "Email rejected by provider", tone: "bad" },
+  scan_failed: { label: "Scan failed — no report sent", tone: "bad" },
+  email_unavailable: { label: "Email not configured / no recipient", tone: "warn" },
+  skipped_opted_out: { label: "Skipped — notifications off", tone: "muted" },
+};
+
 function ScheduledReportsPanel({ user, schedules, defaultRepo, onRefresh, onSetNotifications }: {
   user: User; schedules: Schedule[]; defaultRepo: string; onRefresh: () => void; onSetNotifications: (enabled: boolean) => void;
 }) {
@@ -2564,10 +2576,29 @@ function ScheduledReportsPanel({ user, schedules, defaultRepo, onRefresh, onSetN
   const [email, setEmail] = useState(user.email ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // On-demand "email latest report now": per-repo send state so each row is independent.
+  const [sending, setSending] = useState<string | null>(null);
+  const [sendResult, setSendResult] = useState<Record<string, { ok: boolean; message: string }>>({});
   // Prefill the repo once the current scan target is known (empty on first paint).
   useEffect(() => { if (defaultRepo) setRepo((r) => r || defaultRepo); }, [defaultRepo]);
 
   const notifOn = !user.notifications_opt_out;
+
+  const emailNow = useCallback(async (targetRepo: string) => {
+    setSending(targetRepo);
+    setSendResult((prev) => { const n = { ...prev }; delete n[targetRepo]; return n; });
+    try {
+      const r = await fetch(`${API}/api/my/reports/email`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ repo: targetRepo }) });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data?.detail || `Could not send (${r.status})`);
+      // Only claim acceptance when the backend confirms the provider accepted it.
+      const ok = data?.status === "accepted_for_delivery";
+      setSendResult((prev) => ({ ...prev, [targetRepo]: { ok, message: ok ? "Accepted for delivery" : "Sent, but not confirmed" } }));
+    } catch (e) {
+      setSendResult((prev) => ({ ...prev, [targetRepo]: { ok: false, message: (e as Error).message } }));
+    } finally { setSending(null); }
+  }, []);
+
 
   const create = useCallback(async () => {
     const slug = repoFullName(repo);
@@ -2632,17 +2663,43 @@ function ScheduledReportsPanel({ user, schedules, defaultRepo, onRefresh, onSetN
 
       {schedules.length > 0 && (
         <div className="mt-5 flex flex-col divide-y divide-[color:var(--surface-border)]">
-          {schedules.map((s) => (
-            <div key={s.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-3">
-              <span className="font-mono text-[12px] text-cloud">{s.repo_full_name}</span>
-              <span className="font-mono text-[11px] text-fog">{String(s.hour).padStart(2, "0")}:{String(s.minute).padStart(2, "0")} · {s.cadence} · {s.timezone}</span>
-              {s.next_run_at && <span className="font-mono text-[10px] text-fog/70">next {new Date(s.next_run_at).toLocaleString()}</span>}
-              <span className="ml-auto flex items-center gap-2">
-                <button onClick={() => toggle(s)} className={`rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] ${s.enabled ? "border-teal/40 bg-teal/10 text-teal" : "border-[color:var(--surface-border)] text-fog"}`}>{s.enabled ? "Active" : "Paused"}</button>
-                <button onClick={() => remove(s)} className="rounded-full border border-[color:var(--surface-border)] px-2.5 py-1 font-mono text-[10px] text-fog transition-colors hover:border-rose-400/50 hover:text-[color:var(--sev-critical)]">Delete</button>
-              </span>
-            </div>
-          ))}
+          {schedules.map((s) => {
+            const status = s.last_delivery_status ? DELIVERY_LABELS[s.last_delivery_status] : null;
+            const toneClass = status?.tone === "good" ? "text-teal" : status?.tone === "bad" ? "text-[color:var(--sev-critical)]" : status?.tone === "warn" ? "text-amber" : "text-fog";
+            const result = sendResult[s.repo_full_name];
+            return (
+              <div key={s.id} className="flex flex-col gap-1.5 py-3">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span className="font-mono text-[12px] text-cloud">{s.repo_full_name}</span>
+                  <span className="font-mono text-[11px] text-fog">{String(s.hour).padStart(2, "0")}:{String(s.minute).padStart(2, "0")} · {s.cadence} · {s.timezone}</span>
+                  {s.next_run_at && <span className="font-mono text-[10px] text-fog/70">next {new Date(s.next_run_at).toLocaleString()}</span>}
+                  <span className="ml-auto flex items-center gap-2">
+                    <button onClick={() => toggle(s)} className={`rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] ${s.enabled ? "border-teal/40 bg-teal/10 text-teal" : "border-[color:var(--surface-border)] text-fog"}`}>{s.enabled ? "Active" : "Paused"}</button>
+                    <button onClick={() => remove(s)} className="rounded-full border border-[color:var(--surface-border)] px-2.5 py-1 font-mono text-[10px] text-fog transition-colors hover:border-rose-400/50 hover:text-[color:var(--sev-critical)]">Delete</button>
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  {status ? (
+                    <span className={`font-mono text-[10px] ${toneClass}`}>
+                      Last run: {status.label}{s.last_delivery_at ? ` · ${new Date(s.last_delivery_at).toLocaleString()}` : ""}
+                    </span>
+                  ) : (
+                    <span className="font-mono text-[10px] text-fog/70">Last run: not yet run</span>
+                  )}
+                  <button
+                    onClick={() => emailNow(s.repo_full_name)}
+                    disabled={sending === s.repo_full_name}
+                    className="ml-auto rounded-full border border-[color:var(--surface-border)] px-2.5 py-1 font-mono text-[10px] text-fog transition-colors hover:border-cyan/50 hover:text-cloud disabled:opacity-50"
+                  >
+                    {sending === s.repo_full_name ? "Sending…" : "Email latest report now"}
+                  </button>
+                </div>
+                {result && (
+                  <span className={`font-mono text-[10px] ${result.ok ? "text-teal" : "text-[color:var(--sev-critical)]"}`}>{result.message}</span>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </GlowCard>

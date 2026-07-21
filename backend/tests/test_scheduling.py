@@ -87,6 +87,7 @@ def test_cron_rejects_bad_key(monkeypatch):
 
 def test_cron_runs_due_scan_and_advances(monkeypatch):
     monkeypatch.setenv("UMBRA_CRON_KEY", "s3cret")
+    monkeypatch.setenv("RESEND_API_KEY", "re_test")  # email configured so a report is attempted
     store = _MemoryStore()
     set_store(store)
     saved = store.save_schedule("github:1", {"repo_full_name": "u/r", "hour": 9, "minute": 0, "timezone": "UTC", "cadence": "daily", "email": "a@b.com", "enabled": True, "next_run_at": "2020-01-01T00:00:00+00:00"})

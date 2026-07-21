@@ -20,19 +20,24 @@ const DESCRIPTION =
 // set `images: ["/og.png"]` on both openGraph and twitter below.
 export const metadata: Metadata = {
   metadataBase: new URL("https://umbra.engineer"),
-  title: "Umbra — the AI engineer that works the night shift",
+  title: "Umbra — change-control plane for coding agents",
   description: DESCRIPTION,
+  icons: {
+    icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
+    shortcut: "/icon.svg",
+    apple: "/icon.svg",
+  },
   openGraph: {
     type: "website",
     url: "https://umbra.engineer",
     siteName: "Umbra",
-    title: "Umbra — the AI engineer that works the night shift",
+    title: "Umbra — change-control plane for coding agents",
     description: DESCRIPTION,
     locale: "en_US",
   },
   twitter: {
     card: "summary_large_image",
-    title: "Umbra — the AI engineer that works the night shift",
+    title: "Umbra — change-control plane for coding agents",
     description: DESCRIPTION,
   },
 };

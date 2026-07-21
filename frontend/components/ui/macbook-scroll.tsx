@@ -118,18 +118,21 @@ export const MacbookScroll = ({
         className="relative isolate"
         aria-hidden
         // Track = stage height (fits composition) + a short pin travel.
-        style={{ height: "calc(clamp(460px, 70vh, 700px) + 40vh)" }}
+        style={{ height: "calc(clamp(540px, 82vh, 780px) + 40vh)" }}
       >
-        <div className="sticky top-[80px] h-[clamp(460px,70vh,700px)] [perspective:800px]">
+        <div className="sticky top-[80px] h-[clamp(540px,82vh,780px)] [perspective:800px]">
           {/* Title absolutely pinned at the top (fades out, takes no flow space) so
-              it never collides with the section above; the device is centered with a
-              top offset so it stays fully inside the stage — no immersion below. */}
+              it never collides with the section above; the device sits a fixed
+              distance below the title zone so the opening lid never rises into the
+              paragraph, and the stage keeps the base fully inside. */}
           <motion.div style={{ opacity: textOpacity }} className="absolute inset-x-0 top-0 z-10 px-4 pt-1 text-center">
             {title}
           </motion.div>
-          <div className="flex h-full scale-[0.58] flex-col items-center justify-center pt-16 sm:scale-[0.7]">
-            <Lid src={src} scaleX={scaleX} scaleY={scaleY} rotate={rotate} translate={translate} />
-            <BaseArea showGradient={showGradient} badge={badge} />
+          <div className="flex h-full flex-col items-center justify-start pt-[clamp(140px,20vh,210px)]">
+            <div className="flex scale-[0.56] flex-col items-center sm:scale-[0.66]">
+              <Lid src={src} scaleX={scaleX} scaleY={scaleY} rotate={rotate} translate={translate} />
+              <BaseArea showGradient={showGradient} badge={badge} />
+            </div>
           </div>
         </div>
       </div>
@@ -147,19 +150,21 @@ export const MacbookScroll = ({
       ref={ref}
       className="relative isolate"
       aria-hidden
-      style={{ height: "calc(clamp(600px, 88vh, 940px) + 50vh)" }}
+      style={{ height: "calc(clamp(720px, 96vh, 1040px) + 50vh)" }}
     >
       {/* The title is ABSOLUTELY positioned at the top of the stage so it never
           takes flow space (which would push the device down and out the bottom) and
-          never collides with the section above. The device is vertically CENTERED
-          with a top offset that leaves clear space below the title — so on desktop
-          there's a visible gap between the paragraph and the laptop, and the device
-          stays fully inside the stage (no immersion into the next section). */}
-      <div className="sticky top-12 h-[clamp(600px,88vh,940px)] [perspective:800px]">
+          never collides with the section above. The device sits a fixed distance
+          below the title zone so the open lid never rises into the paragraph, and the
+          stage is tall enough to keep the base fully inside (no immersion below). */}
+      <div className="sticky top-12 h-[clamp(720px,96vh,1040px)] [perspective:800px]">
         <motion.div style={{ opacity: textOpacity }} className="absolute inset-x-0 top-0 z-10 px-4 pt-2 text-center">
           {title}
         </motion.div>
-        <div className="flex h-full flex-col items-center justify-center pt-28">
+        {/* Device pinned a fixed distance BELOW the title/paragraph zone (which is
+            absolutely placed at the top and ~240px tall), so the opening lid never
+            rises into the paragraph. Stage is tall enough that the base still fits. */}
+        <div className="flex h-full flex-col items-center justify-start pt-[clamp(248px,34vh,320px)]">
           <Lid src={src} scaleX={scaleX} scaleY={scaleY} rotate={rotate} translate={translate} />
           <BaseArea showGradient={showGradient} badge={badge} />
         </div>

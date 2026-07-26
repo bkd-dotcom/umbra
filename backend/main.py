@@ -223,6 +223,12 @@ async def agent_admission(request: AdmissionRequest, http: Request) -> dict[str,
     user = http.session.get("user")
     if user:
         _persist_authority(user, report)
+        # Best-effort Slack notification of the decision (never blocks the response).
+        try:
+            from backend.notifications import build_admission_slack_blocks, notify_slack
+            notify_slack(build_admission_slack_blocks(report))
+        except Exception:  # noqa: BLE001 - a notification failure must never break admission
+            pass
     return report
 
 
@@ -768,6 +774,12 @@ async def revoke_authority(request: AuthorityRevokeRequest, http: Request) -> di
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     rec = get_store().revoke_authority(_user_key(user), request.repo.strip(), request.reason)
+    # Best-effort Slack notification (never blocks or fails the brake).
+    try:
+        from backend.notifications import build_brake_slack_blocks, notify_slack
+        notify_slack(build_brake_slack_blocks(request.repo.strip(), request.reason, actor=user.get("login") or user.get("name")))
+    except Exception:  # noqa: BLE001 - a notification failure must never break the brake
+        pass
     return {"ok": True, "authority": rec}
 
 

@@ -19,10 +19,27 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Honest gate: the Codex action can't authenticate without OPENAI_API_KEY.
+      # When the secret is absent (e.g. forks, or a repo that hasn't set it), skip
+      # cleanly instead of failing red on every scheduled run — the night shift is
+      # opt-in and its absence is not an error.
+      - name: Check for OPENAI_API_KEY
+        id: gate
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -n "$OPENAI_API_KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Umbra Night Shift skipped::OPENAI_API_KEY is not set; the night shift is opt-in. Add the secret to enable Codex review/fixes."
+          fi
+
       # Mode A (pull_request) → read-only review. Mode B (nightly/manual) →
       # Codex may edit the checkout; a later step opens the PR.
       - name: Run Umbra (Codex · GPT-5.6)
         id: umbra
+        if: ${{ steps.gate.outputs.enabled == 'true' }}
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -32,7 +49,7 @@ jobs:
 
       # Mode A: post Umbra's review as a single PR comment (never approves/blocks).
       - name: Post PR review comment
-        if: ${{ github.event_name == 'pull_request' && steps.umbra.outputs['final-message'] != '' }}
+        if: ${{ steps.gate.outputs.enabled == 'true' && github.event_name == 'pull_request' && steps.umbra.outputs['final-message'] != '' }}
         uses: actions/github-script@v7
         env:
           UMBRA_REVIEW: ${{ steps.umbra.outputs['final-message'] }}
@@ -49,7 +66,7 @@ jobs:
 
       # Mode B: if Umbra edited the workspace, open a branch-only PR (never merges).
       - name: Open fix PR
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ steps.gate.outputs.enabled == 'true' && github.event_name != 'pull_request' }}
         uses: peter-evans/create-pull-request@v6
         with:
           branch: umbra/nightly

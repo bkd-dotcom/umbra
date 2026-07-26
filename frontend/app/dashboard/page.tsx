@@ -1366,6 +1366,7 @@ function CommandHeader({ me, repo, phase, onLogout }: { me: User | null; repo: s
         <span className="hidden shrink-0 tabular-nums sm:inline">{clock}</span>
       </div>
       <div className="flex shrink-0 items-center gap-1.5 sm:gap-3">
+        <a href="/dashboard/overview/" className="hidden rounded-lg border border-[color:var(--surface-border)] px-3 py-1.5 font-mono text-[11px] text-fog transition-colors hover:border-cyan/50 hover:text-cloud sm:inline" title="Multi-repo org health across your authority passports">Org overview</a>
         <LocalWeather />
         <ThemeToggle variant="inline" />
         {me?.is_founder && <span className="hidden rounded-full border border-violet/40 bg-violet/10 px-2.5 py-1 font-mono text-[10px] text-violet sm:inline">FOUNDER · LIVE CODEX</span>}

@@ -664,6 +664,96 @@ async def my_authority(http: Request) -> list[dict[str, object]]:
     return get_store().list_authority(_user_key(user))
 
 
+@app.get("/api/my/overview", tags=["agents"])
+async def my_overview(http: Request) -> dict[str, object]:
+    """Org / mission-control overview: a server-computed multi-repo health summary
+    over the signed-in user's earned-authority passports, PR ledger, and saved
+    scans. The UI renders these numbers directly — it never derives a stronger
+    claim than what the store holds. auto_merge is always false; a revoked or
+    expired passport is counted honestly, never as an active L2."""
+    user = http.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    key = _user_key(user)
+    store = get_store()
+    return build_overview(
+        passports=store.list_authority(key),
+        prs=store.list_prs(key),
+        scans=store.list_scans(key) if hasattr(store, "list_scans") else [],
+    )
+
+
+def build_overview(*, passports: list[dict], prs: list[dict], scans: list[dict]) -> dict[str, object]:
+    """Pure aggregation for the mission-control overview (unit-testable, no request).
+
+    Effective authority is honest: a revoked or expired passport counts as L0, never
+    as the level it once earned. ``auto_merge`` is always false."""
+    from datetime import timedelta
+
+    now = datetime.now(timezone.utc)
+    soon = now + timedelta(days=2)
+
+    def _expiry(rec: dict):
+        raw = rec.get("expires_at")
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    repos: list[dict[str, object]] = []
+    l0 = l1 = l2 = revoked_count = expired_count = expiring_count = 0
+    for p in passports:
+        exp = _expiry(p)
+        revoked = bool(p.get("revoked"))
+        expired = bool(exp and exp < now)
+        level = int(p.get("authority_level", 0) or 0)
+        effective = 0 if (revoked or expired) else level
+        if revoked:
+            revoked_count += 1
+        if expired:
+            expired_count += 1
+        elif not revoked and exp and exp < soon:
+            expiring_count += 1
+        if effective >= 2:
+            l2 += 1
+        elif effective == 1:
+            l1 += 1
+        else:
+            l0 += 1
+        repos.append({
+            "repo": p.get("repo"),
+            "authority_level": level,
+            "effective_authority_level": effective,
+            "authority": p.get("authority"),
+            "revoked": revoked,
+            "expired": expired,
+            "expires_at": p.get("expires_at"),
+            "receipt_hash": p.get("receipt_hash"),
+            "executor": p.get("executor"),
+            "base_commit": p.get("base_commit"),
+            "updated_at": p.get("updated_at"),
+            "auto_merge": False,
+        })
+
+    scores = [int(s.get("umbra_score")) for s in scans if isinstance(s.get("umbra_score"), (int, float))]
+    avg_score = round(sum(scores) / len(scores)) if scores else None
+
+    return {
+        "repos_enrolled": len(passports),
+        "authority_counts": {"l0": l0, "l1": l1, "l2": l2},
+        "brake": {"revoked": revoked_count, "expired": expired_count, "expiring_soon": expiring_count},
+        "prs_opened": len(prs),
+        "recent_prs": list(prs[:5]),
+        "avg_umbra_score": avg_score,
+        "scans_saved": len(scans),
+        "repos": repos,
+        "auto_merge": False,
+        "generated_at": now.isoformat(),
+    }
+
+
 class AuthorityRevokeRequest(BaseModel):
     repo: str = Field(min_length=1, max_length=200, description="Repo label whose earned authority to revoke (e.g. 'owner/name')")
     reason: str | None = Field(default=None, max_length=500)

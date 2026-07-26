@@ -608,6 +608,8 @@ export default function Landing() {
             <span className="text-fog/30">·</span>
             <a href="/dashboard" className="font-mono text-[13px] text-cloud transition-colors hover:text-cyan">Open dashboard ↗</a>
             <span className="text-fog/30">·</span>
+            <a href="/start" className="font-mono text-[13px] text-cloud transition-colors hover:text-cyan">Get started ↗</a>
+            <span className="text-fog/30">·</span>
             <a href="/openapi-actions.yaml" className="font-mono text-[13px] text-fog transition-colors hover:text-cloud">GPT Action schema ↗</a>
           </div>
           <button onClick={() => setSignIn(true)} className="mt-6 font-mono text-[12px] text-fog transition-colors hover:text-cloud">Sign in for private repos</button>

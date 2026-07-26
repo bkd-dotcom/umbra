@@ -1,0 +1,19 @@
+{
+  "name": "Umbra — change-control plane for coding agents",
+  "short_name": "Umbra",
+  "description": "Govern coding-agent changes: admit, verify receipts, brake — from anywhere.",
+  "start_url": "/dashboard/overview/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#05060a",
+  "theme_color": "#05060a",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Mission Control", "url": "/dashboard/overview/" },
+    { "name": "Dashboard", "url": "/dashboard/" },
+    { "name": "Get started", "url": "/start/" }
+  ]
+}

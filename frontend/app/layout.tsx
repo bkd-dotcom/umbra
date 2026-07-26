@@ -22,6 +22,8 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://umbra.engineer"),
   title: "Umbra — change-control plane for coding agents",
   description: DESCRIPTION,
+  manifest: "/manifest.webmanifest",
+  appleWebApp: { capable: true, title: "Umbra", statusBarStyle: "black-translucent" },
   icons: {
     icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
     shortcut: "/icon.svg",
@@ -54,6 +56,13 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="en" data-theme="light" className={`${sans.variable} ${serif.variable} ${mono.variable}`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: NO_FLASH }} />
+        {/* Register the PWA service worker (static shell only; never caches API). */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('/sw.js').catch(function(){})})}",
+          }}
+        />
       </head>
       <body className="antialiased">
         {/* Shared, fixed base gradient for the whole site (no seam behind the

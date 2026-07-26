@@ -37,6 +37,13 @@ gcloud run deploy umbra \
 `gcloud` prints the service URL when it finishes (a few minutes for the first
 build). Redeploy after any change by re-running the same command.
 
+**Shortcut:** `make deploy` runs the command above; `make deploy-verify` then
+curls the live URL and asserts every key route (`/`, `/start/`,
+`/dashboard/overview/`, `/manifest.webmanifest`, `/sw.js`, `/api/health`) returns
+`200` — a quick way to confirm a deploy actually shipped the latest surfaces.
+
+For a live product walkthrough after deploying, see [SHOWCASE.md](SHOWCASE.md).
+
 **Verify:**
 
 - `<URL>/` → the Umbra dashboard.

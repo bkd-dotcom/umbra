@@ -17,7 +17,7 @@ from typing import Any
 
 from itsdangerous import BadSignature, URLSafeSerializer
 
-from backend.settings import email_configured, email_from, resend_api_key, session_secret
+from backend.settings import email_configured, email_from, resend_api_key, session_secret, slack_webhook_url
 
 logger = logging.getLogger("umbra.notifications")
 
@@ -140,3 +140,75 @@ def send_report_email(to: str, repo: str, result: dict[str, Any], view_url: str,
     except Exception as exc:  # noqa: BLE001 - a mail failure must never crash the cron batch
         logger.warning("Resend send failed for %s: %s", to, exc)
         return False
+
+
+# --- Slack notifications (admission / emergency brake) ----------------------
+
+_LEVEL_EMOJI = {0: "🔴", 1: "🟡", 2: "🟢"}
+
+
+def build_admission_slack_blocks(report: dict[str, Any], *, view_url: str | None = None) -> dict[str, Any]:
+    """Build a Slack message payload for an admission decision, restating only what
+    the report holds — never a stronger claim than the receipt. auto_merge is false."""
+    level = int(report.get("authority_level", 0) or 0)
+    label = {0: "Observe (L0)", 1: "Analyze (L1)", 2: "Branch-PR (L2)"}.get(level, "—")
+    repo = report.get("repo", "unknown")
+    executor = report.get("executor", "n/a")
+    cr = report.get("contract_result") or {}
+    tb = report.get("trust_boundary") or {}
+    v = report.get("verifier") or {}
+    outcome = report.get("outcome") or ""
+    lines = [
+        f"{_LEVEL_EMOJI.get(level, '⚪')} *Umbra admission — {repo}* · {label}",
+        f"• Executor: `{executor}`",
+        f"• Contract: {'PASS' if cr.get('passed') else 'VIOLATED'}"
+        + f" · Trust boundary: {'clean' if tb.get('clean') else str(tb.get('quarantined_count', 0)) + ' quarantined'}",
+    ]
+    if v:
+        lines.append(
+            f"• Verifier: {'blocked' if v.get('blocked') else 'ok'}"
+            + (" · hijack signal" if v.get("hijack_signal") else "")
+        )
+    if outcome:
+        lines.append(f"• {outcome}")
+    lines.append("• _auto_merge is false — a human merges._")
+    text = "\n".join(lines)
+    payload: dict[str, Any] = {"text": text}
+    if view_url:
+        payload["blocks"] = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+            {"type": "actions", "elements": [
+                {"type": "button", "text": {"type": "plain_text", "text": "Open in Umbra"}, "url": view_url},
+            ]},
+        ]
+    return payload
+
+
+def build_brake_slack_blocks(repo: str, reason: str | None, actor: str | None = None) -> dict[str, Any]:
+    who = f" by {actor}" if actor else ""
+    why = f" — {reason}" if reason else ""
+    return {"text": f"🛑 *Umbra emergency brake* · `{repo}` revoked to L0{who}{why}. "
+                    f"Admission must be re-run to re-earn authority."}
+
+
+def notify_slack(payload: dict[str, Any]) -> str:
+    """POST a message to the configured Slack Incoming Webhook. Returns an honest
+    delivery state (never raises, never fakes success):
+      - ``accepted_for_delivery`` — Slack returned 200
+      - ``email_unavailable``     — no webhook configured (reused vocabulary: unavailable)
+      - ``email_rejected``        — Slack returned an error
+    """
+    url = slack_webhook_url()
+    if not url:
+        return DELIVERY_EMAIL_UNAVAILABLE
+    import httpx
+
+    try:
+        resp = httpx.post(url, json=payload, timeout=10)
+        if resp.status_code == 200:
+            return DELIVERY_ACCEPTED
+        logger.warning("Slack webhook rejected message (%s): %s", resp.status_code, resp.text[:200])
+        return DELIVERY_EMAIL_REJECTED
+    except Exception as exc:  # noqa: BLE001 - a notification failure must never crash admission
+        logger.warning("Slack webhook send failed: %s", exc)
+        return DELIVERY_EMAIL_REJECTED

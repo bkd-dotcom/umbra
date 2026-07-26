@@ -232,6 +232,18 @@ def email_configured() -> bool:
     return bool(resend_api_key() and email_from())
 
 
+def slack_webhook_url() -> str | None:
+    """Optional Slack Incoming Webhook URL for admission/brake notifications.
+
+    Unset → Slack delivery degrades gracefully (recorded as unavailable, never a
+    fake success). Must be a Slack-hosted https webhook; any other value is
+    ignored (fail-closed) so a misconfiguration can't POST governed data elsewhere."""
+    url = (os.getenv("UMBRA_SLACK_WEBHOOK_URL") or "").strip()
+    if url.startswith("https://hooks.slack.com/"):
+        return url
+    return None
+
+
 def scheduling_configured() -> bool:
     """True when scheduled scans can actually run — i.e. the due-scan endpoint has a
     working authentication mechanism: either complete Google OIDC scheduler
